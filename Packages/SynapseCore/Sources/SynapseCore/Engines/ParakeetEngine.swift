@@ -27,6 +27,8 @@ public actor ParakeetEngine: TranscriptionEngine {
         return Transcript(language: language, duration: r.duration, segments: segments)
     }
 
+    public func unload() async { await manager.cleanup() }
+
     public func detectLanguage(wav: URL) async throws -> (code: String, confidence: Double) {
         throw EngineError.unsupported("Parakeet cannot detect language")
     }

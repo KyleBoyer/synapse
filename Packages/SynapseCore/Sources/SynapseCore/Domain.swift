@@ -27,6 +27,9 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
 
     public var isChat: Bool { engine == .mlx }
 
+    /// Resident-size estimate for memory accounting (quantized weights load at about their on-disk size).
+    public var estimatedBytes: Int { approxMB * 1_048_576 }
+
     public func supports(language: String?) -> Bool {
         guard let language, let languages else { return true }
         return languages.contains(language)

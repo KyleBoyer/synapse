@@ -26,8 +26,37 @@ public struct Settings: Codable, Sendable, Equatable {
     public var watchFolders: [WatchFolder] = []
     public var watchingPaused: Bool = false
     public var cue: CueOptions = CueOptions()
+    /// nil = 75% of physical memory.
+    public var memoryBudgetGB: Double?
+    /// Idle models are unloaded after this many minutes; 0 disables.
+    public var idleUnloadMinutes: Int = 15
 
     public init() {}
+
+    public var modelManagerConfig: ModelManager.Config {
+        var c = ModelManager.Config.default
+        if let gb = memoryBudgetGB, gb > 0 { c.budgetBytes = Int(gb * 1_073_741_824) }
+        c.idleUnloadAfter = idleUnloadMinutes > 0 ? .seconds(idleUnloadMinutes * 60) : nil
+        return c
+    }
+
+    /// Missing keys keep their defaults, so settings saved by older versions survive new fields.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Settings()
+        defaultModelID = try c.decodeIfPresent(String.self, forKey: .defaultModelID) ?? d.defaultModelID
+        bazarrModelID = try c.decodeIfPresent(String.self, forKey: .bazarrModelID)
+        serverEnabled = try c.decodeIfPresent(Bool.self, forKey: .serverEnabled) ?? d.serverEnabled
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? d.port
+        allowLAN = try c.decodeIfPresent(Bool.self, forKey: .allowLAN) ?? d.allowLAN
+        apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? d.apiKey
+        libraryRoots = try c.decodeIfPresent([String].self, forKey: .libraryRoots) ?? d.libraryRoots
+        watchFolders = try c.decodeIfPresent([WatchFolder].self, forKey: .watchFolders) ?? d.watchFolders
+        watchingPaused = try c.decodeIfPresent(Bool.self, forKey: .watchingPaused) ?? d.watchingPaused
+        cue = try c.decodeIfPresent(CueOptions.self, forKey: .cue) ?? d.cue
+        memoryBudgetGB = try c.decodeIfPresent(Double.self, forKey: .memoryBudgetGB)
+        idleUnloadMinutes = try c.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? d.idleUnloadMinutes
+    }
 
     /// Roots that path-based API jobs may touch.
     public var allowedRoots: [String] { libraryRoots + watchFolders.map(\.path) }

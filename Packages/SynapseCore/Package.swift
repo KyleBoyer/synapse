@@ -13,6 +13,7 @@ let package = Package(
         // FoundationModels bridge needs the macOS 27 SDK; we don't use it.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "3.32.3", traits: []),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMinor(from: "0.32.3")),
     ],
     targets: [
         .target(
@@ -26,6 +27,7 @@ let package = Package(
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
         .testTarget(

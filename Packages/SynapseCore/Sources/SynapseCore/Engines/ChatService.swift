@@ -57,17 +57,15 @@ public enum ChatError: Error, LocalizedError {
     }
 }
 
-/// Runs MLX chat/vision models. Keeps one model loaded; switching models unloads the previous one.
+/// Runs MLX chat/vision models. Loading and eviction go through the shared ModelManager; a lease is
+/// held for the whole generation so a model is never unloaded mid-reply.
 public actor ChatService {
     private let store: ModelStore
-    private var loaded: (id: String, container: ModelContainer)?
-    private var loading: (id: String, task: Task<ModelContainer, Error>)?
+    private let models: ModelManager
     static let defaultMaxTokens = 4096
 
-    public init(store: ModelStore) { self.store = store }
-
-    public func unload(ifModel id: String? = nil) {
-        if id == nil || loaded?.id == id { loaded = nil }
+    public init(store: ModelStore, models: ModelManager = ModelManager()) {
+        self.store = store; self.models = models
     }
 
     public func resolve(_ requested: String?) async throws -> ModelSpec {
@@ -79,7 +77,8 @@ public actor ChatService {
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         guard !messages.isEmpty else { throw ChatError.emptyConversation }
-        let container = try await container(for: spec)
+        let lease = try await containerLease(for: spec)
+        let container = lease.value
         let chat: [Chat.Message] = try messages.map { m in
             let images = try m.images.map { data -> UserInput.Image in
                 guard let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else { throw ChatError.badImage }
@@ -124,7 +123,10 @@ public actor ChatService {
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { _ in
+                task.cancel()
+                lease.release()
+            }
         }
     }
 
@@ -141,19 +143,12 @@ public actor ChatService {
         return ChatResult(modelID: spec.id, text: text, finishReason: finish, usage: usage)
     }
 
-    private func container(for spec: ModelSpec) async throws -> ModelContainer {
-        if let loaded, loaded.id == spec.id { return loaded.container }
-        if let loading, loading.id == spec.id { return try await loading.task.value }
+    private func containerLease(for spec: ModelSpec) async throws -> ModelLease<ModelContainer> {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
-        loaded = nil
-        let task = Task<ModelContainer, Error> {
-            try await VLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
+        return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedBytes) {
+            let container = try await VLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
+            return (container, unload: {})
         }
-        loading = (spec.id, task)
-        defer { if loading?.id == spec.id { loading = nil } }
-        let container = try await task.value
-        loaded = (spec.id, container)
-        return container
     }
 }
 

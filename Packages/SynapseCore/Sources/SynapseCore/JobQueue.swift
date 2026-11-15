@@ -6,7 +6,7 @@ public enum JobError: Error, LocalizedError {
 }
 
 /// The single funnel for all transcription work (GUI, API, watcher).
-/// Runs one job at a time and keeps one engine loaded, which keeps memory and ANE use predictable.
+/// Runs one job at a time; engines are loaded and evicted by the shared ModelManager.
 public actor JobQueue {
     public typealias EngineFactory = @Sendable (ModelSpec, URL) async throws -> any TranscriptionEngine
 
@@ -21,14 +21,15 @@ public actor JobQueue {
     private var pending: [UUID] = []
     private var waiters: [UUID: [CheckedContinuation<JobSnapshot, Never>]] = [:]
     private var running: (id: UUID, task: Task<Void, Never>)?
-    private var loaded: (id: String, engine: any TranscriptionEngine)?
+    private let models: ModelManager
     private let keepFinished = 200
 
     public init(store: ModelStore, decoder: AudioDecoder, settings: SettingsBox,
+                models: ModelManager = ModelManager(),
                 engineFactory: @escaping EngineFactory = JobQueue.realEngine,
                 onChange: @escaping @Sendable (JobSnapshot) -> Void = { _ in }) {
         self.store = store; self.decoder = decoder; self.settings = settings
-        self.engineFactory = engineFactory; self.onChange = onChange
+        self.models = models; self.engineFactory = engineFactory; self.onChange = onChange
     }
 
     public static let realEngine: EngineFactory = { spec, folder in
@@ -85,14 +86,6 @@ public actor JobQueue {
 
     public var isBusy: Bool { running != nil }
 
-    /// Drops the loaded engine. Refuses while a job runs on it.
-    public func unload(ifModel id: String? = nil) -> Bool {
-        if let id, loaded?.id != id { return true }
-        if running != nil { return false }
-        loaded = nil
-        return true
-    }
-
     /// Uses the smallest downloaded multilingual Whisper model. nil when none is downloaded.
     public func detectLanguage(_ input: AudioInput) async throws -> (code: String, confidence: Double)? {
         guard let spec = ModelResolver.smallestDetector(downloaded: await store.downloaded),
@@ -105,8 +98,9 @@ public actor JobQueue {
         let dir = try tempDir(marker)
         defer { try? FileManager.default.removeItem(at: dir) }
         let wav = try await decoder.decodeToWAV(input, into: dir)
-        let engine = try await engine(for: spec, folder: folder)
-        return try await engine.detectLanguage(wav: wav)
+        let lease = try await engineLease(for: spec, folder: folder)
+        defer { lease.release() }
+        return try await lease.value.detectLanguage(wav: wav)
     }
 
     // MARK: Internals
@@ -142,8 +136,10 @@ public actor JobQueue {
             let wav = try await decoder.decodeToWAV(r.input, into: dir)
             try Task.checkCancellation()
 
-            if loaded?.id != spec.id { update(id) { $0.status = .preparingModel } }
-            let engine = try await engine(for: spec, folder: folder)
+            if await !models.isLoaded(spec.id) { update(id) { $0.status = .preparingModel } }
+            let lease = try await engineLease(for: spec, folder: folder)
+            defer { lease.release() }
+            let engine = lease.value
             try Task.checkCancellation()
             update(id) { $0.status = .transcribing(nil) }
 
@@ -169,12 +165,12 @@ public actor JobQueue {
         }
     }
 
-    private func engine(for spec: ModelSpec, folder: URL) async throws -> any TranscriptionEngine {
-        if let loaded, loaded.id == spec.id { return loaded.engine }
-        loaded = nil
-        let e = try await engineFactory(spec, folder)
-        loaded = (spec.id, e)
-        return e
+    private func engineLease(for spec: ModelSpec, folder: URL) async throws -> ModelLease<any TranscriptionEngine> {
+        let factory = engineFactory
+        return try await models.lease(spec.id, as: (any TranscriptionEngine).self, estimatedBytes: spec.estimatedBytes) {
+            let engine = try await factory(spec, folder)
+            return (engine, unload: { await engine.unload() })
+        }
     }
 
     private func progress(_ id: UUID, _ p: Double?) {

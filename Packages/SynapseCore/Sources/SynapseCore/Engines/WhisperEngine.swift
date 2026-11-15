@@ -53,6 +53,8 @@ public actor WhisperEngine: TranscriptionEngine {
                           duration: duration, segments: segments)
     }
 
+    public func unload() async { await kit.unloadModels() }
+
     public func detectLanguage(wav: URL) async throws -> (code: String, confidence: Double) {
         let r = try await kit.detectLanguage(audioPath: wav.path)
         // langProbs are log-probabilities.

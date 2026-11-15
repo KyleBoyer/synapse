@@ -19,6 +19,7 @@ final class AppState {
 
     let settingsBox: SettingsBox
     let store: ModelStore
+    let models: ModelManager
     let queue: JobQueue
     let chat: ChatService
     let server: ServerController
@@ -29,13 +30,14 @@ final class AppState {
         settings = s
         settingsBox = SettingsBox(s)
         store = ModelStore()
+        models = ModelManager.forApp(config: s.modelManagerConfig)
         let decoder = AudioDecoder.bundled() ?? AudioDecoder(ffmpegURL: URL(fileURLWithPath: "/usr/bin/false"))
         if AudioDecoder.bundled() == nil { startupError = "Bundled ffmpeg is missing; decoding will fail." }
 
         let (updates, sink) = AsyncStream.makeStream(of: JobSnapshot.self)
-        queue = JobQueue(store: store, decoder: decoder, settings: settingsBox, onChange: { sink.yield($0) })
+        queue = JobQueue(store: store, decoder: decoder, settings: settingsBox, models: models, onChange: { sink.yield($0) })
         let queue = queue
-        chat = ChatService(store: store)
+        chat = ChatService(store: store, models: models)
         server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
         Task { [weak self] in
@@ -102,10 +104,8 @@ final class AppState {
     func cancelDownload(_ id: String) { Task { await store.cancelDownload(id) } }
 
     func delete(_ id: String) {
-        let isChat = Catalog.all.first { $0.id == id }?.isChat ?? false
         Task {
-            if isChat { await chat.unload(ifModel: id) }
-            guard await queue.unload(ifModel: id) else {
+            guard await models.unload(id) else {
                 modelStates[id] = .failed("Model is in use by a running job")
                 return
             }
@@ -125,6 +125,10 @@ final class AppState {
                 if s.serverEnabled { await server.start() }
                 serverStatus = await server.status
             }
+        }
+        if old?.memoryBudgetGB != s.memoryBudgetGB || old?.idleUnloadMinutes != s.idleUnloadMinutes {
+            let config = s.modelManagerConfig
+            Task { await models.update(config: config) }
         }
         if old == nil || old?.watchFolders != s.watchFolders || old?.watchingPaused != s.watchingPaused {
             Task { await watcher.update(folders: s.watchFolders, paused: s.watchingPaused) }
