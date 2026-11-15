@@ -20,6 +20,7 @@ final class AppState {
     let settingsBox: SettingsBox
     let store: ModelStore
     let queue: JobQueue
+    let chat: ChatService
     let server: ServerController
     let watcher: FolderWatcher
 
@@ -34,7 +35,8 @@ final class AppState {
         let (updates, sink) = AsyncStream.makeStream(of: JobSnapshot.self)
         queue = JobQueue(store: store, decoder: decoder, settings: settingsBox, onChange: { sink.yield($0) })
         let queue = queue
-        server = ServerController(queue: queue, store: store, settings: settingsBox)
+        chat = ChatService(store: store)
+        server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
         Task { [weak self] in
             for await snap in updates { self?.upsert(snap) }
@@ -75,9 +77,11 @@ final class AppState {
 
     // MARK: Models
 
-    var downloadedSpecs: [ModelSpec] {
+    private var readySpecs: [ModelSpec] {
         Catalog.all.filter { if case .ready = modelStates[$0.id] { return true }; return false }
     }
+    var downloadedSpecs: [ModelSpec] { readySpecs.filter { !$0.isChat } }
+    var downloadedChatSpecs: [ModelSpec] { readySpecs.filter { $0.isChat } }
 
     func refreshModels() async { modelStates = await store.states() }
 
@@ -98,7 +102,9 @@ final class AppState {
     func cancelDownload(_ id: String) { Task { await store.cancelDownload(id) } }
 
     func delete(_ id: String) {
+        let isChat = Catalog.all.first { $0.id == id }?.isChat ?? false
         Task {
+            if isChat { await chat.unload(ifModel: id) }
             guard await queue.unload(ifModel: id) else {
                 modelStates[id] = .failed("Model is in use by a running job")
                 return

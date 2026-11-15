@@ -16,6 +16,8 @@ jobs:
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
       - run: brew install xcodegen
+      # MLX compiles Metal shaders; the toolchain is an optional Xcode component.
+      - run: xcodebuild -downloadComponent MetalToolchain
       - uses: actions/cache@v4
         with:
           path: vendor/ffmpeg

@@ -23,6 +23,9 @@ struct ModelsView: View {
             Section("Whisper (99 languages, translation)") {
                 ForEach(Catalog.all.filter { $0.engine == .whisper }) { row($0) }
             }
+            Section("Qwen3.5 (chat + vision, MLX)") {
+                ForEach(Catalog.all.filter { $0.engine == .mlx }) { row($0) }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Models")
@@ -65,6 +68,7 @@ struct ModelsView: View {
     }
 
     private func languageSummary(_ spec: ModelSpec) -> String {
+        if spec.isChat { return "Chat + images" }
         guard let l = spec.languages else { return "99 languages" }
         return l == ["en"] ? "English" : "\(l.count) languages"
     }

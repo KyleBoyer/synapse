@@ -1,6 +1,6 @@
 # Synapse
 
-Synapse is a native macOS app that transcribes audio and video into subtitles using local models. Nothing leaves your Mac. It runs Whisper (via WhisperKit) and NVIDIA Parakeet (via FluidAudio) on Core ML, and exposes an HTTP API that is compatible with the OpenAI transcription API and with Bazarr's Whisper provider. It can also watch folders and write subtitle files next to your media.
+Synapse is a native macOS app that transcribes audio and video into subtitles using local models. Nothing leaves your Mac. It runs Whisper (via WhisperKit) and NVIDIA Parakeet (via FluidAudio) on Core ML, and exposes an HTTP API that is compatible with the OpenAI transcription API and with Bazarr's Whisper provider. It can also watch folders and write subtitle files next to your media. It also runs Qwen3.5 chat and vision models (0.8B, 2B, 4B, 9B) on MLX, served through OpenAI-compatible Chat Completions and Responses endpoints.
 
 ## Requirements
 
@@ -20,12 +20,17 @@ If you enable "Allow LAN" in the Server tab, the server binds to `0.0.0.0` and m
 
 ```bash
 brew install xcodegen
+xcodebuild -downloadComponent MetalToolchain   # MLX compiles Metal shaders
 scripts/build-ffmpeg.sh      # builds vendor/ffmpeg/bin/ffmpeg (LGPL, ~minutes)
 xcodegen generate
 open Synapse.xcodeproj
 ```
 
 Core logic tests: `cd Packages/SynapseCore && swift test`. End-to-end tests download real models and only run with `SYNAPSE_E2E=1`. Xcode 26 is required.
+
+MLX needs a compiled Metal library, which `swift build` cannot produce. `scripts/test-chat-e2e.sh` builds it once with xcodebuild, puts it next to the test binary, and runs the Qwen tests (downloads `qwen3.5-0.8b`, about 650 MB).
+
+With the app running and `qwen3.5-0.8b` downloaded, `scripts/verify-openai-api.py` checks the chat endpoints with the official OpenAI Python SDK (`pip install openai`). It validates every response and stream event against the SDK's types.
 
 ## HTTP API
 
@@ -55,6 +60,15 @@ curl -s "localhost:9000/asr?task=transcribe&language=en&output=srt&encode=false"
 curl -s -X POST "localhost:9000/detect-language?encode=false" -F audio_file=@$FIX/en.pcm
 ```
 
+### Chat and vision (Qwen3.5)
+
+| Route | Notes |
+|---|---|
+| `POST /v1/chat/completions` | `messages` with string content or parts (`text`, `image_url` with a `data:` or `http(s)` URL); `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stream`, `stream_options.include_usage`. |
+| `POST /v1/responses` | `input` as a string or message items with `input_text` / `input_image` parts; `instructions`, `max_output_tokens`, `temperature`, `top_p`, `stream` (typed SSE events through `response.completed`). |
+
+`model` is a catalog id such as `qwen3.5-0.8b`; omit it to use the smallest downloaded chat model. Qwen3.5 thinking mode is off unless `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) is set to something other than `none` or `minimal`. Images are capped at about one megapixel before they reach the model. One chat model stays loaded at a time.
+
 OpenAI Python SDK:
 
 ```python
@@ -62,6 +76,13 @@ from openai import OpenAI
 
 c = OpenAI(base_url="http://localhost:9000/v1", api_key="x")  # use the real key when LAN is on
 print(c.audio.transcriptions.create(model="whisper-1", file=open("en.m4a", "rb"), response_format="srt"))
+
+import base64
+img = "data:image/jpeg;base64," + base64.b64encode(open("zebra.jpg", "rb").read()).decode()
+r = c.responses.create(model="qwen3.5-0.8b", input=[{"role": "user", "content": [
+    {"type": "input_text", "text": "What animal is this?"},
+    {"type": "input_image", "image_url": img}]}])
+print(r.output_text)
 ```
 
 ## Bazarr setup

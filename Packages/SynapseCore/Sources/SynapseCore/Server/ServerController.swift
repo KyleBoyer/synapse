@@ -2,7 +2,8 @@ import Foundation
 import Hummingbird
 import NIOCore
 
-public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBox) -> Router<SynapseContext> {
+public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil) -> Router<SynapseContext> {
+    let chat = chat ?? ChatService(store: store)
     let router = Router(context: SynapseContext.self)
     router.add(middleware: ErrorBodyMiddleware())
     router.get("health") { _, _ in
@@ -13,6 +14,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addOpenAIRoutes(to: group, queue: queue, store: store, settings: settings)
         addASRRoutes(to: group, queue: queue, store: store, settings: settings)
         addJobRoutes(to: group, queue: queue, settings: settings)
+        addChatRoutes(to: group, chat: chat)
     }
     return router
 }
@@ -36,8 +38,11 @@ public actor ServerController {
     private let box: SettingsBox
     private var task: Task<Void, Never>?
 
-    public init(queue: JobQueue, store: ModelStore, settings: SettingsBox) {
+    private let chat: ChatService
+
+    public init(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil) {
         self.queue = queue; self.store = store; self.box = settings
+        self.chat = chat ?? ChatService(store: store)
     }
 
     /// (Re)starts the server from `settings.current` (port / LAN binding). Honors `serverEnabled`.
@@ -48,7 +53,7 @@ public actor ServerController {
         let host = s.allowLAN ? "0.0.0.0" : "127.0.0.1"
         let port = s.port
         let app = Application(
-            router: buildRouter(queue: queue, store: store, settings: box),
+            router: buildRouter(queue: queue, store: store, settings: box, chat: chat),
             configuration: .init(address: .hostname(host, port: port)),
             onServerRunning: { [weak self] _ in await self?.set(.running("\(host):\(port)")) })
         task = Task { [weak self] in

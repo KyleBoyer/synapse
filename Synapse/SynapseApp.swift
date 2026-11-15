@@ -8,11 +8,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case transcribe = "Transcribe", models = "Models", watch = "Watch Folders", server = "Server"
+    case transcribe = "Transcribe", chat = "Chat", models = "Models", watch = "Watch Folders", server = "Server"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .transcribe: "waveform"
+        case .chat: "bubble.left.and.text.bubble.right"
         case .models: "square.and.arrow.down"
         case .watch: "folder.badge.gearshape"
         case .server: "network"
@@ -51,6 +52,7 @@ struct MainView: View {
         } detail: {
             switch pane ?? .transcribe {
             case .transcribe: TranscribeView()
+            case .chat: ChatView()
             case .models: ModelsView()
             case .watch: WatchFoldersView()
             case .server: ServerView()

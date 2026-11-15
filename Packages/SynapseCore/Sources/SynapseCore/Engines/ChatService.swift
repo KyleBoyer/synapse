@@ -1,0 +1,223 @@
+import CoreImage
+import Foundation
+@preconcurrency import MLXLMCommon
+@preconcurrency import MLXVLM
+@preconcurrency import Tokenizers
+
+public struct ChatMessage: Sendable, Equatable {
+    public enum Role: String, Sendable { case system, user, assistant }
+    public var role: Role
+    public var text: String
+    /// Encoded image bytes (PNG, JPEG, HEIC...). Remote URLs are fetched at the API boundary.
+    public var images: [Data]
+
+    public init(role: Role, text: String, images: [Data] = []) {
+        self.role = role; self.text = text; self.images = images
+    }
+}
+
+public struct ChatOptions: Sendable, Equatable {
+    public var maxTokens: Int?
+    public var temperature: Float?
+    public var topP: Float?
+    /// Qwen3.5 thinking mode. Off by default so answers come back directly.
+    public var enableThinking: Bool
+
+    public init(maxTokens: Int? = nil, temperature: Float? = nil, topP: Float? = nil, enableThinking: Bool = false) {
+        self.maxTokens = maxTokens; self.temperature = temperature; self.topP = topP; self.enableThinking = enableThinking
+    }
+}
+
+public struct ChatUsage: Sendable, Equatable {
+    public var promptTokens: Int
+    public var completionTokens: Int
+    public var totalTokens: Int { promptTokens + completionTokens }
+}
+
+public enum ChatEvent: Sendable, Equatable {
+    case delta(String)
+    /// finishReason is OpenAI's: "stop" or "length".
+    case done(finishReason: String, usage: ChatUsage)
+}
+
+public struct ChatResult: Sendable, Equatable {
+    public var modelID: String
+    public var text: String
+    public var finishReason: String
+    public var usage: ChatUsage
+}
+
+public enum ChatError: Error, LocalizedError {
+    case badImage, emptyConversation
+    public var errorDescription: String? {
+        switch self {
+        case .badImage: return "An image could not be decoded."
+        case .emptyConversation: return "The conversation has no messages."
+        }
+    }
+}
+
+/// Runs MLX chat/vision models. Keeps one model loaded; switching models unloads the previous one.
+public actor ChatService {
+    private let store: ModelStore
+    private var loaded: (id: String, container: ModelContainer)?
+    private var loading: (id: String, task: Task<ModelContainer, Error>)?
+    static let defaultMaxTokens = 4096
+
+    public init(store: ModelStore) { self.store = store }
+
+    public func unload(ifModel id: String? = nil) {
+        if id == nil || loaded?.id == id { loaded = nil }
+    }
+
+    public func resolve(_ requested: String?) async throws -> ModelSpec {
+        try ModelResolver.resolveChat(requested: requested, downloaded: await store.downloaded)
+    }
+
+    /// Streams deltas then a final `.done`. Cancelling the consuming task stops generation.
+    public func stream(model spec: ModelSpec, messages: [ChatMessage], options: ChatOptions) async throws
+        -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        guard !messages.isEmpty else { throw ChatError.emptyConversation }
+        let container = try await container(for: spec)
+        let chat: [Chat.Message] = try messages.map { m in
+            let images = try m.images.map { data -> UserInput.Image in
+                guard let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else { throw ChatError.badImage }
+                return .ciImage(ci)
+            }
+            switch m.role {
+            case .system: return .system(m.text, images: images)
+            case .user: return .user(m.text, images: images)
+            case .assistant: return .assistant(m.text, images: images)
+            }
+        }
+        var processing = UserInput.Processing()
+        // Cap image tokens: phone photos otherwise become thousands of tokens on small models.
+        processing.maxPixels = 1024 * 1024
+        let input = UserInput(chat: chat, processing: processing,
+                              additionalContext: ["enable_thinking": options.enableThinking])
+        let maxTokens = options.maxTokens ?? Self.defaultMaxTokens
+        let params = GenerateParameters(maxTokens: maxTokens, temperature: options.temperature ?? 0.7,
+                                        topP: options.topP ?? 0.8)
+        let lmInput = try await container.prepare(input: input)
+        let generation = try await container.generate(input: lmInput, parameters: params)
+        let stripThinking = !options.enableThinking
+
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                var filter = ThinkFilter(enabled: stripThinking)
+                for await event in generation {
+                    if Task.isCancelled { break }
+                    switch event {
+                    case .chunk(let s):
+                        let out = filter.feed(s)
+                        if !out.isEmpty { continuation.yield(.delta(out)) }
+                    case .info(let info):
+                        let tail = filter.finish()
+                        if !tail.isEmpty { continuation.yield(.delta(tail)) }
+                        let reason = info.stopReason == .length ? "length" : "stop"
+                        continuation.yield(.done(finishReason: reason, usage: ChatUsage(
+                            promptTokens: info.promptTokenCount, completionTokens: info.generationTokenCount)))
+                    default:
+                        break
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func complete(model spec: ModelSpec, messages: [ChatMessage], options: ChatOptions) async throws -> ChatResult {
+        var text = ""
+        var finish = "stop"
+        var usage = ChatUsage(promptTokens: 0, completionTokens: 0)
+        for try await event in try await stream(model: spec, messages: messages, options: options) {
+            switch event {
+            case .delta(let s): text += s
+            case .done(let f, let u): finish = f; usage = u
+            }
+        }
+        return ChatResult(modelID: spec.id, text: text, finishReason: finish, usage: usage)
+    }
+
+    private func container(for spec: ModelSpec) async throws -> ModelContainer {
+        if let loaded, loaded.id == spec.id { return loaded.container }
+        if let loading, loading.id == spec.id { return try await loading.task.value }
+        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        loaded = nil
+        let task = Task<ModelContainer, Error> {
+            try await VLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
+        }
+        loading = (spec.id, task)
+        defer { if loading?.id == spec.id { loading = nil } }
+        let container = try await task.value
+        loaded = (spec.id, container)
+        return container
+    }
+}
+
+/// Drops a leading `<think>...</think>` block from streamed text.
+struct ThinkFilter {
+    private var enabled: Bool
+    private var buffer = ""
+    private var decided = false
+    private var inThink = false
+
+    init(enabled: Bool) { self.enabled = enabled; decided = !enabled }
+
+    mutating func feed(_ s: String) -> String {
+        guard enabled else { return s }
+        buffer += s
+        if !decided {
+            let trimmed = buffer.drop { $0.isWhitespace }
+            if trimmed.isEmpty || "<think>".hasPrefix(trimmed) { return "" }
+            decided = true
+            inThink = trimmed.hasPrefix("<think>")
+            if !inThink { defer { buffer = "" }; return String(trimmed) }
+        }
+        if inThink {
+            guard let end = buffer.range(of: "</think>") else { return "" }
+            inThink = false
+            let rest = String(buffer[end.upperBound...].drop { $0.isWhitespace })
+            buffer = ""
+            return rest
+        }
+        defer { buffer = "" }
+        return buffer
+    }
+
+    mutating func finish() -> String {
+        defer { buffer = "" }
+        return (enabled && (inThink || !decided)) ? "" : buffer
+    }
+}
+
+/// Bridges swift-transformers tokenizers into mlx-swift-lm (what the MLXHuggingFace macro generates).
+struct TransformersTokenizerLoader: MLXLMCommon.TokenizerLoader {
+    func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
+        TokenizerBridge(try await AutoTokenizer.from(modelFolder: directory))
+    }
+}
+
+struct TokenizerBridge: MLXLMCommon.Tokenizer {
+    let upstream: any Tokenizers.Tokenizer
+    init(_ upstream: any Tokenizers.Tokenizer) { self.upstream = upstream }
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { upstream.encode(text: text, addSpecialTokens: addSpecialTokens) }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { upstream.decode(tokens: tokenIds, skipSpecialTokens: skipSpecialTokens) }
+    func convertTokenToId(_ token: String) -> Int? { upstream.convertTokenToId(token) }
+    func convertIdToToken(_ id: Int) -> String? { upstream.convertIdToToken(id) }
+    var bosToken: String? { upstream.bosToken }
+    var eosToken: String? { upstream.eosToken }
+    var unknownToken: String? { upstream.unknownToken }
+
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+                           additionalContext: [String: any Sendable]?) throws -> [Int] {
+        do {
+            return try upstream.applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
+        } catch Tokenizers.TokenizerError.missingChatTemplate {
+            throw MLXLMCommon.TokenizerError.missingChatTemplate
+        }
+    }
+}

@@ -35,6 +35,7 @@ public actor JobQueue {
         switch spec.engine {
         case .whisper: return try await WhisperEngine(folder: folder)
         case .parakeet: return try await ParakeetEngine(folder: folder, variant: spec.variant)
+        case .mlx: throw ResolveError.wrongKind(spec.id)
         }
     }
 

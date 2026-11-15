@@ -96,8 +96,13 @@ public actor ModelStore {
         return root.appending(path: "parakeet/\(name)", directoryHint: .isDirectory)
     }
 
+    private static func mlxFolder(_ spec: ModelSpec, root: URL) -> URL {
+        root.appending(path: "mlx/\(spec.variant)", directoryHint: .isDirectory)
+    }
+
     private static func partialFolder(_ spec: ModelSpec, root: URL) -> URL {
         switch spec.engine {
+        case .mlx: return mlxFolder(spec, root: root)
         case .parakeet: return parakeetFolder(spec, root: root)
         case .whisper:
             let prefix = spec.variant.hasPrefix("distil") ? "distil-whisper_" : "openai_whisper-"
@@ -112,6 +117,8 @@ public actor ModelStore {
                 variant: spec.variant,
                 downloadBase: root.appending(path: "whisperkit", directoryHint: .isDirectory),
                 progressCallback: { progress($0.fractionCompleted) })
+        case .mlx:
+            return try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), progress: progress)
         case .parakeet:
             let dir = parakeetFolder(spec, root: root)
             return try await AsrModels.download(

@@ -1,6 +1,10 @@
 import Foundation
 
-public enum EngineKind: String, Codable, Sendable { case whisper, parakeet }
+public enum EngineKind: String, Codable, Sendable {
+    case whisper, parakeet
+    /// MLX chat/vision language models (Qwen3.5); `ModelSpec.variant` is the Hugging Face repo id.
+    case mlx
+}
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public let id: String
@@ -20,6 +24,8 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
         self.approxMB = approxMB; self.languages = languages
         self.canTranslate = canTranslate; self.canDetectLanguage = canDetectLanguage
     }
+
+    public var isChat: Bool { engine == .mlx }
 
     public func supports(language: String?) -> Bool {
         guard let language, let languages else { return true }
