@@ -1,0 +1,42 @@
+name: Synapse
+options:
+  bundleIdPrefix: app.synapse
+  deploymentTarget:
+    macOS: "15.0"
+packages:
+  SynapseCore:
+    path: Packages/SynapseCore
+targets:
+  Synapse:
+    type: application
+    platform: macOS
+    sources: [Synapse]
+    dependencies:
+      - package: SynapseCore
+        product: SynapseCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.synapse.mac
+        PRODUCT_NAME: Synapse
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ARCHS: arm64
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SWIFT_VERSION: "6.0"
+    postBuildScripts:
+      - name: Embed ffmpeg
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          SRC="$SRCROOT/vendor/ffmpeg/bin/ffmpeg"
+          if [ ! -x "$SRC" ]; then echo "error: run scripts/build-ffmpeg.sh first"; exit 1; fi
+          cp "$SRC" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/ffmpeg"
+          if [ "${CODE_SIGNING_ALLOWED:-YES}" = "YES" ]; then
+            codesign --force --options runtime -s "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/ffmpeg"
+          fi

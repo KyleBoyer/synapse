@@ -1,0 +1,61 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      - run: brew install xcodegen
+      - uses: actions/cache@v4
+        with:
+          path: vendor/ffmpeg
+          key: ffmpeg-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - uses: actions/cache@v4
+        with:
+          path: Packages/SynapseCore/.build
+          key: spm-${{ hashFiles('Packages/SynapseCore/Package.resolved') }}
+      - run: scripts/build-ffmpeg.sh
+      - name: Test
+        working-directory: Packages/SynapseCore
+        run: swift test
+      - run: xcodegen generate
+      - name: Build
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          xcodebuild -project Synapse.xcodeproj -scheme Synapse -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO MARKETING_VERSION="$VERSION" build
+      - name: Sign and package
+        id: pkg
+        env:
+          DEVELOPER_ID_CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: scripts/sign-and-package.sh build/Build/Products/Release/Synapse.app "${GITHUB_REF_NAME#v}"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=()
+          [[ "$GITHUB_REF_NAME" == *-* ]] && FLAGS+=(--prerelease)
+          if [[ "${{ steps.pkg.outputs.signed }}" != "1" ]]; then
+            cat > notes.md <<'NOTES'
+          Unsigned build: after unzipping run `xattr -dr com.apple.quarantine /Applications/Synapse.app` or right-click and choose Open.
+          NOTES
+            FLAGS+=(--notes-file notes.md)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --generate-notes "${FLAGS[@]}"
