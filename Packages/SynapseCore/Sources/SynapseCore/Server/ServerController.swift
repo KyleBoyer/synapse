@@ -6,7 +6,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
     let router = Router(context: SynapseContext.self)
     router.add(middleware: ErrorBodyMiddleware())
     router.get("health") { _, _ in
-        json(["status": "ok", "version": "0.1.0"])
+        json(["status": "ok", "version": Synapse.version])
     }
     for group in [router.group(), router.group("k/:key")] {
         group.add(middleware: APIKeyMiddleware(settings: settings))

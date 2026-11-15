@@ -10,7 +10,11 @@ targets:
   Synapse:
     type: application
     platform: macOS
-    sources: [Synapse]
+    sources:
+      - path: Synapse
+        excludes: ["Resources/**"]
+      - path: Synapse/Resources
+        buildPhase: resources
     dependencies:
       - package: SynapseCore
         product: SynapseCore

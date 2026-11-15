@@ -5,8 +5,14 @@ public actor WhisperEngine: TranscriptionEngine {
     private let kit: WhisperKit
 
     public init(folder: URL) async throws {
+        // WhisperKit's hub client defaults tokenizers to ~/Documents/huggingface, which triggers a
+        // Documents-access prompt in the app. Keep them beside the models: <root>/whisperkit/models/openai/...
+        var base = folder
+        while base.pathComponents.count > 1, base.lastPathComponent != "whisperkit" { base.deleteLastPathComponent() }
+        if base.lastPathComponent != "whisperkit" { base = folder }
         kit = try await WhisperKit(WhisperKitConfig(
-            modelFolder: folder.path, verbose: false, logLevel: .error, prewarm: false, load: true, download: false))
+            modelFolder: folder.path, tokenizerFolder: base,
+            verbose: false, logLevel: .error, prewarm: false, load: true, download: false))
     }
 
     public func transcribe(wav: URL, language: String?, task: TaskKind,
@@ -49,6 +55,7 @@ public actor WhisperEngine: TranscriptionEngine {
 
     public func detectLanguage(wav: URL) async throws -> (code: String, confidence: Double) {
         let r = try await kit.detectLanguage(audioPath: wav.path)
-        return (r.language, Double(r.langProbs[r.language] ?? 0))
+        // langProbs are log-probabilities.
+        return (r.language, exp(Double(r.langProbs[r.language] ?? -.infinity)))
     }
 }

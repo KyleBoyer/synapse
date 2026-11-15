@@ -31,15 +31,14 @@ final class AppState {
         let decoder = AudioDecoder.bundled() ?? AudioDecoder(ffmpegURL: URL(fileURLWithPath: "/usr/bin/false"))
         if AudioDecoder.bundled() == nil { startupError = "Bundled ffmpeg is missing; decoding will fail." }
 
-        weak var weakSelf: AppState?
-        queue = JobQueue(store: store, decoder: decoder, settings: settingsBox) { snap in
-            Task { @MainActor in weakSelf?.upsert(snap) }
-        }
+        let (updates, sink) = AsyncStream.makeStream(of: JobSnapshot.self)
+        queue = JobQueue(store: store, decoder: decoder, settings: settingsBox, onChange: { sink.yield($0) })
         let queue = queue
         server = ServerController(queue: queue, store: store, settings: settingsBox)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
-        weakSelf = self
-
+        Task { [weak self] in
+            for await snap in updates { self?.upsert(snap) }
+        }
         Task { await refreshModels() }
         applySettings(old: nil)
     }

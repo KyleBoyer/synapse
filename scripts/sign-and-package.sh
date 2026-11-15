@@ -55,8 +55,9 @@ fi
 sign "$APP"
 
 codesign --verify --strict --verbose=2 "$APP"
-codesign -dv "$APP/Contents/MacOS/ffmpeg" 2>&1 | grep -q runtime \
-  || { echo "ffmpeg is missing the hardened runtime flag" >&2; exit 1; }
+# Capture first: with pipefail, `grep -q` closing the pipe early makes codesign's SIGPIPE fail the check.
+FFMPEG_SIG="$(codesign -dv "$APP/Contents/MacOS/ffmpeg" 2>&1)"
+[[ "$FFMPEG_SIG" == *runtime* ]] || { echo "ffmpeg is missing the hardened runtime flag" >&2; exit 1; }
 
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
