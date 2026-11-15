@@ -4,6 +4,8 @@ public enum EngineKind: String, Codable, Sendable {
     case whisper, parakeet
     /// MLX chat/vision language models (Qwen3.5); `ModelSpec.variant` is the Hugging Face repo id.
     case mlx
+    /// Image models. Native Swift/MLX: FLUX.2 and Z-Image. Python mflux sidecar: Qwen-Image.
+    case flux2, zimage, mflux
 }
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
@@ -17,15 +19,22 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public let languages: Set<String>?
     public let canTranslate: Bool
     public let canDetectLanguage: Bool
+    public let canEditImages: Bool
+    /// Physical memory below which the model is expected to page heavily (shown as a warning).
+    public let recommendedRAMGB: Int?
 
     public init(id: String, engine: EngineKind, displayName: String, variant: String, approxMB: Int,
-                languages: Set<String>?, canTranslate: Bool, canDetectLanguage: Bool) {
+                languages: Set<String>?, canTranslate: Bool, canDetectLanguage: Bool,
+                canEditImages: Bool = false, recommendedRAMGB: Int? = nil) {
         self.id = id; self.engine = engine; self.displayName = displayName; self.variant = variant
         self.approxMB = approxMB; self.languages = languages
         self.canTranslate = canTranslate; self.canDetectLanguage = canDetectLanguage
+        self.canEditImages = canEditImages; self.recommendedRAMGB = recommendedRAMGB
     }
 
     public var isChat: Bool { engine == .mlx }
+    public var isImage: Bool { engine == .flux2 || engine == .zimage || engine == .mflux }
+    public var isTranscription: Bool { engine == .whisper || engine == .parakeet }
 
     /// Resident-size estimate for memory accounting (quantized weights load at about their on-disk size).
     public var estimatedBytes: Int { approxMB * 1_048_576 }

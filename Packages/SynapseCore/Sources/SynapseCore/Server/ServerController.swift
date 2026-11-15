@@ -2,8 +2,11 @@ import Foundation
 import Hummingbird
 import NIOCore
 
-public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil) -> Router<SynapseContext> {
+public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil,
+                         images: ImageService? = nil) -> Router<SynapseContext> {
     let chat = chat ?? ChatService(store: store)
+    let images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
+    let imageFiles = ImageFileCache()
     let router = Router(context: SynapseContext.self)
     router.add(middleware: ErrorBodyMiddleware())
     router.get("health") { _, _ in
@@ -15,6 +18,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addASRRoutes(to: group, queue: queue, store: store, settings: settings)
         addJobRoutes(to: group, queue: queue, settings: settings)
         addChatRoutes(to: group, chat: chat)
+        addImageRoutes(to: group, images: images, files: imageFiles)
     }
     return router
 }
@@ -39,10 +43,12 @@ public actor ServerController {
     private var task: Task<Void, Never>?
 
     private let chat: ChatService
+    private let images: ImageService
 
-    public init(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil) {
+    public init(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil, images: ImageService? = nil) {
         self.queue = queue; self.store = store; self.box = settings
         self.chat = chat ?? ChatService(store: store)
+        self.images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
     }
 
     /// (Re)starts the server from `settings.current` (port / LAN binding). Honors `serverEnabled`.
@@ -53,7 +59,7 @@ public actor ServerController {
         let host = s.allowLAN ? "0.0.0.0" : "127.0.0.1"
         let port = s.port
         let app = Application(
-            router: buildRouter(queue: queue, store: store, settings: box, chat: chat),
+            router: buildRouter(queue: queue, store: store, settings: box, chat: chat, images: images),
             configuration: .init(address: .hostname(host, port: port)),
             onServerRunning: { [weak self] _ in await self?.set(.running("\(host):\(port)")) })
         task = Task { [weak self] in

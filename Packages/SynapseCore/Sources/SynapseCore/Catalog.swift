@@ -12,6 +12,12 @@ public enum Catalog {
                   languages: nil, canTranslate: false, canDetectLanguage: false)
     }
 
+    private static func image(_ id: String, _ name: String, _ engine: EngineKind, _ repo: String, _ mb: Int,
+                              edit: Bool, ramGB: Int? = nil) -> ModelSpec {
+        ModelSpec(id: id, engine: engine, displayName: name, variant: repo, approxMB: mb, languages: nil,
+                  canTranslate: false, canDetectLanguage: false, canEditImages: edit, recommendedRAMGB: ramGB)
+    }
+
     public static let all: [ModelSpec] = [
         whisper("whisper-tiny", "Whisper Tiny", "tiny", 75),
         whisper("whisper-base", "Whisper Base", "base", 145),
@@ -29,6 +35,13 @@ public enum Catalog {
         qwen("qwen3.5-2b", "Qwen3.5 2B", "mlx-community/Qwen3.5-2B-4bit", 1749),
         qwen("qwen3.5-4b", "Qwen3.5 4B", "mlx-community/Qwen3.5-4B-MLX-4bit", 3061),
         qwen("qwen3.5-9b", "Qwen3.5 9B", "mlx-community/Qwen3.5-9B-MLX-4bit", 5977),
+        image("flux2-klein-4b", "FLUX.2 klein 4B", .flux2, "black-forest-labs/FLUX.2-klein-4B", 16000, edit: true, ramGB: 24),
+        image("flux2-klein-9b", "FLUX.2 klein 9B (gated, non-commercial)", .flux2, "black-forest-labs/FLUX.2-klein-9B", 34600, edit: true, ramGB: 48),
+        image("z-image-turbo", "Z-Image Turbo", .zimage, "mlx-community/Z-Image-Turbo-bf16", 20540, edit: false, ramGB: 32),
+        image("z-image", "Z-Image", .zimage, "mlx-community/Z-Image-bf16", 20540, edit: false, ramGB: 32),
+        image("qwen-image-2.1-q4", "Qwen-Image 2.1 (4-bit, research license)", .mflux, "mlx-community/Qwen-Image-2.1-mflux-q4", 9600, edit: false, ramGB: 16),
+        image("qwen-image-2512-4bit", "Qwen-Image 2512 (4-bit)", .mflux, "mlx-community/Qwen-Image-2512-4bit", 25900, edit: false, ramGB: 32),
+        image("qwen-image-edit-2511-8bit", "Qwen-Image Edit 2511 (8-bit)", .mflux, "mlx-community/qwen-image-edit-2511-8bit", 37500, edit: true, ramGB: 48),
         ModelSpec(id: "parakeet-v2", engine: .parakeet, displayName: "Parakeet v2 (English)", variant: "v2", approxMB: 600,
                   languages: ["en"], canTranslate: false, canDetectLanguage: false),
     ]

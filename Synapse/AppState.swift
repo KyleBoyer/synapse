@@ -16,12 +16,15 @@ final class AppState {
     var jobs: [JobSnapshot] = []
     var serverStatus: ServerController.Status = .stopped
     var startupError: String?
+    var residents: [ResidentInfo] = []
+    var memoryOvercommitted = false
 
     let settingsBox: SettingsBox
     let store: ModelStore
     let models: ModelManager
     let queue: JobQueue
     let chat: ChatService
+    let images: ImageService
     let server: ServerController
     let watcher: FolderWatcher
 
@@ -29,7 +32,7 @@ final class AppState {
         let s = Settings.load()
         settings = s
         settingsBox = SettingsBox(s)
-        store = ModelStore()
+        store = ModelStore(root: s.modelsRoot)
         models = ModelManager.forApp(config: s.modelManagerConfig)
         let decoder = AudioDecoder.bundled() ?? AudioDecoder(ffmpegURL: URL(fileURLWithPath: "/usr/bin/false"))
         if AudioDecoder.bundled() == nil { startupError = "Bundled ffmpeg is missing; decoding will fail." }
@@ -38,6 +41,7 @@ final class AppState {
         queue = JobQueue(store: store, decoder: decoder, settings: settingsBox, models: models, onChange: { sink.yield($0) })
         let queue = queue
         chat = ChatService(store: store, models: models)
+        images = ImageService(store: store, models: models, engineFactory: ImageEngines.real)
         server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
         Task { [weak self] in
@@ -82,8 +86,16 @@ final class AppState {
     private var readySpecs: [ModelSpec] {
         Catalog.all.filter { if case .ready = modelStates[$0.id] { return true }; return false }
     }
-    var downloadedSpecs: [ModelSpec] { readySpecs.filter { !$0.isChat } }
+    var downloadedSpecs: [ModelSpec] { readySpecs.filter(\.isTranscription) }
+    var downloadedImageSpecs: [ModelSpec] { readySpecs.filter(\.isImage) }
     var downloadedChatSpecs: [ModelSpec] { readySpecs.filter { $0.isChat } }
+
+    func refreshResidents() async {
+        residents = await models.residents()
+        memoryOvercommitted = await models.overcommitted
+    }
+    func unloadModel(_ id: String) { Task { await models.unload(id); await refreshResidents() } }
+    func unloadAllIdle() { Task { await models.unloadAllIdle(); await refreshResidents() } }
 
     func refreshModels() async { modelStates = await store.states() }
 

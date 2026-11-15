@@ -26,6 +26,9 @@ struct ModelsView: View {
             Section("Qwen3.5 (chat + vision, MLX)") {
                 ForEach(Catalog.all.filter { $0.engine == .mlx }) { row($0) }
             }
+            Section("Images") {
+                ForEach(Catalog.all.filter(\.isImage)) { row($0) }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Models")
@@ -48,6 +51,9 @@ struct ModelsView: View {
                     }
                 }
                 Text("~\(spec.approxMB) MB · \(languageSummary(spec))").font(.caption).foregroundStyle(.secondary)
+                if let gb = spec.recommendedRAMGB, UInt64(gb) * 1_073_741_824 > ProcessInfo.processInfo.physicalMemory {
+                    Text("Needs ~\(gb) GB RAM; will page heavily on this Mac").font(.caption).foregroundStyle(.orange)
+                }
             }
             Spacer()
             switch state.modelStates[spec.id] ?? .notDownloaded {
@@ -62,6 +68,7 @@ struct ModelsView: View {
                 Button("Delete", systemImage: "trash") { confirmDelete = spec }.labelStyle(.iconOnly).buttonStyle(.borderless)
             case .failed(let msg):
                 Text(msg).font(.caption).foregroundStyle(.red).lineLimit(2).frame(maxWidth: 220)
+                if msg.localizedCaseInsensitiveContains("gated") { SettingsLink { Text("Open Settings") } }
                 Button("Retry") { state.download(spec.id) }
             }
         }
@@ -69,6 +76,7 @@ struct ModelsView: View {
 
     private func languageSummary(_ spec: ModelSpec) -> String {
         if spec.isChat { return "Chat + images" }
+        if spec.isImage { return spec.canEditImages ? "Text to image + editing" : "Text to image" }
         guard let l = spec.languages else { return "99 languages" }
         return l == ["en"] ? "English" : "\(l.count) languages"
     }

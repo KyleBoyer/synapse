@@ -30,6 +30,38 @@ struct SettingsView: View {
                 Stepper(String(format: "Max cue duration: %.0f s", state.settings.cue.maxDuration),
                         value: $state.settings.cue.maxDuration, in: 2...15, step: 1)
             }
+            Section("Memory") {
+                let ramGB = Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824)
+                Toggle("Default (75%)", isOn: Binding(
+                    get: { state.settings.memoryBudgetGB == nil },
+                    set: { state.settings.memoryBudgetGB = $0 ? nil : Double(ramGB * 3 / 4) }))
+                if let gb = state.settings.memoryBudgetGB {
+                    Stepper("Model memory budget: \(Int(gb)) GB",
+                            value: Binding(get: { Int(gb) }, set: { state.settings.memoryBudgetGB = Double($0) }),
+                            in: 4...max(4, ramGB), step: 1)
+                }
+                Stepper(state.settings.idleUnloadMinutes == 0 ? "Unload idle models: never" : "Unload idle models after \(state.settings.idleUnloadMinutes) min",
+                        value: Binding(get: { state.settings.idleUnloadMinutes },
+                                       set: { state.settings.idleUnloadMinutes = $0 < 5 ? 0 : min($0, 120) }),
+                        in: 4...120, step: 1)
+            }
+            Section("Storage") {
+                LabeledContent("Models folder", value: state.settings.modelsRoot.path)
+                HStack {
+                    Button("Choose…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+                        if panel.runModal() == .OK, let url = panel.url { state.settings.modelsFolder = url.path }
+                    }
+                    Button("Use Default") { state.settings.modelsFolder = nil }
+                        .disabled(state.settings.modelsFolder == nil)
+                }
+                Text("Restart Synapse to use the new folder; existing models are not moved")
+                    .font(.caption).foregroundStyle(.secondary)
+                SecureField("Hugging Face token (for gated models)", text: Binding(
+                    get: { state.settings.hfToken ?? "" },
+                    set: { state.settings.hfToken = $0.isEmpty ? nil : $0 }))
+            }
             Section("About") {
                 Text("Synapse \(Synapse.version)")
                 if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") {

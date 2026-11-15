@@ -369,7 +369,7 @@ private func resolveChat(_ chat: ChatService, _ model: String?) async throws -> 
     }
 }
 
-private func decodeJSON<T: Decodable>(_ type: T.Type, _ req: Request, _ ctx: SynapseContext) async throws -> T {
+func decodeJSON<T: Decodable>(_ type: T.Type, _ req: Request, _ ctx: SynapseContext) async throws -> T {
     let buffer = try await req.body.collect(upTo: ctx.maxUploadSize)
     do { return try JSONDecoder().decode(T.self, from: Data(buffer: buffer)) } catch {
         throw HTTPError(.badRequest, message: "Invalid JSON body: \(error.localizedDescription)")
@@ -380,7 +380,7 @@ typealias SSEWrite = @Sendable (_ event: String?, _ payload: any Encodable & Sen
 
 /// Server-sent events. The producer runs in its own task and hands frames over a stream; if the client
 /// disconnects, the write fails and the producer (and with it generation) is cancelled.
-private func sse(_ produce: @escaping @Sendable (SSEWrite) async throws -> Void) -> Response {
+func sse(_ produce: @escaping @Sendable (SSEWrite) async throws -> Void) -> Response {
     let body = ResponseBody { writer in
         let (frames, sink) = AsyncStream.makeStream(of: String.self)
         let producer = Task {

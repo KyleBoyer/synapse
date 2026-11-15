@@ -30,6 +30,10 @@ public struct Settings: Codable, Sendable, Equatable {
     public var memoryBudgetGB: Double?
     /// Idle models are unloaded after this many minutes; 0 disables.
     public var idleUnloadMinutes: Int = 15
+    /// nil = ~/Library/Application Support/Synapse/Models. Takes effect after restart.
+    public var modelsFolder: String?
+    /// Hugging Face access token for gated models (e.g. FLUX.2 klein 9B).
+    public var hfToken: String?
 
     public init() {}
 
@@ -56,6 +60,12 @@ public struct Settings: Codable, Sendable, Equatable {
         cue = try c.decodeIfPresent(CueOptions.self, forKey: .cue) ?? d.cue
         memoryBudgetGB = try c.decodeIfPresent(Double.self, forKey: .memoryBudgetGB)
         idleUnloadMinutes = try c.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? d.idleUnloadMinutes
+        modelsFolder = try c.decodeIfPresent(String.self, forKey: .modelsFolder)
+        hfToken = try c.decodeIfPresent(String.self, forKey: .hfToken)
+    }
+
+    public var modelsRoot: URL {
+        modelsFolder.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? ModelStore.defaultRoot
     }
 
     /// Roots that path-based API jobs may touch.

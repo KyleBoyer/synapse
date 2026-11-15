@@ -5,22 +5,28 @@ import Foundation
 public enum HFDownloader {
     struct Entry: Decodable { let type: String; let path: String; let size: Int64? }
 
-    /// Files an MLX model needs: config, tokenizer, chat template, processor configs, weights.
-    static func wanted(_ path: String) -> Bool {
-        guard !path.contains("/") else { return false }
-        return path.hasSuffix(".json") || path.hasSuffix(".safetensors") || path.hasSuffix(".jinja")
-            || path.hasSuffix(".txt") || path.hasSuffix(".model") || path.hasSuffix(".tiktoken")
+    /// Files a model needs: configs, tokenizers, chat templates and weights, in any subfolder
+    /// (diffusion repos keep transformer/, text_encoder/, vae/ separately). `exclude` drops exact paths
+    /// or folder prefixes ending in "/".
+    static func wanted(_ path: String, exclude: [String] = []) -> Bool {
+        if exclude.contains(where: { $0.hasSuffix("/") ? path.hasPrefix($0) : path == $0 }) { return false }
+        let name = path.split(separator: "/").last.map(String.init) ?? path
+        guard !name.hasPrefix(".") else { return false }
+        return name.hasSuffix(".json") || name.hasSuffix(".safetensors") || name.hasSuffix(".jinja")
+            || name.hasSuffix(".txt") || name.hasSuffix(".model") || name.hasSuffix(".tiktoken")
     }
 
     /// Downloads `repo` at `main` into `dir`. Files are written to `<name>.partial` then renamed,
     /// and existing complete files are skipped, so a retry resumes at file granularity.
-    public static func download(repo: String, to dir: URL, session: URLSession = .shared,
+    public static func download(repo: String, to dir: URL, exclude: [String] = [], token: String? = nil,
+                                session: URLSession = .shared,
                                 progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         let base = URL(string: "https://huggingface.co")!
-        let listURL = base.appending(path: "api/models/\(repo)/tree/main")
-        let (data, response) = try await session.data(from: listURL)
+        var listURL = base.appending(path: "api/models/\(repo)/tree/main")
+        listURL.append(queryItems: [URLQueryItem(name: "recursive", value: "true")])
+        let (data, response) = try await session.data(for: authorized(listURL, token))
         try check(response, listURL)
-        let files = try JSONDecoder().decode([Entry].self, from: data).filter { $0.type == "file" && wanted($0.path) }
+        let files = try JSONDecoder().decode([Entry].self, from: data).filter { $0.type == "file" && wanted($0.path, exclude: exclude) }
         guard files.contains(where: { $0.path == "config.json" }) else {
             throw URLError(.cannotParseResponse, userInfo: [NSLocalizedDescriptionKey: "\(repo) has no config.json"])
         }
@@ -30,12 +36,13 @@ public enum HFDownloader {
         for f in files {
             try Task.checkCancellation()
             let dst = dir.appending(path: f.path)
+            try FileManager.default.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let size = f.size, (try? dst.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) == size {
                 done += size; progress(Double(done) / Double(total)); continue
             }
             let src = base.appending(path: "\(repo)/resolve/main/\(f.path)")
             let before = done
-            let (tmp, resp) = try await session.download(from: src, delegate: ProgressDelegate { written in
+            let (tmp, resp) = try await session.download(for: authorized(src, token), delegate: ProgressDelegate { written in
                 progress(Double(before + written) / Double(total))
             })
             try check(resp, src)
@@ -49,7 +56,17 @@ public enum HFDownloader {
         return dir
     }
 
+    private static func authorized(_ url: URL, _ token: String?) -> URLRequest {
+        var r = URLRequest(url: url)
+        if let token, !token.isEmpty { r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        return r
+    }
+
     private static func check(_ response: URLResponse, _ url: URL) throws {
+        if let http = response as? HTTPURLResponse, [401, 403].contains(http.statusCode) {
+            throw URLError(.userAuthenticationRequired, userInfo: [NSLocalizedDescriptionKey:
+                "\(url.host() ?? "") refused access (HTTP \(http.statusCode)). This model is gated: accept its license on huggingface.co and add a Hugging Face token in Settings."])
+        }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) for \(url.absoluteString)"])
         }
