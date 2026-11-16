@@ -12,7 +12,9 @@ final class APIServerTool: XCTestCase {
         let root = env["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
         let store = ModelStore(root: root)
         let models = ModelManager()
-        let settings = SettingsBox(Settings())
+        var initial = Settings()
+        initial.voomCheckout = env["SYNAPSE_VOOM_CHECKOUT"]
+        let settings = SettingsBox(initial)
         let queue = JobQueue(store: store, decoder: AudioDecoder(ffmpegURL: try TestSupport.ffmpeg()), settings: settings, models: models)
         let chat = ChatService(store: store, models: models)
         let factory: ImageService.EngineFactory = env["SYNAPSE_FAKE_IMAGES"] == "1" ? { @Sendable _, _ in FakeImageEngine() } : ImageEngines.real

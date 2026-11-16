@@ -417,7 +417,7 @@ func proxyToVOOM(_ raw: Data, path: String, chat: ChatService, settings: Setting
     guard let checkout = settings.current.voomCheckout, !checkout.isEmpty else {
         throw HTTPError(.badRequest, message: "vOOM models need a vOOM checkout path in Settings.")
     }
-    let runtime = VOOMRuntime.shared(checkout: checkout, models: chat.models)
+    let runtime = VOOMRuntime.shared(checkout: checkout, modelsRoot: chat.modelsRoot, models: chat.models)
     json["model"] = String(model.dropFirst(VOOMRuntime.modelPrefix.count))
     var request = URLRequest(url: await runtime.baseURL.appending(path: path), timeoutInterval: 3600)
     request.httpMethod = "POST"

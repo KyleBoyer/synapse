@@ -97,6 +97,22 @@ m = c.messages.create(model="qwen3.5-0.8b", max_tokens=256, messages=[{"role": "
 print(m.content[0].text)
 ```
 
+### Images
+
+| Route | Notes |
+|---|---|
+| `POST /v1/images/generations` | OpenAI Images: `prompt`, `size`, `n`, `stream` (partial-image SSE). Models: `flux2-klein-4b`, `z-image-turbo`, `qwen-image-2.1-q4`. |
+| `POST /v1/images/edits` | multipart `image` + `prompt` (FLUX.2 klein). |
+| `POST /v1/responses` with `tools: [{"type": "image_generation"}]` | the chat model writes the prompt and the image model draws it. |
+
+### Realtime and duplex speech
+
+`GET /v1/realtime?model=<id>` (WebSocket, OpenAI Realtime events). Add `&intent=transcription` for live transcription only. The duplex models talk back in one model: `personaplex-7b` and `voicechat-11b` for voice calls, `hibiki-zero-3b` for live French-to-English speech translation. The app's **Live** pane uses the same sessions with the microphone.
+
+### vOOM (models larger than memory)
+
+Set **Settings → vOOM checkout** to a vOOM checkout with its `.venv`. Synapse then lists `voom:<model>` ids and starts the vOOM server on demand. vOOM pages weights from the SSD, so a model larger than free memory still runs, only slower. It serves chat (`/v1/chat/completions`, `/v1/responses`) for models in its own `models/` folder, and `/v1/images/generations` for Z-Image Turbo from Synapse's models folder (`voom:Z-Image-Turbo-bf16`). Set `VMODEL_IMAGE_WEIGHT_BUDGET_MB` in Synapse's environment to cap the image weights kept resident (default 6000).
+
 ## Bazarr setup
 
 In Bazarr, add the Whisper provider and set its endpoint to:

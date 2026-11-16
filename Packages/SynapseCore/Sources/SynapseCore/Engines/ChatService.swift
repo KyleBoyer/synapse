@@ -91,6 +91,7 @@ public enum ChatError: Error, LocalizedError {
 public actor ChatService {
     private let store: ModelStore
     let models: ModelManager
+    nonisolated var modelsRoot: URL { store.root }
     static let defaultMaxTokens = 4096
 
     public init(store: ModelStore, models: ModelManager = ModelManager()) {

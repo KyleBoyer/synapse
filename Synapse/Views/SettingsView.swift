@@ -62,6 +62,20 @@ struct SettingsView: View {
                     get: { state.settings.hfToken ?? "" },
                     set: { state.settings.hfToken = $0.isEmpty ? nil : $0 }))
             }
+            Section("vOOM (models larger than memory)") {
+                LabeledContent("vOOM checkout", value: state.settings.voomCheckout ?? "Not set")
+                HStack {
+                    Button("Choose…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = true; panel.canChooseFiles = false
+                        if panel.runModal() == .OK, let url = panel.url { state.settings.voomCheckout = url.path }
+                    }
+                    Button("Clear") { state.settings.voomCheckout = nil }
+                        .disabled(state.settings.voomCheckout == nil)
+                }
+                Text("Adds voom:<model> ids, served by vOOM's paging runtime from the SSD")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("About") {
                 Text("Synapse \(Synapse.version)")
                 if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") {

@@ -12,39 +12,59 @@ public actor VOOMRuntime {
 
     public let checkout: URL
     public let port: Int
+    /// Synapse's models folder; vOOM scans it for image models it can page.
+    let modelsRoot: URL?
     private let models: ModelManager
     nonisolated(unsafe) private static var instances: [String: VOOMRuntime] = [:]
     private static let lock = NSLock()
 
-    init(checkout: URL, port: Int, models: ModelManager) {
-        self.checkout = checkout; self.port = port; self.models = models
+    init(checkout: URL, port: Int, modelsRoot: URL?, models: ModelManager) {
+        self.checkout = checkout; self.port = port; self.modelsRoot = modelsRoot; self.models = models
     }
 
-    /// One runtime per checkout path, shared by all requests.
-    public static func shared(checkout: String, port: Int = 8077, models: ModelManager) -> VOOMRuntime {
+    /// One runtime per checkout and models folder, shared by all requests.
+    public static func shared(checkout: String, port: Int = 8077, modelsRoot: URL? = nil, models: ModelManager) -> VOOMRuntime {
         lock.withLock {
-            if let r = instances[checkout] { return r }
-            let r = VOOMRuntime(checkout: URL(fileURLWithPath: checkout, isDirectory: true), port: port, models: models)
-            instances[checkout] = r
+            let key = checkout + "|" + (modelsRoot?.path ?? "")
+            if let r = instances[key] { return r }
+            let r = VOOMRuntime(checkout: URL(fileURLWithPath: checkout, isDirectory: true), port: port,
+                                modelsRoot: modelsRoot, models: models)
+            instances[key] = r
             return r
         }
     }
 
     public var baseURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
 
-    /// Model directories vOOM can serve (its `models/` folder), as `voom:<name>` ids.
-    public static func modelIDs(checkout: String) -> [String] {
+    /// Diffusers pipeline classes vOOM's paged image runtime implements (runtime/image_gen.py PIPELINES).
+    static let imagePipelines: Set<String> = ["ZImagePipeline"]
+
+    /// Models vOOM can serve, as `voom:<name>` ids: its own `models/` folder, plus image models in Synapse's
+    /// models folder (`mlx/<org>/<model>`) whose pipeline vOOM pages.
+    public static func modelIDs(checkout: String, modelsRoot: URL? = nil) -> [String] {
+        let fm = FileManager.default
         let dir = URL(fileURLWithPath: checkout, isDirectory: true).appending(path: "models", directoryHint: .isDirectory)
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        return names.filter { !$0.hasPrefix(".") && FileManager.default.fileExists(atPath: dir.appending(path: "\($0)/config.json").path) }
-            .sorted().map { Self.modelPrefix + $0 }
+        let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        var ids = names.filter { !$0.hasPrefix(".") && fm.fileExists(atPath: dir.appending(path: "\($0)/config.json").path) }
+        if let mlx = modelsRoot?.appending(path: "mlx", directoryHint: .isDirectory) {
+            for org in (try? fm.contentsOfDirectory(at: mlx, includingPropertiesForKeys: nil)) ?? [] {
+                for model in (try? fm.contentsOfDirectory(at: org, includingPropertiesForKeys: nil)) ?? [] {
+                    guard let data = try? Data(contentsOf: model.appending(path: "model_index.json")),
+                          let index = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                          let cls = index["_class_name"] as? String, imagePipelines.contains(cls) else { continue }
+                    ids.append(model.lastPathComponent)
+                }
+            }
+        }
+        return Set(ids).sorted().map { Self.modelPrefix + $0 }
     }
 
     /// Ensures the server is up and returns a lease that keeps it resident for the request.
     public func lease() async throws -> ModelLease<VOOMProcess> {
-        let checkout = checkout, port = port, base = baseURL
+        let checkout = checkout, port = port, base = baseURL, modelsRoot = modelsRoot
         return try await models.lease(Self.residentID, as: VOOMProcess.self, estimatedBytes: Self.estimatedBytes) {
-            let process = try VOOMProcess.launch(checkout: checkout, port: port)
+            let process = try VOOMProcess.launch(checkout: checkout, port: port,
+                                                 imageModelDirs: modelsRoot.map { $0.appending(path: "mlx").path })
             do { try await process.waitUntilReady(base: base) } catch { process.terminate(); throw error }
             return (process, unload: { process.terminate() })
         }
@@ -58,7 +78,7 @@ public final class VOOMProcess: @unchecked Sendable {
 
     private init(process: Process, log: FileHandle?) { self.process = process; self.log = log }
 
-    static func launch(checkout: URL, port: Int) throws -> VOOMProcess {
+    static func launch(checkout: URL, port: Int, imageModelDirs: String?) throws -> VOOMProcess {
         let python = checkout.appending(path: ".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             throw EngineError.unsupported("vOOM checkout at \(checkout.path) has no .venv/bin/python")
@@ -70,6 +90,9 @@ public final class VOOMProcess: @unchecked Sendable {
         p.executableURL = python
         p.arguments = ["-m", "runtime.server", "--port", String(port)]
         p.currentDirectoryURL = checkout
+        if let imageModelDirs {
+            p.environment = ProcessInfo.processInfo.environment.merging(["VMODEL_IMAGE_MODEL_DIRS": imageModelDirs]) { $1 }
+        }
         let logURL = FileManager.default.temporaryDirectory.appending(path: "synapse-voom-\(port).log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let log = try? FileHandle(forWritingTo: logURL)
