@@ -111,7 +111,7 @@
       "subtitle": {
         "displayName": "Subtitle",
         "swiftUI": "Font.subtitle = .system(.title3, weight: .medium)",
-        "purpose": "Model output; user messages use .title3 regular in secondary ink."
+        "purpose": "Transcript segments and live captions. Chat replies render Markdown (MarkdownView) at .title3 regular so bold reads as emphasis; user messages use .title3 regular in secondary ink."
       },
       "headline": {
         "displayName": "Headline",
