@@ -108,23 +108,8 @@ public actor ChatService {
         guard !messages.isEmpty else { throw ChatError.emptyConversation }
         let lease = try await containerLease(for: spec)
         let container = lease.value
-        let chat: [Chat.Message] = try messages.map { m in
-            let images = try m.images.map { data -> UserInput.Image in
-                guard let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else { throw ChatError.badImage }
-                return .ciImage(ci)
-            }
-            switch m.role {
-            case .system: return .system(m.text, images: images)
-            case .user: return .user(m.text, images: images)
-            case .assistant: return .assistant(m.text, images: images)
-            }
-        }
-        var processing = UserInput.Processing()
-        // Cap image tokens: phone photos otherwise become thousands of tokens on small models.
-        processing.maxPixels = 1024 * 1024
-        let toolSpecs = options.tools.isEmpty ? nil : options.tools.map(\.spec)
-        let input = UserInput(chat: chat, processing: processing, tools: toolSpecs,
-                              additionalContext: ["enable_thinking": options.enableThinking])
+        let input = try Self.userInput(messages, options)
+        let toolSpecs = input.tools
         let maxTokens = options.maxTokens ?? Self.defaultMaxTokens
         let params = GenerateParameters(maxTokens: maxTokens, temperature: options.temperature ?? 0.7,
                                         topP: options.topP ?? 0.8)
@@ -187,6 +172,36 @@ public actor ChatService {
             }
         }
         return ChatResult(modelID: spec.id, text: text, toolCalls: calls, finishReason: finish, usage: usage)
+    }
+
+    /// Prompt tokens for `messages` after the chat template (and image tokens), without generating.
+    public func countTokens(model spec: ModelSpec, messages: [ChatMessage], options: ChatOptions) async throws -> Int {
+        guard !messages.isEmpty else { throw ChatError.emptyConversation }
+        let lease = try await containerLease(for: spec)
+        defer { lease.release() }
+        let container = lease.value
+        return try await GPUGate.shared.run {
+            try await container.prepare(input: try Self.userInput(messages, options)).text.tokens.size
+        }
+    }
+
+    private static func userInput(_ messages: [ChatMessage], _ options: ChatOptions) throws -> UserInput {
+        let chat: [Chat.Message] = try messages.map { m in
+            let images = try m.images.map { data -> UserInput.Image in
+                guard let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else { throw ChatError.badImage }
+                return .ciImage(ci)
+            }
+            switch m.role {
+            case .system: return .system(m.text, images: images)
+            case .user: return .user(m.text, images: images)
+            case .assistant: return .assistant(m.text, images: images)
+            }
+        }
+        var processing = UserInput.Processing()
+        // Cap image tokens: phone photos otherwise become thousands of tokens on small models.
+        processing.maxPixels = 1024 * 1024
+        return UserInput(chat: chat, processing: processing, tools: options.tools.isEmpty ? nil : options.tools.map(\.spec),
+                              additionalContext: ["enable_thinking": options.enableThinking])
     }
 
     private func containerLease(for spec: ModelSpec) async throws -> ModelLease<ModelContainer> {

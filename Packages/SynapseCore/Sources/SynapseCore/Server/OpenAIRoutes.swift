@@ -33,8 +33,19 @@ func runSync(queue: JobQueue, store: ModelStore, settings: SettingsBox, input: A
     }
 }
 
-struct ModelItem: Encodable { var id: String; var object = "model"; var owned_by = "synapse" }
-struct ModelList: Encodable { var object = "list"; var data: [ModelItem] }
+/// Carries the fields of both OpenAI's and Anthropic's model objects.
+struct ModelItem: Encodable {
+    var id: String
+    var object = "model", owned_by = "synapse", created = 0
+    var type = "model", created_at = "1970-01-01T00:00:00Z", lifecycle = "active"
+    var display_name: String
+}
+struct ModelList: Encodable {
+    var object = "list"
+    var data: [ModelItem]
+    var has_more = false
+    var first_id: String?, last_id: String?
+}
 
 func nonEmpty(_ s: String?) -> String? { (s?.isEmpty ?? true) ? nil : s }
 
@@ -42,7 +53,8 @@ func addOpenAIRoutes(to g: RouterGroup<SynapseContext>, queue: JobQueue, store: 
     g.get("v1/models") { _, _ in
         var ids = await store.downloaded.filter { Catalog.spec($0) != nil }.sorted()
         if let checkout = settings.current.voomCheckout, !checkout.isEmpty { ids += VOOMRuntime.modelIDs(checkout: checkout) }
-        return json(ModelList(data: ids.map { ModelItem(id: $0) }))
+        return json(ModelList(data: ids.map { ModelItem(id: $0, display_name: Catalog.spec($0)?.displayName ?? $0) },
+                             first_id: ids.first, last_id: ids.last))
     }
     for (path, task) in [("v1/audio/transcriptions", TaskKind.transcribe), ("v1/audio/translations", .translate)] {
         g.post(RouterPath(path)) { req, ctx in

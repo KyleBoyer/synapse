@@ -155,6 +155,8 @@ final class RoutesTests: XCTestCase {
             try await c.execute(uri: "/k/\(key)/v1/models", method: .get) { XCTAssertEqual($0.status, .ok) }
             try await c.execute(uri: "/k/wrong/v1/models", method: .get) { XCTAssertEqual($0.status, .unauthorized) }
             try await c.execute(uri: "/v1/models", method: .get, headers: [.authorization: "Bearer wrong"]) { XCTAssertEqual($0.status, .unauthorized) }
+            try await c.execute(uri: "/v1/models", method: .get, headers: [HTTPField.Name("x-api-key")!: key]) { XCTAssertEqual($0.status, .ok) }
+            try await c.execute(uri: "/v1/models", method: .get, headers: [HTTPField.Name("x-api-key")!: "wrong"]) { XCTAssertEqual($0.status, .unauthorized) }
         }
     }
 }

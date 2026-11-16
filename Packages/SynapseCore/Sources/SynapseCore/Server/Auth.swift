@@ -1,7 +1,9 @@
 import Foundation
 import Hummingbird
+import HTTPTypes
 
-/// Loopback-only servers need no key. With LAN on, accepts `Authorization: Bearer <key>` or a `/k/<key>` path prefix.
+/// Loopback-only servers need no key. With LAN on, accepts `Authorization: Bearer <key>`, `x-api-key: <key>` (Anthropic SDKs)
+/// or a `/k/<key>` path prefix.
 struct APIKeyMiddleware: RouterMiddleware {
     let settings: SettingsBox
 
@@ -12,6 +14,7 @@ struct APIKeyMiddleware: RouterMiddleware {
         if supplied == nil, let h = request.headers[.authorization], h.hasPrefix("Bearer ") {
             supplied = String(h.dropFirst(7))
         }
+        if supplied == nil { supplied = request.headers[HTTPField.Name("x-api-key")!] }
         guard let supplied, Self.constantTimeEqual(supplied, s.apiKey) else {
             return apiError(.unauthorized, "Invalid or missing API key.")
         }
@@ -27,7 +30,7 @@ struct APIKeyMiddleware: RouterMiddleware {
     }
 }
 
-/// Turns every thrown error into an OpenAI-style JSON body.
+/// Turns every thrown error into a JSON body both OpenAI and Anthropic clients parse.
 struct ErrorBodyMiddleware: RouterMiddleware {
     func handle(_ request: Request, context: SynapseContext, next: (Request, SynapseContext) async throws -> Response) async throws -> Response {
         do { return try await next(request, context) }
@@ -39,7 +42,8 @@ struct ErrorBodyMiddleware: RouterMiddleware {
 }
 
 func apiError(_ status: HTTPResponse.Status, _ message: String) -> Response {
-    json(["error": ["message": message, "type": "invalid_request_error"]], status: status)
+    json(AnyEncodableDict(["type": "error", "error": ["message": message, "type": status.code >= 500 ? "api_error" : "invalid_request_error"]]),
+         status: status)
 }
 
 func json(_ value: some Encodable, status: HTTPResponse.Status = .ok) -> Response {

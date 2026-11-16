@@ -389,7 +389,7 @@ private func thinking(_ effort: String?) -> Bool {
     return !["none", "minimal"].contains(effort)
 }
 
-private func resolveChat(_ chat: ChatService, _ model: String?) async throws -> ModelSpec {
+func resolveChat(_ chat: ChatService, _ model: String?) async throws -> ModelSpec {
     do { return try await chat.resolve(model) } catch let e as ResolveError {
         throw HTTPError(e == .noChatModel ? .serviceUnavailable : .badRequest, message: e.localizedDescription)
     }

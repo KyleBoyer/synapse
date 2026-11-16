@@ -92,6 +92,8 @@ struct ServerView: View {
             "curl\(auth) \(base)/v1/audio/transcriptions -F file=@movie.mkv -F response_format=srt",
             "curl\(auth) \(base)/v1/jobs -H 'content-type: application/json' -d '{\"path\":\"/Volumes/Media/movie.mkv\"}'",
             "curl\(auth) \(base)/v1/models",
+            "curl\(auth) \(base)/v1/chat/completions -H 'content-type: application/json' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}'",
+            "curl\(state.settings.allowLAN ? " -H 'x-api-key: \(state.settings.apiKey)'" : "") \(base)/v1/messages -H 'content-type: application/json' -d '{\"model\":\"qwen3.5-0.8b\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}'",
         ]
     }
 

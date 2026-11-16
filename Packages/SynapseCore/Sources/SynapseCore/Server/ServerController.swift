@@ -19,7 +19,8 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addASRRoutes(to: group, queue: queue, store: store, settings: settings)
         addJobRoutes(to: group, queue: queue, settings: settings)
         addChatRoutes(to: group, chat: chat, images: images, settings: settings)
-        addImageRoutes(to: group, images: images, files: imageFiles)
+        addAnthropicRoutes(to: group, chat: chat)
+        addImageRoutes(to: group, images: images, files: imageFiles, chat: chat, settings: settings)
     }
     return router
 }

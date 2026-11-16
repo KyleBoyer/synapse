@@ -141,9 +141,12 @@ private func parseMultipart(_ req: Request, _ ctx: SynapseContext) async throws 
     return (fields, files)
 }
 
-func addImageRoutes(to g: RouterGroup<SynapseContext>, images: ImageService, files cache: ImageFileCache) {
+func addImageRoutes(to g: RouterGroup<SynapseContext>, images: ImageService, files cache: ImageFileCache,
+                    chat: ChatService, settings: SettingsBox) {
     g.post("v1/images/generations") { req, ctx in
-        let p = try await decodeJSON(ImageParams.self, req, ctx)
+        let raw = try await rawBody(req, ctx)
+        if let proxied = try await proxyToVOOM(raw, path: "v1/images/generations", chat: chat, settings: settings) { return proxied }
+        let p = try decodeJSON(ImageParams.self, raw)
         return try await runImages(p, images: images, cache: cache, req: req, ctx: ctx, inputs: [], mask: nil, edit: false)
     }
     g.post("v1/images/edits") { req, ctx in
