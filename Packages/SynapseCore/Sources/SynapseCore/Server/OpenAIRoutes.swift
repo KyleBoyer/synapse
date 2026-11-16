@@ -50,13 +50,13 @@ struct ModelList: Encodable {
 func nonEmpty(_ s: String?) -> String? { (s?.isEmpty ?? true) ? nil : s }
 
 func addOpenAIRoutes(to g: RouterGroup<SynapseContext>, queue: JobQueue, store: ModelStore, settings: SettingsBox) {
-    g.get("v1/models") { _, _ in
+    g.get("models") { _, _ in
         var ids = await store.downloaded.filter { Catalog.spec($0) != nil }.sorted()
         if let checkout = settings.current.voomCheckout, !checkout.isEmpty { ids += VOOMRuntime.modelIDs(checkout: checkout, modelsRoot: store.root) }
         return json(ModelList(data: ids.map { ModelItem(id: $0, display_name: Catalog.spec($0)?.displayName ?? $0) },
                              first_id: ids.first, last_id: ids.last))
     }
-    for (path, task) in [("v1/audio/transcriptions", TaskKind.transcribe), ("v1/audio/translations", .translate)] {
+    for (path, task) in [("audio/transcriptions", TaskKind.transcribe), ("audio/translations", .translate)] {
         g.post(RouterPath(path)) { req, ctx in
             let form = try await req.decode(as: TranscriptionForm.self, context: ctx)
             guard let format = OutputFormat(rawValue: nonEmpty(form.response_format) ?? "json") else {

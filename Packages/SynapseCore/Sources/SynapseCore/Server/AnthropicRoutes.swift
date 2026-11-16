@@ -259,12 +259,12 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
         return (spec, messages, options)
     }
 
-    g.post("v1/messages/count_tokens") { req, ctx in
+    g.post("messages/count_tokens") { req, ctx in
         let (spec, messages, options) = try await prepare(try await decodeJSON(MessagesRequest.self, req, ctx))
         return json(["input_tokens": try await chat.countTokens(model: spec, messages: messages, options: options)])
     }
 
-    g.post("v1/messages") { req, ctx in
+    g.post("messages") { req, ctx in
         let body = try await decodeJSON(MessagesRequest.self, req, ctx)
         let (spec, messages, options) = try await prepare(body)
         let id = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()

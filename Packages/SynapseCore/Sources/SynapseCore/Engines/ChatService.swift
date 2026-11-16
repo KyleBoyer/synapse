@@ -1,5 +1,6 @@
 import CoreImage
 import Foundation
+@preconcurrency import MLX
 @preconcurrency import MLXLMCommon
 @preconcurrency import MLXVLM
 @preconcurrency import Tokenizers
@@ -114,18 +115,40 @@ public actor ChatService {
         let maxTokens = options.maxTokens ?? Self.defaultMaxTokens
         let params = GenerateParameters(maxTokens: maxTokens, temperature: options.temperature ?? 0.7,
                                         topP: options.topP ?? 0.8)
+        return try await run(container: container, lease: lease, params: params, tools: toolSpecs,
+                             stripThinking: !options.enableThinking) { try await container.prepare(input: input) }
+    }
+
+    /// Raw text continuation (legacy OpenAI Completions): the prompt is tokenized as-is, with no chat template.
+    public func streamText(model spec: ModelSpec, prompt: String, options: ChatOptions) async throws
+        -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        guard !prompt.isEmpty else { throw ChatError.emptyConversation }
+        let lease = try await containerLease(for: spec)
+        let container = lease.value
+        let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
+                                        temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
+        return try await run(container: container, lease: lease, params: params, tools: nil, stripThinking: false) {
+            let tokens = await container.perform { ctx in ctx.tokenizer.encode(text: prompt) }
+            return LMInput(tokens: MLXArray(tokens.map(Int32.init)))
+        }
+    }
+
+    /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.
+    private func run(container: ModelContainer, lease: ModelLease<ModelContainer>, params: GenerateParameters,
+                     tools: [[String: any Sendable]]?, stripThinking: Bool,
+                     input makeInput: () async throws -> sending LMInput) async throws -> AsyncThrowingStream<ChatEvent, Error> {
         await GPUGate.shared.acquire()
         let releaseGate = GateRelease()
         let generation: AsyncStream<Generation>
         do {
-            let lmInput = try await container.prepare(input: input)
-            generation = try await container.generate(input: lmInput, parameters: params, tools: toolSpecs)
+            let lmInput = try await makeInput()
+            generation = try await container.generate(input: lmInput, parameters: params, tools: tools)
         } catch {
             releaseGate()
             lease.release()
             throw error
         }
-        let stripThinking = !options.enableThinking
 
         return AsyncThrowingStream { continuation in
             let task = Task {

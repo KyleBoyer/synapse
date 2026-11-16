@@ -7,7 +7,7 @@ import NIOCore
 /// `Application(router:, server: .http1WebSocketUpgrade(webSocketRouter:, configuration: realtimeWebSocketConfiguration))`.
 public func buildRealtimeRouter(services: RealtimeServices, settings: SettingsBox) -> Router<BasicWebSocketRequestContext> {
     let router = Router(context: BasicWebSocketRequestContext.self)
-    for path in ["v1/realtime", "k/:key/v1/realtime"] {
+    for path in ["v1/realtime", "realtime", "k/:key/v1/realtime", "k/:key/realtime"] {
         router.ws(RouterPath(path), shouldUpgrade: { request, context in
             let s = settings.current
             if s.allowLAN {

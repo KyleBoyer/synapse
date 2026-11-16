@@ -14,6 +14,8 @@ final class APIServerTool: XCTestCase {
         let models = ModelManager()
         var initial = Settings()
         initial.voomCheckout = env["SYNAPSE_VOOM_CHECKOUT"]
+        // SYNAPSE_API_TEST_KEY turns on key auth (as LAN mode does) while still binding loopback.
+        if let key = env["SYNAPSE_API_TEST_KEY"] { initial.allowLAN = true; initial.apiKey = key }
         let settings = SettingsBox(initial)
         let queue = JobQueue(store: store, decoder: AudioDecoder(ffmpegURL: try TestSupport.ffmpeg()), settings: settings, models: models)
         let chat = ChatService(store: store, models: models)

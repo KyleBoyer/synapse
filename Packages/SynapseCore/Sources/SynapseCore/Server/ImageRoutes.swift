@@ -143,20 +143,20 @@ private func parseMultipart(_ req: Request, _ ctx: SynapseContext) async throws 
 
 func addImageRoutes(to g: RouterGroup<SynapseContext>, images: ImageService, files cache: ImageFileCache,
                     chat: ChatService, settings: SettingsBox) {
-    g.post("v1/images/generations") { req, ctx in
+    g.post("images/generations") { req, ctx in
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/images/generations", chat: chat, settings: settings) { return proxied }
         let p = try decodeJSON(ImageParams.self, raw)
         return try await runImages(p, images: images, cache: cache, req: req, ctx: ctx, inputs: [], mask: nil, edit: false)
     }
-    g.post("v1/images/edits") { req, ctx in
+    g.post("images/edits") { req, ctx in
         let (fields, files) = try await parseMultipart(req, ctx)
         let inputs = files.filter { $0.name != "mask" }.map(\.data)
         guard !inputs.isEmpty else { throw badRequest("image is required.") }
         return try await runImages(ImageParams(form: fields), images: images, cache: cache, req: req, ctx: ctx,
                                    inputs: inputs, mask: files.first { $0.name == "mask" }?.data, edit: true)
     }
-    g.get("v1/images/files/:name") { _, ctx in
+    g.get("images/files/:name") { _, ctx in
         guard let name = ctx.parameters.get("name"), let f = await cache.get(name) else {
             throw HTTPError(.notFound, message: "Image not found or expired.")
         }

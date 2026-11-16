@@ -13,9 +13,15 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
     router.get("health") { _, _ in
         json(["status": "ok", "version": Synapse.version])
     }
-    for group in [router.group(), router.group("k/:key")] {
+    // Every API route answers with and without the /v1 prefix, so a client given only the host works whichever
+    // convention it follows (OpenAI SDKs expect base_url to end in /v1; Anthropic's SDK adds /v1 itself).
+    // `/k/<key>` carries the API key in the path for clients that cannot send headers (Bazarr). `v1/v1` covers a
+    // host/v1 base URL pasted into a client that appends /v1 itself.
+    for prefix in ["v1", "", "v1/v1", "k/:key/v1", "k/:key", "k/:key/v1/v1"] {
+        let group = prefix.isEmpty ? router.group() : router.group(RouterPath(prefix))
         group.add(middleware: APIKeyMiddleware(settings: settings))
         addOpenAIRoutes(to: group, queue: queue, store: store, settings: settings)
+        addCompletionsRoutes(to: group, chat: chat)
         addASRRoutes(to: group, queue: queue, store: store, settings: settings)
         addJobRoutes(to: group, queue: queue, settings: settings)
         addChatRoutes(to: group, chat: chat, images: images, settings: settings)

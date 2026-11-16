@@ -60,11 +60,16 @@ curl -s "localhost:9000/asr?task=transcribe&language=en&output=srt&encode=false"
 curl -s -X POST "localhost:9000/detect-language?encode=false" -F audio_file=@$FIX/en.pcm
 ```
 
+### Connecting a client
+
+Give a client only the host (for example `http://192.168.1.20:9000`) and the API key. Every API route answers with and without the `/v1` prefix (and at `/v1/v1`, for a `host/v1` base URL pasted into a client that adds `/v1` itself), so OpenAI SDKs work with `base_url` set to the host or `host/v1`, and the Anthropic SDK works with the host. The key is accepted as `Authorization: Bearer <key>` (OpenAI clients), `x-api-key: <key>` (Anthropic clients), or a `/k/<key>` path prefix. Each protocol answers in its own shape, streaming (SSE) or not. `scripts/verify-connect.py <host> <key>` checks all of this with the official SDKs.
+
 ### Chat and vision (Qwen3.5)
 
 | Route | Notes |
 |---|---|
-| `POST /v1/chat/completions` | `messages` with string content or parts (`text`, `image_url` with a `data:` or `http(s)` URL); `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stream`, `stream_options.include_usage`. |
+| `POST /v1/chat/completions` | `messages` with string content or parts (`text`, `image_url` with a `data:` or `http(s)` URL); `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stop`, `stream`, `stream_options.include_usage`. |
+| `POST /v1/completions` | OpenAI legacy completions: one `prompt` string continued as raw text (no chat template); `max_tokens` (default 256), `temperature`, `top_p`, `stop`, `echo`, `stream`, `stream_options.include_usage`. |
 | `POST /v1/responses` | `input` as a string or message items with `input_text` / `input_image` parts; `instructions`, `max_output_tokens`, `temperature`, `top_p`, `stream` (typed SSE events through `response.completed`). |
 | `POST /v1/messages` | Anthropic Messages: `system`, `messages` with `text`, `image` (base64 or url), `tool_use` and `tool_result` blocks; `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tools`, `tool_choice`, `thinking`, `stream` (named SSE events `message_start` through `message_stop`). `claude-*` model ids map to the default chat model. |
 | `POST /v1/messages/count_tokens` | same body as `/v1/messages` | `{"input_tokens": n}` |
@@ -87,7 +92,7 @@ r = c.responses.create(model="qwen3.5-0.8b", input=[{"role": "user", "content": 
 print(r.output_text)
 ```
 
-Anthropic Python SDK (the base URL has no `/v1`):
+Anthropic Python SDK (the host is enough; the SDK adds `/v1`):
 
 ```python
 import anthropic

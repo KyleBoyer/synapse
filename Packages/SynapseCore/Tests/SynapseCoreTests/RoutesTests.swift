@@ -157,6 +157,56 @@ final class RoutesTests: XCTestCase {
             try await c.execute(uri: "/v1/models", method: .get, headers: [.authorization: "Bearer wrong"]) { XCTAssertEqual($0.status, .unauthorized) }
             try await c.execute(uri: "/v1/models", method: .get, headers: [HTTPField.Name("x-api-key")!: key]) { XCTAssertEqual($0.status, .ok) }
             try await c.execute(uri: "/v1/models", method: .get, headers: [HTTPField.Name("x-api-key")!: "wrong"]) { XCTAssertEqual($0.status, .unauthorized) }
+            // Bare-host paths (no /v1) take the same keys.
+            try await c.execute(uri: "/models", method: .get) { XCTAssertEqual($0.status, .unauthorized) }
+            try await c.execute(uri: "/models", method: .get, headers: [HTTPField.Name("x-api-key")!: key]) { XCTAssertEqual($0.status, .ok) }
+            try await c.execute(uri: "/k/\(key)/models", method: .get) { XCTAssertEqual($0.status, .ok) }
         }
+    }
+
+    /// A client given only the host reaches every protocol whether or not it adds /v1.
+    func testEveryAPIRouteAnswersWithAndWithoutV1() async throws {
+        let (app, _) = try makeApp()
+        try await app.test(.router) { c in
+            for path in ["/models", "/v1/models"] {
+                try await c.execute(uri: path, method: .get) { XCTAssertEqual($0.status, .ok, path) }
+            }
+            // No chat model is downloaded here, so these reach their handlers and fail model resolution, not routing.
+            for path in ["/chat/completions", "/v1/chat/completions", "/completions", "/v1/completions",
+                         "/responses", "/v1/responses", "/messages", "/v1/messages"] {
+                try await c.execute(uri: path, method: .post, headers: [.contentType: "application/json"],
+                                    body: ByteBuffer(string: #"{"model":"qwen3.5-0.8b","max_tokens":5,"prompt":"hi","input":"hi","messages":[{"role":"user","content":"hi"}]}"#)) {
+                    XCTAssertNotEqual($0.status, .notFound, path)
+                    let o = try JSONSerialization.jsonObject(with: Data(buffer: $0.body)) as? [String: Any]
+                    XCTAssertNotNil((o?["error"] as? [String: Any])?["message"], path)
+                }
+            }
+        }
+    }
+
+    func testCompletionsRejectsUnsupportedShapes() async throws {
+        let (app, _) = try makeApp()
+        try await app.test(.router) { c in
+            for body in [#"{"prompt":["a","b"]}"#, #"{"prompt":""}"#, #"{"prompt":"a","n":2}"#, #"{"prompt":"a","suffix":"z"}"#] {
+                try await c.execute(uri: "/v1/completions", method: .post, headers: [.contentType: "application/json"],
+                                    body: ByteBuffer(string: body)) { XCTAssertEqual($0.status, .badRequest, body) }
+            }
+        }
+    }
+
+    func testStopSequencesCutAcrossChunks() async throws {
+        let (source, feed) = AsyncThrowingStream.makeStream(of: ChatEvent.self)
+        for s in ["1, 2, 3", ", 4, ", "5, 6"] { feed.yield(.delta(s)) }
+        feed.yield(.done(finishReason: "length", usage: ChatUsage(promptTokens: 9, completionTokens: 3)))
+        feed.finish()
+        var text = "", finish = ""
+        for try await e in applyStops(source, ["5"]) {
+            if case .delta(let s) = e { text += s }
+            if case .done(let f, _) = e { finish = f }
+        }
+        XCTAssertEqual(text, "1, 2, 3, 4, ")
+        XCTAssertEqual(finish, "stop")
+        XCTAssertEqual(stopSequences(.string("x")), ["x"])
+        XCTAssertEqual(stopSequences(.array([.string("a"), .string("b")])), ["a", "b"])
     }
 }

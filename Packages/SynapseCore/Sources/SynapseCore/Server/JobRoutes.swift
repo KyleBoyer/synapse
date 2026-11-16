@@ -34,7 +34,7 @@ struct JobDTO: Encodable {
 }
 
 func addJobRoutes(to g: RouterGroup<SynapseContext>, queue: JobQueue, settings: SettingsBox) {
-    g.post("v1/jobs") { req, ctx in
+    g.post("jobs") { req, ctx in
         let body = try await req.decode(as: CreateJob.self, context: ctx)
         guard PathPolicy.isAllowed(body.path, roots: settings.current.allowedRoots) else {
             throw HTTPError(.forbidden, message: "Path is outside the allowed library roots.")
@@ -51,18 +51,18 @@ func addJobRoutes(to g: RouterGroup<SynapseContext>, queue: JobQueue, settings: 
         return json(["id": id.uuidString, "status": status], status: .accepted)
     }
 
-    g.get("v1/jobs") { _, _ in
+    g.get("jobs") { _, _ in
         json(["data": await queue.all().map(JobDTO.init)])
     }
 
-    g.get("v1/jobs/:id") { _, ctx in
+    g.get("jobs/:id") { _, ctx in
         guard let id = ctx.parameters.get("id").flatMap(UUID.init(uuidString:)), let j = await queue.snapshot(id) else {
             throw HTTPError(.notFound, message: "No such job.")
         }
         return json(JobDTO(j))
     }
 
-    g.delete("v1/jobs/:id") { _, ctx in
+    g.delete("jobs/:id") { _, ctx in
         guard let id = ctx.parameters.get("id").flatMap(UUID.init(uuidString:)), await queue.snapshot(id) != nil else {
             throw HTTPError(.notFound, message: "No such job.")
         }

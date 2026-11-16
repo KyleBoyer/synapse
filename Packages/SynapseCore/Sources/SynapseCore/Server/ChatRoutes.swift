@@ -50,6 +50,7 @@ struct ChatCompletionRequest: Decodable {
     var top_p: Float?
     var stream: Bool?
     var stream_options: JSONValue?
+    var stop: JSONValue?
     var reasoning_effort: String?
 }
 
@@ -244,7 +245,7 @@ struct ResponseWire: Encodable {
 // MARK: Routes
 
 func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, settings: SettingsBox) {
-    g.post("v1/chat/completions") { req, ctx in
+    g.post("chat/completions") { req, ctx in
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/chat/completions", chat: chat, settings: settings) { return proxied }
         let body = try decodeJSON(ChatCompletionRequest.self, raw)
@@ -255,15 +256,23 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
 
+        let events = applyStops(try await chat.stream(model: spec, messages: messages, options: options), stopSequences(body.stop))
         guard body.stream == true else {
-            let r = try await chat.complete(model: spec, messages: messages, options: options)
+            var text = "", finish = "stop"
+            var usage = ChatUsage(promptTokens: 0, completionTokens: 0)
+            for try await e in events {
+                switch e {
+                case .delta(let s): text += s
+                case .done(let f, let u): finish = f; usage = u
+                case .toolCall: break
+                }
+            }
             return json(ChatCompletionWire(id: id, created: created, model: spec.id, choices: [
-                .init(message: .init(content: r.text), finish_reason: r.finishReason),
-            ], usage: ChatUsageWire(r.usage)))
+                .init(message: .init(content: text), finish_reason: finish),
+            ], usage: ChatUsageWire(usage)))
         }
 
         let includeUsage = body.stream_options?["include_usage"]?.bool == true
-        let events = try await chat.stream(model: spec, messages: messages, options: options)
         return sse { write in
             func chunk(_ delta: ChatChunkWire.Choice.Delta, finish: String? = nil) -> ChatChunkWire {
                 ChatChunkWire(id: id, created: created, model: spec.id, choices: [.init(delta: delta, finish_reason: finish)])
@@ -286,7 +295,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         }
     }
 
-    g.post("v1/responses") { req, ctx in
+    g.post("responses") { req, ctx in
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/responses", chat: chat, settings: settings) { return proxied }
         let body = try decodeJSON(ResponsesRequest.self, raw)
@@ -483,7 +492,7 @@ func sse(_ produce: @escaping @Sendable (SSEWrite) async throws -> Void) -> Resp
     return Response(status: .ok, headers: [.contentType: "text/event-stream", .cacheControl: "no-cache"], body: body)
 }
 
-private func writeRaw(_ write: SSEWrite, _ raw: String) async throws {
+func writeRaw(_ write: SSEWrite, _ raw: String) async throws {
     try await write("__raw__", raw)
 }
 
