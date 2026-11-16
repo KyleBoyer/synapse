@@ -8,7 +8,7 @@ import NIOCore
 // MARK: Wire types (decoding)
 
 /// A JSON value we only need to inspect loosely (OpenAI content can be a string or an array of parts).
-enum JSONValue: Decodable, Sendable {
+enum JSONValue: Codable, Sendable, Equatable {
     case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
 
     init(from decoder: Decoder) throws {
@@ -19,6 +19,19 @@ enum JSONValue: Decodable, Sendable {
         else if let v = try? c.decode(String.self) { self = .string(v) }
         else if let v = try? c.decode([JSONValue].self) { self = .array(v) }
         else { self = .object(try c.decode([String: JSONValue].self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .string(let v): try c.encode(v)
+        case .number(let v):
+            if v.rounded() == v, abs(v) < 1e15 { try c.encode(Int(v)) } else { try c.encode(v) }
+        case .bool(let v): try c.encode(v)
+        case .object(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
+        case .null: try c.encodeNil()
+        }
     }
 
     var string: String? { if case .string(let s) = self { return s }; return nil }
@@ -49,6 +62,8 @@ struct ResponsesRequest: Decodable {
     var top_p: Float?
     var stream: Bool?
     var reasoning: JSONValue?
+    var tools: [JSONValue]?
+    var tool_choice: JSONValue?
 }
 
 /// A text or image piece of a message, before images are fetched.
@@ -221,16 +236,18 @@ struct ResponseWire: Encodable {
     var temperature: Float?
     var top_p: Float?
     var parallel_tool_calls = false
-    var tool_choice = "none"
-    var tools: [String] = []
+    var tool_choice: JSONValue = .string("none")
+    var tools: [JSONValue] = []
     var text = ["format": ["type": "text"]]
 }
 
 // MARK: Routes
 
-func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
+func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, settings: SettingsBox) {
     g.post("v1/chat/completions") { req, ctx in
-        let body = try await decodeJSON(ChatCompletionRequest.self, req, ctx)
+        let raw = try await rawBody(req, ctx)
+        if let proxied = try await proxyToVOOM(raw, path: "v1/chat/completions", chat: chat, settings: settings) { return proxied }
+        let body = try decodeJSON(ChatCompletionRequest.self, raw)
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.chatMessages(body.messages))
         let options = ChatOptions(maxTokens: body.max_completion_tokens ?? body.max_tokens, temperature: body.temperature,
@@ -256,6 +273,8 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
                 switch event {
                 case .delta(let s):
                     try await write(nil, chunk(.init(content: s)))
+                case .toolCall:
+                    break
                 case .done(let finish, let usage):
                     try await write(nil, chunk(.init(), finish: finish))
                     if includeUsage {
@@ -268,7 +287,12 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
     }
 
     g.post("v1/responses") { req, ctx in
-        let body = try await decodeJSON(ResponsesRequest.self, req, ctx)
+        let raw = try await rawBody(req, ctx)
+        if let proxied = try await proxyToVOOM(raw, path: "v1/responses", chat: chat, settings: settings) { return proxied }
+        let body = try decodeJSON(ResponsesRequest.self, raw)
+        if let tools = body.tools, !tools.isEmpty {
+            return try await respondWithImageTool(body, tools: tools, chat: chat, images: images)
+        }
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.responseMessages(body.input, instructions: body.instructions))
         let effort = body.reasoning?["effort"]?.string
@@ -318,6 +342,8 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
                     text += s
                     try await event("response.output_text.delta", ["item_id": msgID, "output_index": 0, "content_index": 0,
                                                                   "delta": s, "logprobs": [String]()])
+                case .toolCall:
+                    break
                 case .done(let finish, let usage):
                     let final = response(status: "completed", text: text, usage: usage, finish: finish)
                     try await event("response.output_text.done", ["item_id": msgID, "output_index": 0, "content_index": 0,
@@ -370,10 +396,60 @@ private func resolveChat(_ chat: ChatService, _ model: String?) async throws -> 
 }
 
 func decodeJSON<T: Decodable>(_ type: T.Type, _ req: Request, _ ctx: SynapseContext) async throws -> T {
-    let buffer = try await req.body.collect(upTo: ctx.maxUploadSize)
-    do { return try JSONDecoder().decode(T.self, from: Data(buffer: buffer)) } catch {
+    try decodeJSON(type, try await rawBody(req, ctx))
+}
+
+func rawBody(_ req: Request, _ ctx: SynapseContext) async throws -> Data {
+    Data(buffer: try await req.body.collect(upTo: ctx.maxUploadSize))
+}
+
+func decodeJSON<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
+    do { return try JSONDecoder().decode(T.self, from: data) } catch {
         throw HTTPError(.badRequest, message: "Invalid JSON body: \(error.localizedDescription)")
     }
+}
+
+/// Forwards `voom:<model>` requests to the vOOM runtime with the prefix stripped; responses (including SSE)
+/// stream back unchanged. Returns nil for every other model.
+func proxyToVOOM(_ raw: Data, path: String, chat: ChatService, settings: SettingsBox) async throws -> Response? {
+    guard var json = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+          let model = json["model"] as? String, model.hasPrefix(VOOMRuntime.modelPrefix) else { return nil }
+    guard let checkout = settings.current.voomCheckout, !checkout.isEmpty else {
+        throw HTTPError(.badRequest, message: "vOOM models need a vOOM checkout path in Settings.")
+    }
+    let runtime = VOOMRuntime.shared(checkout: checkout, models: chat.models)
+    json["model"] = String(model.dropFirst(VOOMRuntime.modelPrefix.count))
+    var request = URLRequest(url: await runtime.baseURL.appending(path: path), timeoutInterval: 3600)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: json)
+
+    let lease = try await runtime.lease()
+    let bytes: URLSession.AsyncBytes
+    let response: URLResponse
+    do { (bytes, response) = try await URLSession.shared.bytes(for: request) } catch {
+        lease.release()
+        throw HTTPError(.badGateway, message: "vOOM request failed: \(error.localizedDescription)")
+    }
+    let http = response as? HTTPURLResponse
+    let status = HTTPResponse.Status(code: http?.statusCode ?? 502)
+    let contentType = http?.value(forHTTPHeaderField: "Content-Type") ?? "application/json"
+    let body = ResponseBody { writer in
+        defer { lease.release() }
+        var chunk = [UInt8]()
+        chunk.reserveCapacity(4096)
+        for try await byte in bytes {
+            chunk.append(byte)
+            // Flush per line so SSE events reach the client as soon as vOOM emits them.
+            if byte == 0x0A || chunk.count >= 4096 {
+                try await writer.write(ByteBuffer(bytes: chunk))
+                chunk.removeAll(keepingCapacity: true)
+            }
+        }
+        if !chunk.isEmpty { try await writer.write(ByteBuffer(bytes: chunk)) }
+        try await writer.finish(nil)
+    }
+    return Response(status: status, headers: [.contentType: contentType, .cacheControl: "no-cache"], body: body)
 }
 
 typealias SSEWrite = @Sendable (_ event: String?, _ payload: any Encodable & Sendable) async throws -> Void

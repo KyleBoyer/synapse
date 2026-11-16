@@ -1,5 +1,6 @@
 import Foundation
 import Hummingbird
+import HummingbirdWebSocket
 import NIOCore
 
 public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil,
@@ -17,7 +18,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addOpenAIRoutes(to: group, queue: queue, store: store, settings: settings)
         addASRRoutes(to: group, queue: queue, store: store, settings: settings)
         addJobRoutes(to: group, queue: queue, settings: settings)
-        addChatRoutes(to: group, chat: chat)
+        addChatRoutes(to: group, chat: chat, images: images, settings: settings)
         addImageRoutes(to: group, images: images, files: imageFiles)
     }
     return router
@@ -44,10 +45,14 @@ public actor ServerController {
 
     private let chat: ChatService
     private let images: ImageService
+    private let realtime: RealtimeServices
 
-    public init(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil, images: ImageService? = nil) {
+    public init(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil, images: ImageService? = nil,
+                realtime: RealtimeServices? = nil) {
         self.queue = queue; self.store = store; self.box = settings
-        self.chat = chat ?? ChatService(store: store)
+        let chat = chat ?? ChatService(store: store)
+        self.chat = chat
+        self.realtime = realtime ?? .real(store: store, models: ModelManager(), chat: chat)
         self.images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
     }
 
@@ -60,6 +65,8 @@ public actor ServerController {
         let port = s.port
         let app = Application(
             router: buildRouter(queue: queue, store: store, settings: box, chat: chat, images: images),
+            server: .http1WebSocketUpgrade(webSocketRouter: buildRealtimeRouter(services: realtime, settings: box),
+                                           configuration: realtimeWebSocketConfiguration),
             configuration: .init(address: .hostname(host, port: port)),
             onServerRunning: { [weak self] _ in await self?.set(.running("\(host):\(port)")) })
         task = Task { [weak self] in

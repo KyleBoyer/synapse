@@ -22,9 +22,30 @@ public struct ChatOptions: Sendable, Equatable {
     public var topP: Float?
     /// Qwen3.5 thinking mode. Off by default so answers come back directly.
     public var enableThinking: Bool
+    /// Function tools in OpenAI/HF chat-template form: {"type":"function","function":{name,description,parameters}}.
+    public var tools: [ChatTool]
 
-    public init(maxTokens: Int? = nil, temperature: Float? = nil, topP: Float? = nil, enableThinking: Bool = false) {
+    public init(maxTokens: Int? = nil, temperature: Float? = nil, topP: Float? = nil, enableThinking: Bool = false,
+                tools: [ChatTool] = []) {
         self.maxTokens = maxTokens; self.temperature = temperature; self.topP = topP; self.enableThinking = enableThinking
+        self.tools = tools
+    }
+}
+
+/// A function tool offered to the chat model.
+public struct ChatTool: Sendable, Equatable {
+    public var name: String
+    public var description: String
+    /// JSON Schema object for the arguments, as JSON text.
+    public var parametersJSON: String
+
+    public init(name: String, description: String, parametersJSON: String) {
+        self.name = name; self.description = description; self.parametersJSON = parametersJSON
+    }
+
+    var spec: [String: any Sendable] {
+        let params = (try? JSONSerialization.jsonObject(with: Data(parametersJSON.utf8))) as? [String: any Sendable] ?? [:]
+        return ["type": "function", "function": ["name": name, "description": description, "parameters": params] as [String: any Sendable]]
     }
 }
 
@@ -36,13 +57,21 @@ public struct ChatUsage: Sendable, Equatable {
 
 public enum ChatEvent: Sendable, Equatable {
     case delta(String)
+    /// The model called a tool; `arguments` is a JSON object string.
+    case toolCall(name: String, arguments: String)
     /// finishReason is OpenAI's: "stop" or "length".
     case done(finishReason: String, usage: ChatUsage)
+}
+
+public struct ChatToolCall: Sendable, Equatable {
+    public var name: String
+    public var arguments: String
 }
 
 public struct ChatResult: Sendable, Equatable {
     public var modelID: String
     public var text: String
+    public var toolCalls: [ChatToolCall] = []
     public var finishReason: String
     public var usage: ChatUsage
 }
@@ -61,7 +90,7 @@ public enum ChatError: Error, LocalizedError {
 /// held for the whole generation so a model is never unloaded mid-reply.
 public actor ChatService {
     private let store: ModelStore
-    private let models: ModelManager
+    let models: ModelManager
     static let defaultMaxTokens = 4096
 
     public init(store: ModelStore, models: ModelManager = ModelManager()) {
@@ -93,13 +122,14 @@ public actor ChatService {
         var processing = UserInput.Processing()
         // Cap image tokens: phone photos otherwise become thousands of tokens on small models.
         processing.maxPixels = 1024 * 1024
-        let input = UserInput(chat: chat, processing: processing,
+        let toolSpecs = options.tools.isEmpty ? nil : options.tools.map(\.spec)
+        let input = UserInput(chat: chat, processing: processing, tools: toolSpecs,
                               additionalContext: ["enable_thinking": options.enableThinking])
         let maxTokens = options.maxTokens ?? Self.defaultMaxTokens
         let params = GenerateParameters(maxTokens: maxTokens, temperature: options.temperature ?? 0.7,
                                         topP: options.topP ?? 0.8)
         let lmInput = try await container.prepare(input: input)
-        let generation = try await container.generate(input: lmInput, parameters: params)
+        let generation = try await container.generate(input: lmInput, parameters: params, tools: toolSpecs)
         let stripThinking = !options.enableThinking
 
         return AsyncThrowingStream { continuation in
@@ -117,6 +147,9 @@ public actor ChatService {
                         let reason = info.stopReason == .length ? "length" : "stop"
                         continuation.yield(.done(finishReason: reason, usage: ChatUsage(
                             promptTokens: info.promptTokenCount, completionTokens: info.generationTokenCount)))
+                    case .toolCall(let call):
+                        let args = (try? JSONEncoder().encode(call.function.arguments)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+                        continuation.yield(.toolCall(name: call.function.name, arguments: args))
                     default:
                         break
                     }
@@ -134,13 +167,15 @@ public actor ChatService {
         var text = ""
         var finish = "stop"
         var usage = ChatUsage(promptTokens: 0, completionTokens: 0)
+        var calls: [ChatToolCall] = []
         for try await event in try await stream(model: spec, messages: messages, options: options) {
             switch event {
             case .delta(let s): text += s
             case .done(let f, let u): finish = f; usage = u
+            case .toolCall(let name, let arguments): calls.append(ChatToolCall(name: name, arguments: arguments))
             }
         }
-        return ChatResult(modelID: spec.id, text: text, finishReason: finish, usage: usage)
+        return ChatResult(modelID: spec.id, text: text, toolCalls: calls, finishReason: finish, usage: usage)
     }
 
     private func containerLease(for spec: ModelSpec) async throws -> ModelLease<ModelContainer> {

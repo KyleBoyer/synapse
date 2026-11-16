@@ -6,6 +6,10 @@ public enum EngineKind: String, Codable, Sendable {
     case mlx
     /// Image models. Native Swift/MLX: FLUX.2 and Z-Image. Python mflux sidecar: Qwen-Image.
     case flux2, zimage, mflux
+    /// Realtime building blocks run by FluidAudio: streaming ASR, VAD, streaming TTS.
+    case speech
+    /// Full-duplex speech-to-speech and speech translation models (vendored speech-swift).
+    case duplex
 }
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
@@ -35,6 +39,7 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public var isChat: Bool { engine == .mlx }
     public var isImage: Bool { engine == .flux2 || engine == .zimage || engine == .mflux }
     public var isTranscription: Bool { engine == .whisper || engine == .parakeet }
+    public var isRealtime: Bool { engine == .speech || engine == .duplex }
 
     /// Resident-size estimate for memory accounting (quantized weights load at about their on-disk size).
     public var estimatedBytes: Int { approxMB * 1_048_576 }

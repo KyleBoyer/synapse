@@ -76,7 +76,7 @@ private struct ImageEvent: Encodable {
     var usage: ImageUsage?
 }
 
-private enum ImageEncoding {
+enum ImageEncoding {
     static func supportsWebP() -> Bool {
         (CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []).contains(UTType.webP.identifier)
     }
@@ -115,7 +115,7 @@ private final class PreviewPicker: @unchecked Sendable {
 
 private func badRequest(_ m: String) -> HTTPError { HTTPError(.badRequest, message: m) }
 
-private func mapImageError(_ e: Error) -> Error {
+func mapImageError(_ e: Error) -> Error {
     guard let e = e as? ImageError else { return e }
     return HTTPError(e == .noImageModel ? .serviceUnavailable : .badRequest, message: e.localizedDescription)
 }

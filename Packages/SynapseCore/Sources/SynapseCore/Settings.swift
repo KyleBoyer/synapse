@@ -34,6 +34,8 @@ public struct Settings: Codable, Sendable, Equatable {
     public var modelsFolder: String?
     /// Hugging Face access token for gated models (e.g. FLUX.2 klein 9B).
     public var hfToken: String?
+    /// Path to a vOOM checkout; enables `voom:<model>` chat models served by its paging runtime.
+    public var voomCheckout: String?
 
     public init() {}
 
@@ -62,6 +64,7 @@ public struct Settings: Codable, Sendable, Equatable {
         idleUnloadMinutes = try c.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? d.idleUnloadMinutes
         modelsFolder = try c.decodeIfPresent(String.self, forKey: .modelsFolder)
         hfToken = try c.decodeIfPresent(String.self, forKey: .hfToken)
+        voomCheckout = try c.decodeIfPresent(String.self, forKey: .voomCheckout)
     }
 
     public var modelsRoot: URL {

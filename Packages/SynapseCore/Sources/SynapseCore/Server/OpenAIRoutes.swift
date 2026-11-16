@@ -40,7 +40,8 @@ func nonEmpty(_ s: String?) -> String? { (s?.isEmpty ?? true) ? nil : s }
 
 func addOpenAIRoutes(to g: RouterGroup<SynapseContext>, queue: JobQueue, store: ModelStore, settings: SettingsBox) {
     g.get("v1/models") { _, _ in
-        let ids = await store.downloaded.filter { Catalog.spec($0) != nil }.sorted()
+        var ids = await store.downloaded.filter { Catalog.spec($0) != nil }.sorted()
+        if let checkout = settings.current.voomCheckout, !checkout.isEmpty { ids += VOOMRuntime.modelIDs(checkout: checkout) }
         return json(ModelList(data: ids.map { ModelItem(id: $0) }))
     }
     for (path, task) in [("v1/audio/transcriptions", TaskKind.transcribe), ("v1/audio/translations", .translate)] {

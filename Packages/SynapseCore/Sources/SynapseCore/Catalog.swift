@@ -18,6 +18,12 @@ public enum Catalog {
                   canTranslate: false, canDetectLanguage: false, canEditImages: edit, recommendedRAMGB: ramGB)
     }
 
+    private static func realtime(_ id: String, _ name: String, _ engine: EngineKind, _ variant: String, _ mb: Int,
+                                 ramGB: Int?) -> ModelSpec {
+        ModelSpec(id: id, engine: engine, displayName: name, variant: variant, approxMB: mb, languages: nil,
+                  canTranslate: false, canDetectLanguage: false, recommendedRAMGB: ramGB)
+    }
+
     public static let all: [ModelSpec] = [
         whisper("whisper-tiny", "Whisper Tiny", "tiny", 75),
         whisper("whisper-base", "Whisper Base", "base", 145),
@@ -42,6 +48,14 @@ public enum Catalog {
         image("qwen-image-2.1-q4", "Qwen-Image 2.1 (4-bit, research license)", .mflux, "mlx-community/Qwen-Image-2.1-mflux-q4", 9600, edit: false, ramGB: 16),
         image("qwen-image-2512-4bit", "Qwen-Image 2512 (4-bit)", .mflux, "mlx-community/Qwen-Image-2512-4bit", 25900, edit: false, ramGB: 32),
         image("qwen-image-edit-2511-8bit", "Qwen-Image Edit 2511 (8-bit)", .mflux, "mlx-community/qwen-image-edit-2511-8bit", 37500, edit: true, ramGB: 48),
+        // Realtime. shortcut: variants/sizes are provisional until each engine's downloader lands.
+        realtime("parakeet-eou-120m", "Parakeet EOU 120M (streaming, English)", .speech, "parakeet-eou-160ms", 220, ramGB: nil),
+        realtime("silero-vad", "Silero VAD", .speech, "silero-vad", 2, ramGB: nil),
+        realtime("pocket-tts", "PocketTTS (streaming voice)", .speech, "pocket-tts", 523, ramGB: nil),
+        realtime("kokoro-82m", "Kokoro 82M (voices)", .speech, "kokoro", 350, ramGB: nil),
+        realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),
+        realtime("personaplex-7b", "PersonaPlex 7B (full duplex, non-commercial)", .duplex, "personaplex-4bit", 5821, ramGB: 12),
+        realtime("hibiki-zero-3b", "Hibiki Zero 3B (speech translation to English, non-commercial)", .duplex, "hibiki-zero-8bit", 4130, ramGB: 10),
         ModelSpec(id: "parakeet-v2", engine: .parakeet, displayName: "Parakeet v2 (English)", variant: "v2", approxMB: 600,
                   languages: ["en"], canTranslate: false, canDetectLanguage: false),
     ]
