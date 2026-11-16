@@ -66,10 +66,19 @@ final class ImageAPITests: XCTestCase, @unchecked Sendable {
                 XCTAssertEqual(j["size"] as? String, "512x256")
                 XCTAssertEqual(j["output_format"] as? String, "png")
                 XCTAssertEqual(j["background"] as? String, "opaque")
+                XCTAssertEqual(j["quality"] as? String, "medium")
                 XCTAssertNotNil(j["usage"])
                 let d = Data(base64Encoded: ((j["data"] as! [[String: Any]])[0]["b64_json"] as! String))!
                 let s = Self.pixelSize(d)
                 XCTAssertEqual(s?.0, 512); XCTAssertEqual(s?.1, 256)
+            }
+        }
+    }
+
+    func testInvalidStepsFailBeforeStreamStarts() async throws {
+        try await makeApp().test(.router) { c in
+            try await self.post(c, #"{"prompt":"x","steps":0,"stream":true}"#) { r in
+                XCTAssertEqual(r.status, .badRequest)
             }
         }
     }

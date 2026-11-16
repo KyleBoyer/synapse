@@ -5,6 +5,20 @@ import Foundation
 public enum HFDownloader {
     struct Entry: Decodable { let type: String; let path: String; let size: Int64? }
 
+    static func snapshotFiles(_ data: Data, exclude: [String] = []) throws -> [Entry] {
+        let files = try JSONDecoder().decode([Entry].self, from: data).filter { $0.type == "file" && wanted($0.path, exclude: exclude) }
+        guard files.contains(where: { $0.path.hasSuffix(".safetensors") }) else {
+            throw URLError(.cannotParseResponse, userInfo: [NSLocalizedDescriptionKey: "Model snapshot has no safetensors weights."])
+        }
+        for file in files {
+            let parts = file.path.split(separator: "/", omittingEmptySubsequences: false)
+            guard !parts.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }), !file.path.contains("\\") else {
+                throw URLError(.cannotParseResponse, userInfo: [NSLocalizedDescriptionKey: "Invalid model file path."])
+            }
+        }
+        return files
+    }
+
     /// Files a model needs: configs, tokenizers, chat templates and weights, in any subfolder
     /// (diffusion repos keep transformer/, text_encoder/, vae/ separately). `exclude` drops exact paths
     /// or folder prefixes ending in "/".
@@ -26,10 +40,7 @@ public enum HFDownloader {
         listURL.append(queryItems: [URLQueryItem(name: "recursive", value: "true")])
         let (data, response) = try await session.data(for: authorized(listURL, token))
         try check(response, listURL)
-        let files = try JSONDecoder().decode([Entry].self, from: data).filter { $0.type == "file" && wanted($0.path, exclude: exclude) }
-        guard files.contains(where: { $0.path == "config.json" }) else {
-            throw URLError(.cannotParseResponse, userInfo: [NSLocalizedDescriptionKey: "\(repo) has no config.json"])
-        }
+        let files = try snapshotFiles(data, exclude: exclude)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let total = max(1, files.reduce(Int64(0)) { $0 + ($1.size ?? 0) })
         var done: Int64 = 0

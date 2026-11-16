@@ -14,6 +14,9 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "3.32.3", traits: []),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMinor(from: "0.32.3")),
+        // Vendored image-generation libraries (see each VENDORED.md for source revision and patches).
+        .package(path: "../Vendor/Flux2Swift"),
+        .package(path: "../Vendor/ZImage"),
     ],
     targets: [
         .target(
@@ -28,6 +31,8 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Flux2Core", package: "Flux2Swift"),
+                .product(name: "ZImage", package: "ZImage"),
             ]
         ),
         .testTarget(

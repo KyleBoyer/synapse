@@ -1,0 +1,25 @@
+import Foundation
+import Hummingbird
+import XCTest
+@testable import SynapseCore
+
+/// Opt-in server for the official SDK checks, using the same router and services as the app.
+final class APIServerTool: XCTestCase {
+    func testServe() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["SYNAPSE_API_TEST_SERVER"] == "1" else { throw XCTSkip("set SYNAPSE_API_TEST_SERVER=1") }
+        let root = env["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
+        let store = ModelStore(root: root)
+        let models = ModelManager()
+        let settings = SettingsBox(Settings())
+        let queue = JobQueue(store: store, decoder: AudioDecoder(ffmpegURL: try TestSupport.ffmpeg()), settings: settings, models: models)
+        let chat = ChatService(store: store, models: models)
+        let factory: ImageService.EngineFactory = env["SYNAPSE_FAKE_IMAGES"] == "1" ? { @Sendable _, _ in FakeImageEngine() } : ImageEngines.real
+        let images = ImageService(store: store, models: models, engineFactory: factory)
+        let port = env["SYNAPSE_API_TEST_PORT"].flatMap(Int.init) ?? 19000
+        print("SDK check server on 127.0.0.1:\(port), fake images: \(env["SYNAPSE_FAKE_IMAGES"] == "1")")
+        let app = Application(router: buildRouter(queue: queue, store: store, settings: settings, chat: chat, images: images),
+                              configuration: .init(address: .hostname("127.0.0.1", port: port)))
+        try await app.runService()
+    }
+}

@@ -42,7 +42,7 @@ final class AppState {
         let queue = queue
         chat = ChatService(store: store, models: models)
         images = ImageService(store: store, models: models, engineFactory: ImageEngines.real)
-        server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat)
+        server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat, images: images)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
         Task { [weak self] in
             for await snap in updates { self?.upsert(snap) }
@@ -103,7 +103,7 @@ final class AppState {
         modelStates[id] = .downloading(0)
         Task {
             do {
-                _ = try await store.download(id) { p in
+                _ = try await store.download(id, token: settings.hfToken) { p in
                     Task { @MainActor [weak self] in
                         if case .downloading = self?.modelStates[id] { self?.modelStates[id] = .downloading(p) }
                     }

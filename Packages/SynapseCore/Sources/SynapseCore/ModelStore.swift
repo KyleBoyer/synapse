@@ -46,7 +46,7 @@ public actor ModelStore {
     }
 
     /// Concurrent calls for the same id share one download.
-    public func download(_ id: String, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+    public func download(_ id: String, token: String? = nil, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         if let f = folder(for: id) { return f }
         if let t = inFlight[id] { return try await t.value }
         guard let spec = Catalog.spec(id) else { throw ResolveError.unknownModel(id) }
@@ -54,7 +54,7 @@ public actor ModelStore {
         failures[id] = nil
         progressByID[id] = 0
         let task = Task<URL, Error> {
-            try await Self.fetch(spec, root: root) { p in
+            try await Self.fetch(spec, root: root, token: token) { p in
                 progress(p)
                 Task { await self.setProgress(id, p) }
             }
@@ -69,7 +69,9 @@ public actor ModelStore {
             return url
         } catch {
             failures[id] = error is CancellationError ? nil : error.localizedDescription
-            try? FileManager.default.removeItem(at: Self.partialFolder(spec, root: root))
+            if spec.engine == .whisper || spec.engine == .parakeet {
+                try? FileManager.default.removeItem(at: Self.partialFolder(spec, root: root))
+            }
             throw error
         }
     }
@@ -110,7 +112,7 @@ public actor ModelStore {
         }
     }
 
-    private static func fetch(_ spec: ModelSpec, root: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+    private static func fetch(_ spec: ModelSpec, root: URL, token: String?, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         switch spec.engine {
         case .whisper:
             return try await WhisperKit.download(
@@ -118,7 +120,10 @@ public actor ModelStore {
                 downloadBase: root.appending(path: "whisperkit", directoryHint: .isDirectory),
                 progressCallback: { progress($0.fractionCompleted) })
         case .mlx, .flux2, .zimage, .mflux:
-            return try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), progress: progress)
+            // FLUX also publishes a duplicate monolithic transformer beside its diffusers components.
+            let exclude = spec.engine == .flux2 ? ["flux-2-klein-4b.safetensors", "flux-2-klein-9b.safetensors"] : []
+            return try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), exclude: exclude,
+                                                   token: token, progress: progress)
         case .parakeet:
             let dir = parakeetFolder(spec, root: root)
             return try await AsrModels.download(

@@ -173,8 +173,9 @@ private func runImages(_ p: ImageParams, images: ImageService, cache: ImageFileC
     if let c = p.output_compression, !(0...100).contains(c) { throw badRequest("output_compression must be between 0 and 100.") }
     let responseFormat = nonEmpty(p.response_format) ?? "b64_json"
     guard ["b64_json", "url"].contains(responseFormat) else { throw badRequest("Unsupported response_format '\(responseFormat)'.") }
-    let quality = nonEmpty(p.quality) ?? "auto"
-    guard ["low", "medium", "high", "auto", "standard", "hd"].contains(quality) else { throw badRequest("Unsupported quality '\(quality)'.") }
+    let requestedQuality = nonEmpty(p.quality) ?? "auto"
+    guard ["low", "medium", "high", "auto", "standard", "hd"].contains(requestedQuality) else { throw badRequest("Unsupported quality '\(requestedQuality)'.") }
+    let quality = ["auto": "medium", "standard": "medium", "hd": "high"][requestedQuality] ?? requestedQuality
     let partial = p.partial_images ?? 0
     guard (0...3).contains(partial) else { throw badRequest("partial_images must be between 0 and 3.") }
 
@@ -186,6 +187,7 @@ private func runImages(_ p: ImageParams, images: ImageService, cache: ImageFileC
     let size = "\(w)x\(h)"
     let request = ImageRequest(prompt: prompt, negativePrompt: nonEmpty(p.negative_prompt), width: w, height: h, steps: p.steps,
                                guidance: p.guidance, seed: p.seed, inputImages: inputs, mask: mask)
+    do { try request.validate() } catch { throw mapImageError(error) }
     let created = Int(Date().timeIntervalSince1970)
     let prefix = edit ? "image_edit" : "image_generation"
     let compression = p.output_compression

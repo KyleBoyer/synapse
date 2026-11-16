@@ -20,6 +20,17 @@ public struct ImageRequest: Sendable, Equatable {
     }
 
     public var isEdit: Bool { !inputImages.isEmpty }
+
+    func validate() throws {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ImageError.invalidRequest("prompt is required.")
+        }
+        guard (256...2048).contains(width), (256...2048).contains(height), width % 16 == 0, height % 16 == 0 else {
+            throw ImageError.badSize("\(width)x\(height)")
+        }
+        if let steps, !(1...1000).contains(steps) { throw ImageError.invalidRequest("steps must be between 1 and 1000.") }
+        if let guidance, !guidance.isFinite || guidance < 0 { throw ImageError.invalidRequest("guidance must be finite and nonnegative.") }
+    }
 }
 
 public struct ImageProgress: Sendable, Equatable {
@@ -44,12 +55,13 @@ extension ImageEngine {
 }
 
 public enum ImageError: Error, LocalizedError, Equatable {
-    case editUnsupported(String), badSize(String), noImageModel
+    case editUnsupported(String), badSize(String), invalidRequest(String), noImageModel
     public var errorDescription: String? {
         switch self {
         case .editUnsupported(let id): return "Model '\(id)' cannot edit images."
         case .badSize(let s): return "Unsupported size '\(s)'. Use WIDTHxHEIGHT with multiples of 16, or 'auto'."
         case .noImageModel: return "No image model is downloaded. Download one (e.g. flux2-klein-4b) in Models."
+        case .invalidRequest(let message): return message
         }
     }
 }
@@ -86,6 +98,10 @@ public actor ImageService {
     /// Generates `count` images sequentially (seed increments per image when given).
     public func generate(model spec: ModelSpec, request: ImageRequest, count: Int = 1,
                          progress: @escaping @Sendable (_ index: Int, ImageProgress) -> Void = { _, _ in }) async throws -> [Data] {
+        try request.validate()
+        guard (1...4).contains(count) else { throw ImageError.invalidRequest("count must be between 1 and 4.") }
+        guard spec.isImage else { throw ResolveError.wrongKind(spec.id) }
+        if request.isEdit && !spec.canEditImages { throw ImageError.editUnsupported(spec.id) }
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
         let factory = engineFactory
         let lease = try await models.lease(spec.id, as: (any ImageEngine).self, estimatedBytes: spec.estimatedBytes) {
@@ -94,7 +110,7 @@ public actor ImageService {
         }
         defer { lease.release() }
         var images: [Data] = []
-        for i in 0..<max(1, count) {
+        for i in 0..<count {
             try Task.checkCancellation()
             var r = request
             if let s = request.seed { r.seed = s &+ UInt64(i) }
@@ -106,10 +122,11 @@ public actor ImageService {
     /// Parses OpenAI `size` ("1024x1024", "auto"); dimensions are rounded to multiples of 16 within 256...2048.
     public static func parseSize(_ size: String?, default def: (Int, Int) = (1024, 1024)) throws -> (Int, Int) {
         guard let size, size != "auto", !size.isEmpty else { return def }
-        let parts = size.lowercased().split(separator: "x").compactMap { Int($0) }
-        guard parts.count == 2, (256...2048).contains(parts[0]), (256...2048).contains(parts[1]) else {
+        let parts = size.lowercased().split(separator: "x", omittingEmptySubsequences: false)
+        guard parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]),
+              (256...2048).contains(width), (256...2048).contains(height) else {
             throw ImageError.badSize(size)
         }
-        return (parts[0] / 16 * 16, parts[1] / 16 * 16)
+        return (width / 16 * 16, height / 16 * 16)
     }
 }
