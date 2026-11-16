@@ -8,7 +8,7 @@ PKG="${SYNAPSE_PKG:-$ROOT/Packages/SynapseCore}"
 PY="${1:?path to python with openai and websockets}"
 export SYNAPSE_MODELS_DIR="${SYNAPSE_MODELS_DIR:-/Volumes/Workspace NVME/SynapseModels}"
 export SYNAPSE_FFMPEG="${SYNAPSE_FFMPEG:-$ROOT/vendor/ffmpeg/bin/ffmpeg}"
-export SYNAPSE_API_TEST_SERVER=1 SYNAPSE_FAKE_IMAGES=1 SYNAPSE_API_TEST_PORT="${PORT:-19000}"
+export SYNAPSE_API_TEST_SERVER=1 SYNAPSE_FAKE_IMAGES=1 SYNAPSE_API_TEST_PORT="${PORT:-19100}"
 cd "$PKG"
 swift build --build-tests
 BUNDLE="$(find "$(swift build --show-bin-path)" -maxdepth 1 -name '*Tests.xctest' -type d | head -1)"

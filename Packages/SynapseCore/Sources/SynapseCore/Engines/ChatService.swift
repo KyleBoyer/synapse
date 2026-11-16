@@ -128,8 +128,17 @@ public actor ChatService {
         let maxTokens = options.maxTokens ?? Self.defaultMaxTokens
         let params = GenerateParameters(maxTokens: maxTokens, temperature: options.temperature ?? 0.7,
                                         topP: options.topP ?? 0.8)
-        let lmInput = try await container.prepare(input: input)
-        let generation = try await container.generate(input: lmInput, parameters: params, tools: toolSpecs)
+        await GPUGate.shared.acquire()
+        let releaseGate = GateRelease()
+        let generation: AsyncStream<Generation>
+        do {
+            let lmInput = try await container.prepare(input: input)
+            generation = try await container.generate(input: lmInput, parameters: params, tools: toolSpecs)
+        } catch {
+            releaseGate()
+            lease.release()
+            throw error
+        }
         let stripThinking = !options.enableThinking
 
         return AsyncThrowingStream { continuation in
@@ -154,10 +163,12 @@ public actor ChatService {
                         break
                     }
                 }
+                releaseGate()
                 continuation.finish()
             }
             continuation.onTermination = { _ in
                 task.cancel()
+                releaseGate()
                 lease.release()
             }
         }

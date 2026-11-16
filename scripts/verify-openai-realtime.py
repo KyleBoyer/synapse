@@ -4,7 +4,7 @@
 Every server event is validated with the SDK's pydantic types (strict validation, not the SDK's lenient
 construct). Speech comes from macOS `say`, resampled to 24 kHz PCM16 and streamed in chunks.
 
-  scripts/with-gpu-lock.sh <python> scripts/verify-openai-realtime.py --base-url http://127.0.0.1:19000/v1 --model qwen3.5-0.8b
+  scripts/with-gpu-lock.sh <python> scripts/verify-openai-realtime.py --base-url http://127.0.0.1:19100/v1 --model qwen3.5-0.8b
 """
 import argparse, asyncio, base64, json, os, subprocess, sys, tempfile, time, wave
 import numpy as np
@@ -143,8 +143,18 @@ async def run(args):
         check(not c.errors, "call: all events pass strict SDK validation" + ("" if not c.errors else f" {c.errors[:2]}"))
         check(not c.of("error"), f"call: no error events {c.of('error')[:1]}")
 
+        # Second turn on the same connection: models are warm, so this is the steady-state latency.
+        c = Checker(conn)
+        await c.send_audio(say("And what is the capital of Italy?") + silence(2.0))
+        if await c.wait("response.done", timeout=120):
+            t0, t1 = c.when("input_audio_buffer.speech_stopped"), c.when("response.output_audio.delta")
+            print(f"      warm turn: {''.join(e['delta'] for e in c.of('response.output_audio_transcript.delta'))!r}")
+            print(f"      warm latency speech_stopped -> first audio delta: {t1 - t0:.2f}s")
+            check(c.of("response.done")[0]["response"]["status"] == "completed", "call: second turn completed")
+        c.close()
+        check(not c.errors, "call: second turn passes strict SDK validation")
+
         # 3. Barge-in on the same connection
-        n = len(c.events)
         c = Checker(conn)
         await conn.send({"type": "session.update", "session": {"type": "realtime",
                          "instructions": "Tell long stories. Always answer with at least ten sentences."}})
@@ -198,7 +208,7 @@ async def run(args):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--base-url", default="http://127.0.0.1:19000/v1")
+    p.add_argument("--base-url", default="http://127.0.0.1:19100/v1")
     p.add_argument("--api-key", default="synapse")
     p.add_argument("--model", default="qwen3.5-0.8b")
     sys.exit(asyncio.run(run(p.parse_args())))

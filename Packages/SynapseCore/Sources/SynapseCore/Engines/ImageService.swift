@@ -114,7 +114,8 @@ public actor ImageService {
             try Task.checkCancellation()
             var r = request
             if let s = request.seed { r.seed = s &+ UInt64(i) }
-            images.append(try await lease.value.generate(r) { p in progress(i, p) })
+            let engine = lease.value, req = r
+            images.append(try await GPUGate.shared.run { try await engine.generate(req) { p in progress(i, p) } })
         }
         return images
     }
