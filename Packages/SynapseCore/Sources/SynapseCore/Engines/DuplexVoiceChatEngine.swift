@@ -2,7 +2,7 @@ import Foundation
 import VoiceChat
 
 /// Nemotron VoiceChat 11B (16 kHz in, 22.05 kHz out, 80 ms frames). `userText` events carry the new part of the
-/// streaming user transcript; `assistantText` the model's text tokens; `audio` is emitted only while it speaks.
+/// streaming user transcript; `assistantText` the model's text tokens; `audio` is the continuous output stream (silence while idle).
 public actor DuplexVoiceChatEngine: DuplexSpeechEngine {
     public nonisolated var inputSampleRate: Int { VoiceChatSession.inputSampleRate }
     public nonisolated var outputSampleRate: Int { VoiceChatSession.outputSampleRate }
@@ -24,17 +24,21 @@ public actor DuplexVoiceChatEngine: DuplexSpeechEngine {
     }
 
     public func push(_ samples: [Float]) async throws -> [DuplexEvent] {
+        await GPUGate.shared.acquire()
+        let gate = GateRelease(); defer { gate() }
         let frames = try await current().pushAudio(samples)
         var out: [DuplexEvent] = []
         var audio: [Float] = []
         var text = "", user = ""
+        let special = model?.tokenizer.specialIDs ?? []
         for f in frames {
-            text += f.text
+            if !special.contains(f.textToken) { text += f.text }
             if let t = f.userTranscript {
                 if t.hasPrefix(transcript) { user += t.dropFirst(transcript.count) }
                 transcript = t
             }
-            if f.speaking && f.playbackRequired { audio += f.audio }
+            // `speaking` marks only text-token frames; the spoken reply runs on past them, so keep every playable frame.
+            if f.playbackRequired { audio += f.audio }
         }
         if !user.isEmpty { out.append(.userText(user)) }
         if !text.isEmpty { out.append(.assistantText(text)) }

@@ -17,6 +17,8 @@ public actor DuplexHibikiEngine: SpeechTranslationEngine {
     public func translate(_ samples: [Float], sampleRate: Int, sourceLanguage: String?) async throws
         -> (audio: [Float], sampleRate: Int, text: String) {
         guard let model else { throw EngineError.unsupported("Hibiki Zero is unloaded") }
+        await GPUGate.shared.acquire()
+        let gate = GateRelease(); defer { gate() }
         let lang = sourceLanguage.flatMap { HibikiSourceLanguage(rawValue: String($0.prefix(2)).lowercased()) } ?? .fr  // hint only, model auto-detects
         let out = model.translate(sourceAudio: DuplexAudio.resample(samples, from: sampleRate, to: Self.sampleRate), sourceLanguage: lang)
         return (out.audio, Self.sampleRate, spm?.decode(out.textTokens) ?? "")

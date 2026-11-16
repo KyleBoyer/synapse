@@ -26,6 +26,9 @@ struct ModelsView: View {
             Section("Qwen3.5 (chat + vision, MLX)") {
                 ForEach(Catalog.all.filter { $0.engine == .mlx }) { row($0) }
             }
+            Section("Realtime (live captions, voice, full duplex)") {
+                ForEach(Catalog.all.filter { $0.engine == .speech || $0.engine == .duplex }) { row($0) }
+            }
             Section("Images") {
                 ForEach(Catalog.all.filter(\.isImage)) { row($0) }
             }

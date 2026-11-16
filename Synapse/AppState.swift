@@ -25,6 +25,7 @@ final class AppState {
     let queue: JobQueue
     let chat: ChatService
     let images: ImageService
+    let realtime: RealtimeServices
     let server: ServerController
     let watcher: FolderWatcher
 
@@ -42,7 +43,8 @@ final class AppState {
         let queue = queue
         chat = ChatService(store: store, models: models)
         images = ImageService(store: store, models: models, engineFactory: ImageEngines.real)
-        server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat, images: images)
+        realtime = .real(store: store, models: models, chat: chat)
+        server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat, images: images, realtime: realtime)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
         Task { [weak self] in
             for await snap in updates { self?.upsert(snap) }
@@ -88,6 +90,8 @@ final class AppState {
     }
     var downloadedSpecs: [ModelSpec] { readySpecs.filter(\.isTranscription) }
     var downloadedImageSpecs: [ModelSpec] { readySpecs.filter(\.isImage) }
+    var downloadedRealtimeBase: Bool { ["parakeet-eou-120m", "silero-vad", "pocket-tts"].allSatisfy { if case .ready = modelStates[$0] { return true }; return false } }
+    var downloadedDuplexSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .duplex } }
     var downloadedChatSpecs: [ModelSpec] { readySpecs.filter { $0.isChat } }
 
     func refreshResidents() async {

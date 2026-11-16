@@ -56,7 +56,7 @@ final class DuplexE2ETests: XCTestCase {
             _ = try await store.download("whisper-tiny") { _ in }
             var s = Settings(); s.defaultModelID = "whisper-tiny"
             let q = JobQueue(store: store, decoder: AudioDecoder(ffmpegURL: try TestSupport.ffmpeg()), settings: SettingsBox(s))
-            let snap = await q.run(JobRequest(input: .media(wav), modelID: "whisper-tiny", origin: .gui))
+            let snap = await q.run(JobRequest(input: .media(wav), modelID: "whisper-tiny", language: "en", origin: .gui))
             return snap.transcript?.text ?? "(no transcript)"
         } catch { return "(transcription unavailable: \(error))" }
     }
@@ -80,11 +80,11 @@ final class DuplexE2ETests: XCTestCase {
         await engine.unload()
     }
 
-    /// Question clip + 2 s silence, in 80 ms-ish chunks; returns assistant audio and text.
+    /// Question clip + 8 s silence (time for the spoken reply), in 80 ms-ish chunks; returns assistant audio and text.
     private func converse(_ engine: any DuplexSpeechEngine, label: String) async throws -> (audio: [Float], user: String, text: String) {
         let rate = await engine.inputSampleRate
         var clip = try say("Hello! My name is Sam. Can you tell me what the capital of France is?", voice: "Samantha", rate: rate)
-        clip += [Float](repeating: 0, count: rate * 2)
+        clip += [Float](repeating: 0, count: rate * 8)
         _ = try writeWAV(clip, rate: rate, name: "\(label)-in-en.wav")
         let chunk = rate * 80 / 1000
         var audio: [Float] = [], user = "", text = ""
@@ -127,6 +127,8 @@ final class DuplexE2ETests: XCTestCase {
         print("[voicechat] whisper: \(await transcribe(wav))")
         XCTAssertGreaterThan(rms(r.audio), 0.005)
         XCTAssertFalse(r.user.trimmingCharacters(in: .whitespaces).isEmpty, "no user transcript")
+        XCTAssertTrue(r.text.lowercased().contains("paris"), r.text)
+        XCTAssertFalse(r.text.contains("<SPECIAL"), r.text)
         await engine.unload()
     }
 }

@@ -23,6 +23,8 @@ public actor DuplexPersonaPlexEngine: DuplexSpeechEngine {
     init(folder: URL) async throws {
         let m = try await PersonaPlexModel.fromPretrained(
             modelId: PersonaPlexModel.defaultModelId, cacheDir: folder, offlineMode: true)
+        await GPUGate.shared.acquire()
+        let gate = GateRelease(); defer { gate() }
         m.warmUp()
         model = m
     }
@@ -45,6 +47,9 @@ public actor DuplexPersonaPlexEngine: DuplexSpeechEngine {
     private func finish(_ gen: Int) { if gen == generation { ended = true } }
 
     public func push(_ samples: [Float]) async throws -> [DuplexEvent] {
+        // The pump only computes while we hold the gate: it waits for full input frames, which arrive only via push.
+        await GPUGate.shared.acquire()
+        let gate = GateRelease(); defer { gate() }
         if pump == nil || ended { try start() }
         ring.write(samples)
         fed += samples.count
