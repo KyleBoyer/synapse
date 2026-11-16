@@ -237,7 +237,7 @@
       "name": "Panel Row",
       "kind": "custom",
       "refersTo": "panel-row",
-      "description": "Settings row in a glass panel: label left, control flush right.",
+      "description": "Settings row in a glass panel: label left, control flush right. Used by the working panes and by the Settings sheet, whose sections are titled 18pt glass panels (Panel) over the main window rather than a separate window.",
       "html": "<div class=\"ds-prow\"><span>Random seed</span><label class=\"ds-switch\"><input type=\"checkbox\" checked><i></i></label></div>",
       "css": ".ds-prow{display:flex;justify-content:space-between;align-items:center;gap:12px;width:260px;font:13px -apple-system,system-ui;color:#1d1d1f}.ds-switch input{display:none}.ds-switch i{display:block;width:32px;height:18px;border-radius:9px;background:rgba(0,0,0,.15);position:relative;transition:background .2s}.ds-switch i::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .2s}.ds-switch input:checked+i{background:#5B3FD6}.ds-switch input:checked+i::after{left:16px}"
     }
