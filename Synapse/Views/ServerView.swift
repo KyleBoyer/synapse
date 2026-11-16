@@ -5,27 +5,47 @@ import SynapseCore
 struct ServerView: View {
     @Environment(AppState.self) private var state
     @State private var portText = ""
+    @State private var showKey = false
 
     var body: some View {
         @Bindable var state = state
         Form {
+            Section("Connect a client") {
+                LabeledContent("Host") {
+                    HStack {
+                        Text(base).font(.mono()).foregroundStyle(.primary).textSelection(.enabled)
+                        Button("Copy") { copy(base) }
+                    }
+                }
+                LabeledContent("API key") {
+                    Text(state.settings.allowLAN ? "the key below" : "any value (local only, no key needed)").foregroundStyle(.secondary)
+                }
+                Text("Give any client just the host and key. Synapse serves OpenAI Chat Completions, Completions and Responses and Anthropic Messages, streaming or not, at the host with or without /v1, and accepts the key as Authorization: Bearer (OpenAI) or x-api-key (Anthropic).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section {
                 Toggle("Enable API server", isOn: $state.settings.serverEnabled)
                 HStack {
-                    TextField("Port", text: $portText).frame(width: 120)
+                    LabeledContent("Port") { TextField("Port", text: $portText).labelsHidden().font(.mono()).frame(width: 80) }
                         .onSubmit(applyPort)
                     Button("Apply", action: applyPort).disabled(Int(portText) == state.settings.port)
                 }
-                Text(state.serverStatus.label).foregroundStyle(statusColor)
+                HStack(spacing: 8) {
+                    Circle().fill(statusColor).frame(width: 8, height: 8)
+                    Text(state.serverStatus.label)
+                    Spacer()
+                    Text(base).font(.mono()).textSelection(.enabled)
+                }
             }
             Section("Network") {
                 Toggle("Allow connections from other devices (LAN)", isOn: $state.settings.allowLAN)
-                Text("When on, every request needs the API key, sent as \"Authorization: Bearer <key>\" or as a /k/<key> path prefix. macOS will ask to allow incoming connections.")
+                Text("When on, every request needs the API key, sent as \"Authorization: Bearer <key>\", as \"x-api-key: <key>\", or as a /k/<key> path prefix. macOS will ask to allow incoming connections.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text("API key")
-                    Text(state.settings.apiKey).font(.caption.monospaced()).textSelection(.enabled).lineLimit(1)
+                    Text(showKey ? state.settings.apiKey : String(repeating: "•", count: 24)).font(.mono(.caption)).textSelection(.enabled).lineLimit(1)
                     Spacer()
+                    Button(showKey ? "Hide" : "Show") { showKey.toggle() }
                     Button("Copy") { copy(state.settings.apiKey) }
                     Button("Regenerate") { state.settings.apiKey = Settings.generateKey() }
                 }
@@ -33,7 +53,7 @@ struct ServerView: View {
             Section("Bazarr") {
                 Text("Settings → Providers → Whisper → Endpoint:").font(.caption)
                 HStack {
-                    Text(bazarrEndpoint).font(.callout.monospaced()).textSelection(.enabled)
+                    Text(bazarrEndpoint).font(.mono(.callout)).textSelection(.enabled)
                     Spacer()
                     Button("Copy") { copy(bazarrEndpoint) }
                 }
@@ -47,7 +67,7 @@ struct ServerView: View {
                 ForEach(state.settings.libraryRoots, id: \.self) { root in
                     HStack {
                         Image(systemName: "folder")
-                        Text(root).lineLimit(1).truncationMode(.middle)
+                        Text(root).font(.mono(.callout)).lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Button("Remove", systemImage: "minus.circle") {
                             state.settings.libraryRoots.removeAll { $0 == root }
@@ -56,10 +76,15 @@ struct ServerView: View {
                 }
                 Button("Add Folder…") { addRoot() }
             }
+            Section("Routes") {
+                ForEach(Self.routes, id: \.0) { r in
+                    LabeledContent { Text(r.1).foregroundStyle(.secondary) } label: { Text(r.0).font(.mono(.callout)) }
+                }
+            }
             Section("Examples") {
                 ForEach(examples, id: \.self) { ex in
                     HStack(alignment: .top) {
-                        Text(ex).font(.caption.monospaced()).textSelection(.enabled)
+                        Text(ex).font(.mono(.caption)).textSelection(.enabled)
                         Spacer()
                         Button("Copy") { copy(ex) }.controlSize(.small)
                     }
@@ -76,6 +101,19 @@ struct ServerView: View {
             }
         }
     }
+
+    static let routes: [(String, String)] = [
+        ("POST /v1/chat/completions", "OpenAI chat and vision"),
+        ("POST /v1/completions", "OpenAI legacy text completion"),
+        ("POST /v1/responses", "OpenAI Responses, image tool"),
+        ("POST /v1/messages", "Anthropic Messages"),
+        ("POST /v1/audio/transcriptions", "OpenAI transcription"),
+        ("POST /v1/images/generations", "OpenAI images"),
+        ("GET /v1/realtime", "Realtime WebSocket"),
+        ("POST /asr", "Bazarr Whisper provider"),
+        ("POST /v1/jobs", "Subtitle a file by path"),
+        ("GET /v1/models", "Downloaded models"),
+    ]
 
     private var base: String {
         let host = state.settings.allowLAN ? (Self.lanIP() ?? "127.0.0.1") : "127.0.0.1"

@@ -10,6 +10,17 @@ struct ImagesView: View {
         let prompt: String
         let model: String
         let images: [Data]
+        let seconds: Double
+    }
+    /// Timing of the generation in flight, measured from the first denoising step (model load excluded).
+    struct Timing {
+        var firstStep: Date?
+        var lastStep: Date?
+        var steps = 0
+        var secondsPerStep: Double? {
+            guard let a = firstStep, let b = lastStep, steps > 1 else { return nil }
+            return b.timeIntervalSince(a) / Double(steps - 1)
+        }
     }
     private static let sizes = ["1024x1024", "1024x768", "768x1024", "1536x1024", "1024x1536", "512x512"]
 
@@ -27,6 +38,8 @@ struct ImagesView: View {
     @State private var preparing = false
     @State private var progress: ImageProgress?
     @State private var imageIndex = 0
+    @State private var timing = Timing()
+    @State private var started: Date?
     @State private var error: String?
     @State private var history: [Generation] = []
     @State private var task: Task<Void, Never>?
@@ -39,113 +52,188 @@ struct ImagesView: View {
         Group {
             if specs.isEmpty {
                 ContentUnavailableView("No image models", systemImage: "photo.on.rectangle.angled",
-                                       description: Text("Download an image model in Models"))
+                                       description: Text("Download FLUX.2 klein, Z-Image Turbo or Qwen-Image in Models."))
             } else {
-                form(specs)
+                HStack(alignment: .top, spacing: 0) {
+                    canvas
+                    if let spec {
+                        ScrollView {
+                            VStack(spacing: 12) { readout(spec); settingsPanel }.padding(16).frame(maxWidth: .infinity)
+                        }
+                        .frame(width: 320)
+                        .scrollClipDisabled()
+                        
+                    }
+                }
+                .safeAreaInset(edge: .bottom) { promptBar.padding([.horizontal, .bottom], 16) }
             }
         }
         .navigationTitle("Images")
+        .toolbar {
+            ToolbarItemGroup {
+                if !specs.isEmpty {
+                    ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
+                }
+            }
+        }
         .task { await state.refreshModels() }
         .onChange(of: specs.map(\.id), initial: true) { _, ids in
             if !ids.contains(modelID) { modelID = ids.first ?? "" }
         }
+        .onChange(of: running) { state.setActive(.images, running) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { r in
             if case .success(let urls) = r { addReferences(urls) }
         }
     }
 
-    private func form(_ specs: [ModelSpec]) -> some View {
-        Form {
-            Section {
-                Picker("Model", selection: $modelID) { ForEach(specs) { Text($0.displayName).tag($0.id) } }
-                TextEditor(text: $prompt).frame(minHeight: 70).font(.body)
-                    .accessibilityLabel("Prompt")
-                DisclosureGroup("Negative prompt") {
-                    TextField("Negative prompt", text: $negative, axis: .vertical)
-                }
-                Picker("Size", selection: $size) { ForEach(Self.sizes, id: \.self) { Text($0).tag($0) } }
-                Toggle("Default steps", isOn: $useDefaultSteps)
-                if !useDefaultSteps { Stepper("Steps: \(steps)", value: $steps, in: 1...100) }
-                Toggle("Random seed", isOn: $randomSeed)
-                if !randomSeed { TextField("Seed", text: $seed) }
-                Stepper("Images: \(count)", value: $count, in: 1...4)
+    private func readout(_ spec: ModelSpec) -> some View {
+        let p = progress
+        let last = history.last
+        return BurnIn(
+            name: spec.displayName, modelID: spec.id,
+            readings: [
+                Reading(label: "Step", value: preparing ? "loading model" : p.map { "\($0.step) / \($0.totalSteps)" } ?? "–", live: running),
+                timing.secondsPerStep.map { Reading(label: "Per step", value: String(format: "%.2f s", $0), live: running) }
+                    ?? Reading(label: "Per step", value: state.metrics.typical(spec.id, .secondsPerStep) ?? "–", muted: true),
+                Reading(label: "Image", value: running ? "\(imageIndex + 1) / \(count)" : "–"),
+                Reading(label: "Elapsed", value: started.map { String(format: "%.1f s", Date().timeIntervalSince($0)) } ?? "–", live: running),
+                last.map { Reading(label: "Last run", value: String(format: "%.1f s", $0.seconds)) }
+                    ?? Reading(label: "Image time", value: state.metrics.typical(spec.id, .imageTime) ?? "–", muted: true),
+                Reading(label: "Resident", value: state.resident(spec.id).map { gigabytes($0.bytes) } ?? "not loaded"),
+            ],
+            history: state.metrics.history(spec.id, .secondsPerStep), historyMetric: .secondsPerStep,
+            running: running,
+            api: "POST /v1/images/generations\nmodel: \(spec.id)")
+    }
+
+    private var settingsPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            PanelRow("Size") {
+                Picker("Size", selection: $size) { ForEach(Self.sizes, id: \.self) { Text($0).tag($0) } }.labelsHidden().fixedSize()
             }
-            if spec?.canEditImages == true {
-                Section("Reference images") {
-                    if !references.isEmpty {
-                        ScrollView(.horizontal) {
-                            HStack {
-                                ForEach(references.indices, id: \.self) { i in
-                                    if let img = NSImage(data: references[i]) {
-                                        Image(nsImage: img).resizable().scaledToFit().frame(height: 80)
-                                            .overlay(alignment: .topTrailing) {
-                                                Button("Remove reference", systemImage: "xmark.circle.fill") { references.remove(at: i) }
-                                                    .labelStyle(.iconOnly).buttonStyle(.borderless)
-                                            }
+            PanelRow("Images") {
+                Picker("Images", selection: $count) { ForEach(1...4, id: \.self) { Text("\($0)").tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            PanelRow("Model's default steps") { Toggle("Model's default steps", isOn: $useDefaultSteps).toggleStyle(.switch).labelsHidden() }
+            if !useDefaultSteps {
+                PanelRow("Steps") {
+                    HStack {
+                        Slider(value: Binding(get: { Double(steps) }, set: { steps = Int($0) }), in: 1...50, step: 1).frame(width: 100)
+                        Text("\(steps)").font(.mono()).frame(width: 26, alignment: .trailing)
+                    }
+                }
+            }
+            PanelRow("Random seed") { Toggle("Random seed", isOn: $randomSeed).toggleStyle(.switch).labelsHidden() }
+            if !randomSeed {
+                PanelRow("Seed") { TextField("Seed", text: $seed).font(.mono()).textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing).frame(width: 120) }
+            }
+            TextField("Negative prompt", text: $negative, axis: .vertical).lineLimit(1...3).textFieldStyle(.roundedBorder)
+        }
+        .disabled(running)
+        .padding(14)
+        .frame(width: 288, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+    }
+
+    @ViewBuilder private var canvas: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                if running {
+                    ZStack {
+                        if let data = progress?.preview, let img = NSImage(data: data) {
+                            Image(nsImage: img).resizable().scaledToFit()
+                        } else {
+                            RoundedRectangle(cornerRadius: 14).fill(.quaternary).aspectRatio(aspect, contentMode: .fit)
+                        }
+                        if preparing { Text("Loading model…").font(.subtitle).foregroundStyle(Color.live) }
+                    }
+                    .frame(maxHeight: 520).clipShape(.rect(cornerRadius: 14))
+                }
+                if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
+                if history.isEmpty && !running {
+                    Text("Describe an image below and press ⌘↩.").font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
+                }
+                ForEach(history.reversed()) { g in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(g.prompt).font(.title3).lineLimit(2)
+                            Spacer()
+                            Text("\(g.model) · \(String(format: "%.1f s", g.seconds))").font(.mono(.caption)).foregroundStyle(.secondary)
+                        }
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
+                            ForEach(g.images.indices, id: \.self) { i in tile(g.images[i]) }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 24).padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var aspect: CGFloat {
+        let (w, h) = (try? ImageService.parseSize(size)) ?? (1, 1)
+        return CGFloat(w) / CGFloat(max(h, 1))
+    }
+
+    private var promptBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if spec?.canEditImages == true, !references.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack {
+                        ForEach(references.indices, id: \.self) { i in
+                            if let img = NSImage(data: references[i]) {
+                                Image(nsImage: img).resizable().scaledToFill().frame(width: 52, height: 52).clipShape(.rect(cornerRadius: 8))
+                                    .overlay(alignment: .topTrailing) {
+                                        Button("Remove reference", systemImage: "xmark.circle.fill") { references.remove(at: i) }
+                                            .labelStyle(.iconOnly).buttonStyle(.borderless)
                                     }
-                                }
                             }
                         }
                     }
-                    HStack {
-                        Button("Add Images…", systemImage: "paperclip") { importing = true }
-                        Text("or drop images here").font(.caption).foregroundStyle(.secondary)
-                    }
                 }
-                .dropDestination(for: URL.self) { urls, _ in addReferences(urls); return true }
             }
-            Section {
-                HStack {
-                    if running {
-                        Button("Stop", systemImage: "stop.fill") { task?.cancel() }
-                    } else {
-                        Button("Generate", systemImage: "sparkles") { generate() }
-                            .keyboardShortcut(.return, modifiers: .command)
-                            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil)
-                    }
-                    if running { progressView }
+            HStack(alignment: .bottom, spacing: 10) {
+                if spec?.canEditImages == true {
+                    Button("Add reference images", systemImage: "photo.badge.plus") { importing = true }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless).help("Add reference images")
                 }
-                if running, let data = progress?.preview, let img = NSImage(data: data) {
-                    Image(nsImage: img).resizable().scaledToFit().frame(maxHeight: 240)
+                TextField("Describe the image", text: $prompt, axis: .vertical)
+                    .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
+                if running {
+                    Button("Stop", systemImage: "stop.fill") { task?.cancel() }.buttonStyle(.glass)
+                } else {
+                    Button("Generate", systemImage: "sparkles") { generate() }
+                        .buttonStyle(.glassProminent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil)
                 }
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            }
-            ForEach(history.reversed()) { g in
-                Section {
-                    Text(g.prompt).font(.callout).lineLimit(3)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
-                        ForEach(g.images.indices, id: \.self) { i in tile(g.images[i]) }
-                    }
-                } header: { Text(g.model) }
             }
         }
-        .formStyle(.grouped)
-    }
-
-    @ViewBuilder private var progressView: some View {
-        if preparing {
-            ProgressView().controlSize(.small); Text("Preparing model…").foregroundStyle(.secondary)
-        } else if let p = progress, p.totalSteps > 0 {
-            ProgressView(value: Double(p.step), total: Double(p.totalSteps))
-            Text("Image \(imageIndex + 1)/\(count) · step \(p.step)/\(p.totalSteps)").font(.caption).foregroundStyle(.secondary)
-        } else {
-            ProgressView().controlSize(.small)
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .glassBar()
+        .dropDestination(for: URL.self) { urls, _ in
+            guard spec?.canEditImages == true else { return false }
+            addReferences(urls); return true
         }
     }
 
     private func tile(_ data: Data) -> some View {
-        VStack {
-            if let img = NSImage(data: data) { Image(nsImage: img).resizable().scaledToFit().clipShape(.rect(cornerRadius: 6)) }
-            HStack {
+        Group {
+            if let img = NSImage(data: data) { Image(nsImage: img).resizable().scaledToFit().clipShape(.rect(cornerRadius: 12)) }
+        }
+        .contextMenu {
+            Button("Save…") { save(data) }
+            Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
+            if spec?.canEditImages == true { Button("Use as Reference") { references.append(data) } }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            HStack(spacing: 4) {
                 Button("Save…", systemImage: "square.and.arrow.down") { save(data) }
-                Button("Copy", systemImage: "doc.on.doc") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setData(data, forType: .png)
-                }
-                if spec?.canEditImages == true {
-                    Button("Use as reference", systemImage: "photo.badge.plus") { references.append(data) }
-                }
-            }.buttonStyle(.borderless).controlSize(.small)
+                Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
+            }
+            .labelStyle(.iconOnly).buttonStyle(.glass).controlSize(.small).padding(8)
         }
     }
 
@@ -169,16 +257,28 @@ struct ImagesView: View {
             prompt: prompt, negativePrompt: negative.isEmpty ? nil : negative, width: w, height: h,
             steps: useDefaultSteps ? nil : steps, seed: randomSeed ? nil : UInt64(seed),
             inputImages: spec.canEditImages ? references : [])
-        let n = count, text = prompt, images = state.images
-        error = nil; running = true; progress = nil; imageIndex = 0
+        let n = count, text = prompt, images = state.images, metrics = state.metrics
+        error = nil; running = true; progress = nil; imageIndex = 0; timing = Timing(); started = Date()
         task = Task {
             preparing = !(await images.isLoaded(spec.id))
             defer { running = false; preparing = false; progress = nil }
             do {
                 let out = try await images.generate(model: spec, request: req, count: n) { i, p in
-                    Task { @MainActor in preparing = false; imageIndex = i; progress = p }
+                    Task { @MainActor in
+                        preparing = false
+                        if i != imageIndex { timing = Timing() }
+                        imageIndex = i; progress = p
+                        let now = Date()
+                        if timing.firstStep == nil { timing.firstStep = now }
+                        timing.lastStep = now; timing.steps += 1
+                    }
                 }
-                history.append(Generation(prompt: text, model: spec.displayName, images: out))
+                let total = Date().timeIntervalSince(started ?? Date())
+                timing.secondsPerStep.map { metrics.record(spec.id, .secondsPerStep, $0) }
+                if let sps = timing.secondsPerStep {
+                    metrics.record(spec.id, .imageTime, sps * Double(progress?.totalSteps ?? timing.steps))
+                }
+                history.append(Generation(prompt: text, model: spec.id, images: out, seconds: total))
             } catch is CancellationError {
             } catch { self.error = error.localizedDescription }
         }

@@ -2,85 +2,218 @@ import SwiftUI
 import SynapseCore
 
 struct ModelsView: View {
+    var openPane: (Pane) -> Void = { _ in }
     @Environment(AppState.self) private var state
+    @State private var selection: String? = "qwen3.5-0.8b"
     @State private var confirmDelete: ModelSpec?
-    private let recommendedVariant = ModelStore.recommendedWhisperVariant
+
+    /// Catalog families in the order this pane lists them.
+    private var families: [(String, [ModelSpec])] {
+        [("Transcription · Parakeet", Catalog.all.filter { $0.engine == .parakeet }),
+         ("Transcription · Whisper", Catalog.all.filter { $0.engine == .whisper }),
+         ("Chat and vision · Qwen3.5", Catalog.all.filter { $0.engine == .mlx }),
+         ("Images", Catalog.all.filter(\.isImage)),
+         ("Realtime speech", Catalog.all.filter { $0.engine == .speech }),
+         ("Full duplex", Catalog.all.filter { $0.engine == .duplex })]
+    }
 
     var body: some View {
-        @Bindable var state = state
-        Form {
-            Section {
-                Picker("Default model", selection: $state.settings.defaultModelID) {
-                    ForEach(state.downloadedSpecs) { Text($0.displayName).tag($0.id) }
-                    if !state.downloadedSpecs.contains(where: { $0.id == state.settings.defaultModelID }) {
-                        Text("\(state.settings.defaultModelID) (not downloaded)").tag(state.settings.defaultModelID)
-                    }
+        HStack(spacing: 0) {
+            List(selection: $selection) {
+                ForEach(families, id: \.0) { family in
+                    Section(family.0) { ForEach(family.1) { row($0).tag($0.id) } }
                 }
             }
-            Section("Parakeet (fast, 25 European languages)") {
-                ForEach(Catalog.all.filter { $0.engine == .parakeet }) { row($0) }
-            }
-            Section("Whisper (99 languages, translation)") {
-                ForEach(Catalog.all.filter { $0.engine == .whisper }) { row($0) }
-            }
-            Section("Qwen3.5 (chat + vision, MLX)") {
-                ForEach(Catalog.all.filter { $0.engine == .mlx }) { row($0) }
-            }
-            Section("Realtime (live captions, voice, full duplex)") {
-                ForEach(Catalog.all.filter { $0.engine == .speech || $0.engine == .duplex }) { row($0) }
-            }
-            Section("Images") {
-                ForEach(Catalog.all.filter(\.isImage)) { row($0) }
+            .scrollContentBackground(.hidden)
+            .frame(width: 300)
+            Divider()
+            if let spec = selection.flatMap(Catalog.spec) {
+                ScrollView { Datasheet(spec: spec, openPane: openPane, confirmDelete: $confirmDelete).padding(28) }
+                    .frame(maxWidth: .infinity)
+            } else {
+                ContentUnavailableView("Select a model", systemImage: "cube.transparent").frame(maxWidth: .infinity)
             }
         }
-        .formStyle(.grouped)
         .navigationTitle("Models")
         .task { await state.refreshModels() }
         .confirmationDialog("Delete \(confirmDelete?.displayName ?? "")?", isPresented: .constant(confirmDelete != nil),
                             presenting: confirmDelete) { spec in
             Button("Delete", role: .destructive) { state.delete(spec.id); confirmDelete = nil }
             Button("Cancel", role: .cancel) { confirmDelete = nil }
-        }
+        } message: { spec in Text("This removes \(sizeText(spec)) from the models folder. Its measurements are kept.") }
     }
 
     private func row(_ spec: ModelSpec) -> some View {
-        HStack {
+        HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(spec.displayName)
-                    if spec.engine == .whisper, spec.variant == recommendedVariant {
-                        Text("Recommended for this Mac").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(.green.opacity(0.2), in: Capsule())
-                    }
-                }
-                Text("~\(spec.approxMB) MB · \(languageSummary(spec))").font(.caption).foregroundStyle(.secondary)
-                if let gb = spec.recommendedRAMGB, UInt64(gb) * 1_073_741_824 > ProcessInfo.processInfo.physicalMemory {
-                    Text("Needs ~\(gb) GB RAM; will page heavily on this Mac").font(.caption).foregroundStyle(.orange)
-                }
+                Text(spec.displayName).lineLimit(1)
+                Text(spec.id).font(.mono(.caption)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
             switch state.modelStates[spec.id] ?? .notDownloaded {
+            case .ready: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Downloaded")
+            case .downloading(let p): ProgressView(value: p).tint(.live).frame(width: 44).accessibilityLabel("Downloading")
+            case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityLabel("Failed")
+            case .notDownloaded: Text(sizeText(spec)).font(.mono(.caption)).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+func sizeText(_ spec: ModelSpec) -> String {
+    spec.approxMB >= 1000 ? String(format: "%.1f GB", Double(spec.approxMB) / 1000) : "\(spec.approxMB) MB"
+}
+
+/// One model's sheet: what it is, its measured characteristics on this Mac, and how to call it.
+struct Datasheet: View {
+    @Environment(AppState.self) private var state
+    let spec: ModelSpec
+    let openPane: (Pane) -> Void
+    @Binding var confirmDelete: ModelSpec?
+
+    private var metrics: [Metric] {
+        if spec.isChat { return [.firstToken, .decodeRate, .prefillRate, .firstAudio] }
+        if spec.isTranscription { return [.realtimeSpeed] }
+        if spec.isImage { return [.secondsPerStep, .imageTime] }
+        return [.firstAudio]
+    }
+    private var tryPane: Pane? {
+        if spec.isChat { return .chat }
+        if spec.isTranscription { return .transcribe }
+        if spec.isImage { return .images }
+        if spec.engine == .speech || spec.engine == .duplex { return .live }
+        return nil
+    }
+    private var api: [String] {
+        if spec.isChat { return ["POST /v1/chat/completions", "POST /v1/responses", "POST /v1/messages"] }
+        if spec.isTranscription { return ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /asr"] }
+        if spec.isImage { return ["POST /v1/images/generations"] + (spec.canEditImages ? ["POST /v1/images/edits"] : []) }
+        return ["GET /v1/realtime?model=\(spec.id)"]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            header
+            Divider()
+            characteristics
+            VStack(alignment: .leading, spacing: 8) {
+                Text("API").font(.headline)
+                ForEach(api, id: \.self) { Text($0).font(.mono(.callout)).textSelection(.enabled) }
+                Text("model: \(spec.id)").font(.mono(.callout)).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: 760, alignment: .leading)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(spec.displayName).font(.largeTitle.weight(.bold))
+                Text(spec.id).font(.mono(.title3)).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack(spacing: 12) {
+                    Text(summary)
+                    Text(sizeText(spec)).font(.mono(.callout))
+                    if let gb = spec.recommendedRAMGB { Text("needs ~\(gb) GB RAM").font(.mono(.callout)) }
+                    if let r = state.resident(spec.id) { Text("loaded · \(gigabytes(r.bytes))").font(.mono(.callout)).foregroundStyle(Color.live) }
+                }
+                .font(.callout).foregroundStyle(.secondary)
+                if spec.engine == .whisper, spec.variant == ModelStore.recommendedWhisperVariant {
+                    Label("Recommended for this Mac", systemImage: "checkmark.seal").font(.callout).foregroundStyle(.green)
+                }
+                if let gb = spec.recommendedRAMGB, UInt64(gb) * 1_073_741_824 > ProcessInfo.processInfo.physicalMemory {
+                    Label("More than this Mac's memory: it will page heavily and run slowly.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.orange)
+                }
+            }
+            Spacer()
+            actions
+        }
+    }
+
+    @ViewBuilder private var actions: some View {
+        VStack(alignment: .trailing, spacing: 12) {
+            switch state.modelStates[spec.id] ?? .notDownloaded {
             case .notDownloaded:
-                Button("Download") { state.download(spec.id) }
+                Button("Download", systemImage: "arrow.down") { state.download(spec.id) }.buttonStyle(.glassProminent).controlSize(.large)
             case .downloading(let p):
-                ProgressView(value: p).frame(width: 120)
-                Button("Cancel", systemImage: "xmark.circle") { state.cancelDownload(spec.id) }
-                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+                HStack {
+                    ProgressView(value: p).tint(.live).frame(width: 140)
+                    Text("\(Int(p * 100))%").font(.mono(.callout)).foregroundStyle(Color.live)
+                }
+                Button("Cancel Download") { state.cancelDownload(spec.id) }.buttonStyle(.glass)
             case .ready:
-                Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                Button("Delete", systemImage: "trash") { confirmDelete = spec }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                if spec.isTranscription {
+                    if state.settings.defaultModelID == spec.id {
+                        Label("Default for transcription", systemImage: "checkmark").foregroundStyle(.secondary)
+                    } else {
+                        Button("Make Default") { state.settings.defaultModelID = spec.id }.buttonStyle(.glass)
+                            .help("Use for files, watched folders, whisper-1 and Bazarr when no model is named")
+                    }
+                }
+                if let tryPane {
+                    Button("Try in \(tryPane.rawValue)", systemImage: tryPane.icon) { openPane(tryPane) }
+                        .buttonStyle(.glassProminent).controlSize(.large)
+                }
+                Button("Delete…", systemImage: "trash", role: .destructive) { confirmDelete = spec }.buttonStyle(.glass)
             case .failed(let msg):
-                Text(msg).font(.caption).foregroundStyle(.red).lineLimit(2).frame(maxWidth: 220)
-                if msg.localizedCaseInsensitiveContains("gated") { SettingsLink { Text("Open Settings") } }
-                Button("Retry") { state.download(spec.id) }
+                Text(msg).font(.callout).foregroundStyle(.red).frame(maxWidth: 260, alignment: .trailing).multilineTextAlignment(.trailing)
+                HStack {
+                    if msg.localizedCaseInsensitiveContains("gated") { SettingsLink { Text("Add Token…") } }
+                    Button("Retry") { state.download(spec.id) }.buttonStyle(.glassProminent)
+                }
             }
         }
     }
 
-    private func languageSummary(_ spec: ModelSpec) -> String {
-        if spec.isChat { return "Chat + images" }
-        if spec.isImage { return spec.canEditImages ? "Text to image + editing" : "Text to image" }
-        guard let l = spec.languages else { return "99 languages" }
+    private var summary: String {
+        if spec.isChat { return "Chat and vision" }
+        if spec.isImage { return spec.canEditImages ? "Text to image and editing" : "Text to image" }
+        if spec.engine == .duplex { return "Full-duplex speech" }
+        if spec.engine == .speech { return "Realtime speech" }
+        guard let l = spec.languages else { return "99 languages" + (spec.canTranslate ? ", translation" : "") }
         return l == ["en"] ? "English" : "\(l.count) languages"
+    }
+
+    private var characteristics: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Characteristics on this Mac").font(.headline)
+                Spacer()
+                if metrics.contains(where: { state.metrics.stats(spec.id, $0) != nil }) {
+                    Button("Reset Measurements") { state.metrics.clear(spec.id) }.buttonStyle(.borderless).font(.callout)
+                }
+            }
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 0) {
+                GridRow {
+                    Text("Parameter"); Text("Min").gridColumnAlignment(.trailing); Text("Typ").gridColumnAlignment(.trailing)
+                    Text("Max").gridColumnAlignment(.trailing); Text("Unit"); Text("Runs").gridColumnAlignment(.trailing)
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom, 6)
+                Divider().gridCellUnsizedAxes(.horizontal)
+                ForEach(metrics) { m in
+                    let s = state.metrics.stats(spec.id, m)
+                    GridRow(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(m.label)
+                            Text(m.conditions).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(s.map { m.format($0.min) } ?? "–").font(.mono())
+                        Text(s.map { m.format($0.typ) } ?? "–").font(.mono(.body, weight: .bold))
+                        Text(s.map { m.format($0.max) } ?? "–").font(.mono())
+                        Text(m.unit).foregroundStyle(.secondary)
+                        Text(s.map { "\($0.count)" } ?? "0").font(.mono()).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                    Divider().gridCellUnsizedAxes(.horizontal)
+                }
+            }
+            Text(footnote).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var footnote: String {
+        let hasRuns = metrics.contains { state.metrics.stats(spec.id, $0) != nil }
+        if !hasRuns, let tryPane { return "No runs yet. Try it in \(tryPane.rawValue) to measure it." }
+        return "Typ is the median of the last 40 runs in this app. Requests from API clients are not measured here."
     }
 }

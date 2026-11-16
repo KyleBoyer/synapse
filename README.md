@@ -5,7 +5,7 @@ Synapse is a native macOS app that transcribes audio and video into subtitles us
 ## Requirements
 
 - Apple Silicon Mac
-- macOS 15 or later
+- macOS 26 or later
 
 ## Install
 

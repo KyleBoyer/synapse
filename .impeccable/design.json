@@ -1,0 +1,321 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-16T00:00:00Z",
+  "title": "Design System: Synapse",
+  "extensions": {
+    "platform": "macOS 26 native SwiftUI + AppKit; values are points and SwiftUI/AppKit APIs, CSS in components is a preview approximation only.",
+    "colorMeta": {
+      "signal-violet": {
+        "role": "primary",
+        "displayName": "Signal Violet (light)",
+        "source": "Assets.xcassets/AccentColor.colorset (any appearance)",
+        "canonical": "oklch(50% 0.217 284)",
+        "tonalRamp": [
+          "#090621",
+          "#210163",
+          "#371992",
+          "#4F33C0",
+          "#7061E8",
+          "#938FFB",
+          "#BCBDFC",
+          "#ECEDFF"
+        ]
+      },
+      "signal-violet-dark": {
+        "role": "primary",
+        "displayName": "Signal Violet (dark)",
+        "source": "Assets.xcassets/AccentColor.colorset (dark luminosity)",
+        "canonical": "oklch(59% 0.224 287)",
+        "tonalRamp": [
+          "#0B0621",
+          "#240062",
+          "#3B1B8C",
+          "#5436B8",
+          "#7758F4",
+          "#998CFD",
+          "#BFBCFE",
+          "#EDECFF"
+        ]
+      },
+      "burn-in-yellow": {
+        "role": "secondary",
+        "displayName": "Burn-in Yellow (Color.live, dark)",
+        "source": "Theme.swift NSColor(srgbRed: 0.96, green: 0.85, blue: 0.04)",
+        "canonical": "oklch(88% 0.182 100)",
+        "tonalRamp": [
+          "#100B00",
+          "#282200",
+          "#443B00",
+          "#625600",
+          "#8B7B0A",
+          "#B49F08",
+          "#DEC51B",
+          "#F5F0CD"
+        ]
+      },
+      "burn-in-amber": {
+        "role": "secondary",
+        "displayName": "Burn-in Amber (Color.live, light)",
+        "source": "Theme.swift NSColor(srgbRed: 0.55, green: 0.42, blue: 0.0)",
+        "canonical": "oklch(55% 0.112 87)",
+        "tonalRamp": [
+          "#100A01",
+          "#2D1F00",
+          "#4A3700",
+          "#6B5104",
+          "#95751F",
+          "#B79B58",
+          "#DAC28A",
+          "#F6EEDA"
+        ]
+      }
+    },
+    "systemColors": [
+      {
+        "name": "labelColor",
+        "role": "neutral",
+        "purpose": "Primary ink: content, model output, values at rest."
+      },
+      {
+        "name": "secondaryLabelColor",
+        "role": "neutral",
+        "purpose": "Secondary ink: labels, ids, settled timecodes, user messages, remembered values."
+      },
+      {
+        "name": "windowBackgroundColor",
+        "role": "neutral",
+        "purpose": "Tint carried by the window, sidebar and work-area glass."
+      },
+      {
+        "name": "systemGreen",
+        "role": "status",
+        "purpose": "Ready only."
+      },
+      {
+        "name": "systemOrange",
+        "role": "status",
+        "purpose": "Warning only."
+      },
+      {
+        "name": "systemRed",
+        "role": "status",
+        "purpose": "Failure only."
+      }
+    ],
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "swiftUI": ".largeTitle.weight(.bold)",
+        "purpose": "Model name atop the datasheet."
+      },
+      "subtitle": {
+        "displayName": "Subtitle",
+        "swiftUI": "Font.subtitle = .system(.title3, weight: .medium)",
+        "purpose": "Model output; user messages use .title3 regular in secondary ink."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "swiftUI": ".headline",
+        "purpose": "Panel and section titles, model names."
+      },
+      "body": {
+        "displayName": "Body / Callout",
+        "swiftUI": ".body, .callout",
+        "purpose": "Readout labels, datasheet parameters, metadata."
+      },
+      "label": {
+        "displayName": "Label",
+        "swiftUI": ".caption.weight(.semibold), secondary",
+        "purpose": "Speaker line and datasheet column headers; sentence case."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "swiftUI": "Font.mono(.caption) = .system(.caption, design: .monospaced).monospacedDigit()",
+        "purpose": "Timecodes, model ids, server address, API calls."
+      },
+      "mono-reading": {
+        "displayName": "Mono Reading",
+        "swiftUI": "Font.mono(.callout, weight: .medium) + .contentTransition(.numericText())",
+        "purpose": "Burn-in values."
+      }
+    },
+    "materials": [
+      {
+        "name": "window-glass",
+        "value": "NSGlassEffectView .clear, tint windowBackgroundColor @ 8%; window non-opaque, clear background",
+        "purpose": "Whole-window Liquid Glass, the Dock's material."
+      },
+      {
+        "name": "sidebar-glass",
+        "value": "split view sidebar NSGlassEffectView restyled .clear, tint windowBackgroundColor @ 45% default (user slider: Sidebar transparency)",
+        "purpose": "Visibly transparent sidebar."
+      },
+      {
+        "name": "work-area",
+        "value": "WorkAreaGlass: NSGlassEffectView .regular, tint windowBackgroundColor @ 35% default (user slider: Content transparency); stops at the sidebar edge",
+        "purpose": "Slightly translucent, calm reading surface."
+      },
+      {
+        "name": "floating-glass",
+        "value": ".glassEffect(.regular, in: .rect(cornerRadius: 14|18|22))",
+        "purpose": "Burn-in and settings panels, glass bars, sidebar footer."
+      }
+    ],
+    "shadows": [],
+    "motion": [
+      {
+        "name": "numeric-roll",
+        "value": ".contentTransition(.numericText())",
+        "purpose": "Burn-in values roll as they change."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "window-min",
+        "value": "960x600pt"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Burn-in Panel",
+      "kind": "card",
+      "refersTo": "burn-in-panel",
+      "description": "Floating glass readout on every working pane: model, live metrics, run history, API call.",
+      "html": "<div class=\"ds-burnin\"><div class=\"ds-burnin-head\"><div><div class=\"ds-burnin-name\">Qwen3.5 0.8B</div><div class=\"ds-mono ds-sec\">qwen3.5-0.8b</div></div><span class=\"ds-dot\"></span></div><div class=\"ds-burnin-row\"><span class=\"ds-sec\">First token</span><span class=\"ds-val\">0.71 s</span></div><div class=\"ds-burnin-row\"><span class=\"ds-sec\">Decode</span><span class=\"ds-val ds-live\">62.6 tok/s</span></div><div class=\"ds-burnin-row\"><span class=\"ds-sec\">Prompt</span><span class=\"ds-val ds-sec\">typ 38.2 tok/s</span></div><div class=\"ds-hist\"><i style=\"height:18px\"></i><i style=\"height:24px\"></i><i class=\"ds-now\" style=\"height:30px\"></i></div><div class=\"ds-cap ds-sec\">Decode rate, last 3 runs</div><hr><div class=\"ds-mono ds-sec\">POST /v1/chat/completions<br>model: qwen3.5-0.8b</div></div>",
+      "css": ".ds-burnin{width:288px;padding:14px;border-radius:18px;background:rgba(40,40,44,.72);backdrop-filter:blur(24px) saturate(1.6);color:#fff;font:12px -apple-system,system-ui;display:flex;flex-direction:column;gap:10px;border:1px solid rgba(255,255,255,.12)}.ds-burnin-head{display:flex;justify-content:space-between;align-items:baseline}.ds-burnin-name{font-weight:700;font-size:13px}.ds-mono{font:10px ui-monospace,'SF Mono',monospace;font-variant-numeric:tabular-nums}.ds-sec{color:rgba(255,255,255,.55)}.ds-dot{width:7px;height:7px;border-radius:50%;background:#F5D90A}.ds-burnin-row{display:flex;justify-content:space-between}.ds-val{font:500 12px ui-monospace,'SF Mono',monospace;font-variant-numeric:tabular-nums}.ds-live{color:#F5D90A}.ds-hist{display:flex;align-items:flex-end;gap:3px;height:30px}.ds-hist i{width:10px;border-radius:1.5px;background:rgba(255,255,255,.25)}.ds-hist i.ds-now{background:#F5D90A}.ds-cap{font-size:10px}.ds-burnin hr{border:0;border-top:1px solid rgba(255,255,255,.12);margin:0}"
+    },
+    {
+      "name": "Glass Bar Composer",
+      "kind": "input",
+      "refersTo": "glass-bar",
+      "description": "Full-width floating glass bar: attach, multiline field, prominent Send.",
+      "html": "<div class=\"ds-bar\"><button class=\"ds-icon\" aria-label=\"Attach Image\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><rect x=\"1.5\" y=\"3\" width=\"13\" height=\"10\" rx=\"2\"/><path d=\"M2 12l4-4 3 3 2-2 3 3\"/></svg></button><input class=\"ds-bar-field\" placeholder=\"Message Qwen3.5 0.8B\"><button class=\"ds-send\" aria-label=\"Send\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.8\"><path d=\"M6 10V2M2.5 5.5L6 2l3.5 3.5\"/></svg></button></div>",
+      "css": ".ds-bar{display:flex;align-items:center;gap:10px;padding:12px 18px;border-radius:22px;background:rgba(255,255,255,.55);backdrop-filter:blur(24px) saturate(1.6);border:1px solid rgba(255,255,255,.5);width:100%;box-sizing:border-box}.ds-bar-field{flex:1;border:0;background:transparent;font:15px -apple-system,system-ui;outline:none;color:#1d1d1f}.ds-icon{border:0;background:transparent;color:rgba(0,0,0,.5);cursor:pointer}.ds-icon:hover{color:rgba(0,0,0,.8)}.ds-send{width:28px;height:28px;border-radius:14px;border:0;background:#5B3FD6;display:grid;place-items:center;cursor:pointer}.ds-send:hover{background:#4F33C0}.ds-send:focus-visible,.ds-icon:focus-visible{outline:3px solid rgba(91,63,214,.45);outline-offset:2px}"
+    },
+    {
+      "name": "Prominent Glass Button",
+      "kind": "button",
+      "refersTo": "button-prominent",
+      "description": ".glassProminent, tinted by the violet AccentColor; one per context.",
+      "html": "<button class=\"ds-btn-prominent\">Try in Chat</button>",
+      "css": ".ds-btn-prominent{padding:7px 16px;border-radius:999px;border:0;background:#5B3FD6;color:#fff;font:13px -apple-system,system-ui;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}.ds-btn-prominent:hover{background:#4F33C0}.ds-btn-prominent:active{background:#371992}.ds-btn-prominent:focus-visible{outline:3px solid rgba(91,63,214,.45);outline-offset:2px}"
+    },
+    {
+      "name": "Glass Button",
+      "kind": "button",
+      "refersTo": "button-glass",
+      "description": ".glass secondary action: Stop, Delete\u2026, Unload, Cancel Download.",
+      "html": "<button class=\"ds-btn-glass\">Unload</button>",
+      "css": ".ds-btn-glass{padding:5px 14px;border-radius:999px;border:1px solid rgba(0,0,0,.08);background:rgba(255,255,255,.6);backdrop-filter:blur(16px);color:#1d1d1f;font:13px -apple-system,system-ui;cursor:pointer}.ds-btn-glass:hover{background:rgba(255,255,255,.8)}.ds-btn-glass:focus-visible{outline:3px solid rgba(91,63,214,.45);outline-offset:2px}"
+    },
+    {
+      "name": "Choice Menu",
+      "kind": "chip",
+      "refersTo": "choice-menu",
+      "description": "Toolbar choice sized to its current value: display name plus mono id.",
+      "html": "<button class=\"ds-choice\">Qwen3.5 0.8B <span class=\"ds-choice-id\">qwen3.5-0.8b</span> <svg width=\"8\" height=\"8\" viewBox=\"0 0 8 8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\"><path d=\"M1.5 3l2.5 2.5L6.5 3\"/></svg></button>",
+      "css": ".ds-choice{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:rgba(60,60,64,.7);backdrop-filter:blur(16px);color:#fff;font:13px -apple-system,system-ui;cursor:pointer;width:auto}.ds-choice-id{font:10px ui-monospace,'SF Mono',monospace;color:rgba(255,255,255,.55)}.ds-choice:hover{background:rgba(75,75,80,.8)}.ds-choice:focus-visible{outline:3px solid rgba(122,90,248,.5);outline-offset:2px}"
+    },
+    {
+      "name": "Sidebar Row",
+      "kind": "nav",
+      "refersTo": "sidebar-row",
+      "description": "Native sidebar row over clear glass; violet selection; live dot while work runs.",
+      "html": "<nav class=\"ds-side\"><div class=\"ds-side-sec\">Try</div><a class=\"ds-side-row\">Transcribe</a><a class=\"ds-side-row ds-sel\">Chat<span class=\"ds-dot\"></span></a><a class=\"ds-side-row\">Images</a></nav>",
+      "css": ".ds-side{width:200px;padding:8px;background:rgba(40,40,44,.35);backdrop-filter:blur(8px);font:13px -apple-system,system-ui;color:#fff}.ds-side-sec{font-size:11px;font-weight:600;color:rgba(255,255,255,.45);padding:6px 10px}.ds-side-row{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-radius:8px;cursor:default}.ds-side-row:hover{background:rgba(255,255,255,.06)}.ds-side-row.ds-sel{background:#7A5AF8}.ds-dot{width:7px;height:7px;border-radius:50%;background:#F5D90A}"
+    },
+    {
+      "name": "Timecode Line",
+      "kind": "custom",
+      "refersTo": "timecode-gutter",
+      "description": "Output row: 82pt mono timecode gutter (live while streaming), speaker label, subtitle-weight text.",
+      "html": "<div class=\"ds-line\"><span class=\"ds-tc ds-live\">00:00:00.71</span><div><div class=\"ds-speaker\">Qwen3.5 0.8B</div><div class=\"ds-out\">A zebra's distinctive black and white stripes act as a natural insect repellent.</div></div></div>",
+      "css": ".ds-line{display:flex;gap:16px;align-items:baseline;font-family:-apple-system,system-ui;color:#fff;background:#262628;padding:12px}.ds-tc{width:82px;flex:none;font:10px ui-monospace,'SF Mono',monospace;font-variant-numeric:tabular-nums}.ds-live{color:#F5D90A}.ds-speaker{font-size:10px;font-weight:600;color:rgba(255,255,255,.55);margin-bottom:6px}.ds-out{font-size:15px;font-weight:500;max-width:760px}"
+    },
+    {
+      "name": "Panel Row",
+      "kind": "custom",
+      "refersTo": "panel-row",
+      "description": "Settings row in a glass panel: label left, control flush right.",
+      "html": "<div class=\"ds-prow\"><span>Random seed</span><label class=\"ds-switch\"><input type=\"checkbox\" checked><i></i></label></div>",
+      "css": ".ds-prow{display:flex;justify-content:space-between;align-items:center;gap:12px;width:260px;font:13px -apple-system,system-ui;color:#1d1d1f}.ds-switch input{display:none}.ds-switch i{display:block;width:32px;height:18px;border-radius:9px;background:rgba(0,0,0,.15);position:relative;transition:background .2s}.ds-switch i::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .2s}.ds-switch input:checked+i{background:#5B3FD6}.ds-switch input:checked+i::after{left:16px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Bench Under Glass",
+    "overview": "Synapse treats a model as a component under test. Every working pane runs it live with the clock burned in: a mono timecode gutter beside the output, a floating glass readout of what the model is doing right now, and a run history whose newest bar burns yellow. The Models pane keeps the measured record, a datasheet with Min / Typ / Max built from runs on this Mac. The look is a native macOS 26 window made of Liquid Glass, where the desktop shows through the chrome and the work area stays calm enough to read.\n\nDensity is that of a pro tool: system text styles at their native sizes, every number in tabular SF Mono, model ids always beside display names. Color is nearly absent. Ink is the system's primary and secondary label; the accent is the app icon's violet, carried only by native controls; one reserved color marks what is happening now. Confirmed rejections from the owner: a non-native look, and too many colors or a game feel.",
+    "keyCharacteristics": [
+      "Native SwiftUI controls and navigation throughout; no custom-drawn buttons, switches or popups.",
+      "Three layers of glass: a clear window, a see-through sidebar, a lightly frosted work area.",
+      "One accent (icon violet), one live color (subtitle yellow / amber), status hues only for status.",
+      "SF Pro for words, SF Mono tabular for every number, timecode and model id.",
+      "Floating glass panels and full-width glass bars; no drop shadows."
+    ],
+    "rules": [
+      {
+        "name": "The Now Rule",
+        "body": "Burn-in yellow is reserved for what is happening now: streaming text, the active job, the open mic, the current metric. If it would still be true after the run ends, it is not live. (Owner decision.)",
+        "section": "colors"
+      },
+      {
+        "name": "The One Accent Rule",
+        "body": "Violet reaches the screen only through native control states. Never paint text, icons, backgrounds or charts with it. (Owner decision: \"Keep violet\".)",
+        "section": "colors"
+      },
+      {
+        "name": "The Status-Only Rule",
+        "body": "Red, orange and green mean failure, warning and ready, nothing else. No other hues enter the system. (Owner decision: avoid too many colors / game feel.)",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono Number Rule",
+        "body": "Every number, timecode (`00:00:21.52`), size and model id is set in `Font.mono`, tabular, so columns and changing values never jitter.",
+        "section": "typography"
+      },
+      {
+        "name": "The Name-Then-Id Rule",
+        "body": "A model is shown the way API clients name it: display name, then the id in mono secondary, side by side on one baseline.",
+        "section": "typography"
+      },
+      {
+        "name": "The Full-Width Bar Rule",
+        "body": "Composer and run bars span the full pane width. (Owner decision.)",
+        "section": "layout"
+      },
+      {
+        "name": "The Fit-the-Value Rule",
+        "body": "Toolbar choices size to their current value (`ChoiceMenu`), never to their longest option; no short text stranded at the left of a wide capsule. (Owner decision.)",
+        "section": "layout"
+      },
+      {
+        "name": "The Three Glass Rule",
+        "body": "Window clear, sidebar see-through, work area only slightly translucent. (Owner decisions: sidebar more transparent than the work area; \"I like this amount of opacity\" for the 55% sidebar / 65% content transparency defaults, both adjustable in Settings.) Never make the reading surface clear and never make the sidebar opaque.",
+        "section": "elevation"
+      },
+      {
+        "name": "The No-Shadow Rule",
+        "body": "Floating surfaces separate by glass alone. Do not add drop shadows.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use native SwiftUI controls, button styles (`.glass`, `.glassProminent`, `.borderless`) and SF Symbols.",
+      "Do put a burn-in panel (288pt, 18pt glass) on every working pane, with the matching API call and a Copy button.",
+      "Do set every number, timecode and model id in `Font.mono`, and show a model id beside its display name.",
+      "Do use `Color.live` only for what is happening now, and clear it when the run ends.",
+      "Do make composer and run bars span the full pane width (`glassBar`, 22pt).",
+      "Do size toolbar choices to their value with `ChoiceMenu`, and lay out panel settings with `PanelRow`.",
+      "Do keep the work area under its blur and fill so the reading surface stays calm over any desktop."
+    ],
+    "donts": [
+      "Don't build a non-native look: no custom-drawn controls, no hand-rolled popups or switches. (Owner.)",
+      "Don't add colors: no second accent, no UI gradients (the icon's indigo-to-magenta gradient stays in the icon), no color-coding beyond violet, live and the status trio. (Owner: too many colors / game feel.)",
+      "Don't use violet for text, icons or fills; it reaches the screen only through native control states.",
+      "Don't use red, orange or green for anything but failure, warning and ready.",
+      "Don't add drop shadows; depth comes from glass.",
+      "Don't make the sidebar opaque or the work area fully clear.",
+      "Don't let a native popup size to its longest option and strand a short value in a wide capsule."
+    ]
+  }
+}

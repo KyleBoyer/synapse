@@ -8,3 +8,10 @@ dist/
 .DS_Store
 .swiftpm/
 __pycache__/
+
+# Impeccable runtime state (PRODUCT.md, DESIGN.md, .impeccable/surfaces and design.json are committed)
+.impeccable/questions/
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/hook.cache.json
+.impeccable/config.local.json

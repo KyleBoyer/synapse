@@ -20,9 +20,9 @@ struct WatchFoldersView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Image(systemName: "folder")
-                            Text(folder.path).lineLimit(1).truncationMode(.middle)
+                            Text(folder.path).font(.mono(.callout)).lineLimit(1).truncationMode(.middle)
                             Spacer()
-                            Text(counts(folder)).font(.caption).foregroundStyle(.secondary)
+                            Text(counts(folder)).font(.mono(.caption)).foregroundStyle(.secondary)
                             Button("Remove", systemImage: "minus.circle") {
                                 state.settings.watchFolders.removeAll { $0.path == folder.path }
                             }.labelStyle(.iconOnly).buttonStyle(.borderless)

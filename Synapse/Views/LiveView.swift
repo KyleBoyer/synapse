@@ -10,7 +10,7 @@ enum LiveMode: String, CaseIterable, Identifiable {
 
 @MainActor @Observable
 final class LiveModel {
-    struct Line: Identifiable { let id: String; var role: String; var text: String; var final: Bool }
+    struct Line: Identifiable { let id: String; var role: String; var text: String; var final: Bool; var at: Double = 0 }
 
     var lines: [Line] = []
     var running = false
@@ -18,6 +18,8 @@ final class LiveModel {
     var level: Float = 0
     var error: String?
     var latency: Double?
+    /// When the session started; lines carry their offset from it as timecode.
+    var started: Date?
 
     private var session: RealtimeSession?
     private var audio: LiveAudio?
@@ -63,7 +65,7 @@ final class LiveModel {
             self.error = "Could not start the microphone: \(error.localizedDescription)"
             await s.close(); return
         }
-        session = s; audio = a; running = true; preparing = true; muted = false
+        session = s; audio = a; running = true; preparing = true; muted = false; started = Date()
         task = Task { [weak self] in
             for await data in s.events { self?.handle(data, session: s, mode: mode) }
             self?.finish()
@@ -84,7 +86,9 @@ final class LiveModel {
         if let i = lines.firstIndex(where: { $0.id == id }) {
             lines[i].text = append ? lines[i].text + text : text
             lines[i].final = final
-        } else { lines.append(Line(id: id, role: role, text: text, final: final)) }
+        } else {
+            lines.append(Line(id: id, role: role, text: text, final: final, at: started.map { Date().timeIntervalSince($0) } ?? 0))
+        }
     }
 
     private func handle(_ data: Data, session s: RealtimeSession, mode: LiveMode) {
@@ -112,6 +116,7 @@ final class LiveModel {
     }
 }
 
+
 struct LiveView: View {
     @Environment(AppState.self) private var state
     @State private var model = LiveModel()
@@ -131,81 +136,177 @@ struct LiveView: View {
         default: state.downloadedRealtimeBase && !chatModel.isEmpty
         }
     }
+    /// Captions have nothing to set; the options card shows only when it holds a control or a missing-model note.
+    private var hasOptions: Bool { mode != .captions || (!canStart && !model.running) }
+    /// The model doing the talking in this mode, for the readout.
+    private var speakerID: String {
+        switch mode {
+        case .captions: "parakeet-eou-120m"
+        case .duplex: duplexModel
+        default: chatModel
+        }
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    Picker("Mode", selection: $mode) { ForEach(LiveMode.allCases) { Text($0.rawValue).tag($0) } }
-                        .pickerStyle(.segmented).disabled(model.running)
-                    if needsChat {
-                        Picker("Chat model", selection: $chatModel) {
-                            ForEach(state.downloadedChatSpecs) { Text($0.displayName).tag($0.id) }
-                        }.disabled(model.running)
-                    }
-                    if mode == .translate {
-                        Picker("Translate to", selection: $language) { ForEach(languages, id: \.self) { Text($0) } }.disabled(model.running)
-                        Toggle("Speak the translation", isOn: $spoken).disabled(model.running)
-                    }
-                    if mode == .call || (mode == .translate && spoken) {
-                        TextField("Voice (optional)", text: $voice).disabled(model.running)
-                    }
-                    if mode == .duplex {
-                        Picker("Duplex model", selection: $duplexModel) {
-                            ForEach(state.downloadedDuplexSpecs) { Text($0.displayName).tag($0.id) }
-                        }.disabled(model.running)
-                        Label("Experimental", systemImage: "flask").foregroundStyle(.orange)
-                    }
-                    if !canStart && !model.running {
-                        Text(mode == .duplex ? "Download a full-duplex model in Models."
-                             : "Download Parakeet EOU, Silero VAD, PocketTTS" + (mode == .captions ? "" : " and a Qwen chat model") + " in Models.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
+        HStack(alignment: .top, spacing: 0) {
+            stage
+            ScrollView {
+                VStack(spacing: 12) { readout; if hasOptions { options } }.padding(16).frame(maxWidth: .infinity)
+            }
+            .frame(width: 320)
+            .scrollClipDisabled()
+            
+        }
+        .safeAreaInset(edge: .bottom) { micBar.padding([.horizontal, .bottom], 16) }
+        .navigationTitle("Live")
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Mode", selection: $mode) { ForEach(LiveMode.allCases) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).disabled(model.running)
+            }
+        }
+        .task { await state.refreshModels() }
+        .onAppear { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
+        .onChange(of: state.downloadedChatSpecs.count) { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
+        .onChange(of: state.downloadedDuplexSpecs.count, initial: true) { if duplexModel.isEmpty { duplexModel = state.downloadedDuplexSpecs.first?.id ?? "" } }
+        .onChange(of: model.running) { state.setActive(.live, model.running) }
+        .onChange(of: model.latency) { if let l = model.latency, !chatModel.isEmpty { state.metrics.record(chatModel, .firstAudio, l) } }
+        .onDisappear { if model.running { model.stop() } }
+    }
+
+    @ViewBuilder private var stage: some View {
+        if mode == .captions {
+            // Captions sit where subtitles do: bottom third, centered, the newest line brightest.
+            VStack(spacing: 10) {
+                Spacer()
+                if model.lines.isEmpty {
+                    Text(model.running ? "Listening…" : "Start the microphone to caption speech live.")
+                        .font(.subtitle).foregroundStyle(.secondary)
                 }
-                Section {
-                    HStack {
-                        Button(model.running ? "Stop" : "Start", systemImage: model.running ? "stop.circle.fill" : "mic.circle.fill") {
-                            if model.running { model.stop() } else {
-                                Task { await model.start(mode: mode, services: state.realtime, chatModel: chatModel,
-                                                         duplexModel: duplexModel, language: language, spoken: spoken, voice: voice) }
-                            }
-                        }
-                        .keyboardShortcut(.defaultAction).disabled(!model.running && !canStart)
-                        if model.running {
-                            ProgressView(value: Double(model.level)).frame(width: 120).accessibilityLabel("Microphone level")
-                            Text(model.preparing ? "Preparing models…" : "Listening").foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if mode == .call, let l = model.latency { Text(String(format: "first audio in %.1f s", l)).font(.caption).foregroundStyle(.secondary) }
-                        Button("Copy", systemImage: "doc.on.doc") {
-                            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(model.transcript, forType: .string)
-                        }.disabled(model.lines.isEmpty)
-                        Button("Clear", systemImage: "trash") { model.clear() }.disabled(model.lines.isEmpty)
-                    }
-                    if let e = model.error { Text(e).font(.callout).foregroundStyle(.red) }
+                ForEach(model.lines.suffix(3)) { l in
+                    Text(l.text)
+                        .font(.system(size: 28, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(l.final ? Color.primary : Color.live)
+                        .textSelection(.enabled)
                 }
             }
-            .formStyle(.grouped).scrollDisabled(true).fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 40).padding(.bottom, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .contain).accessibilityLabel("Live captions")
+        } else {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.lines) { l in
-                            Text(mode == .captions ? l.text : "\(l.role): \(l.text)")
-                                .foregroundStyle(l.final ? .primary : .secondary)
-                                .font(mode == .captions ? .title3 : .body)
-                                .frame(maxWidth: .infinity, alignment: .leading).id(l.id)
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        if model.lines.isEmpty {
+                            Text(emptyText).font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                         }
-                    }.padding()
+                        ForEach(model.lines) { l in
+                            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                                Text(timecode(l.at)).font(.mono(.caption)).foregroundStyle(l.final ? Color.secondary : Color.live)
+                                    .frame(width: 82, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(l.role).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                    Text(l.text).font(l.role == "You" ? .title3 : .subtitle)
+                                        .foregroundStyle(l.role == "You" ? .secondary : .primary).textSelection(.enabled)
+                                }
+                            }
+                            .id(l.id)
+                        }
+                    }
+                    .padding(.horizontal, 24).padding(.vertical, 16).frame(maxWidth: 820, alignment: .leading)
                 }
                 .onChange(of: model.lines.last?.text) { if let id = model.lines.last?.id { proxy.scrollTo(id) } }
             }
             .accessibilityLabel("Live transcript")
         }
-        .navigationTitle("Live")
-        .task { await state.refreshModels() }
-        .onAppear { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
-        .onChange(of: state.downloadedChatSpecs.count) { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
-        .onChange(of: state.downloadedDuplexSpecs.count) { if duplexModel.isEmpty { duplexModel = state.downloadedDuplexSpecs.first?.id ?? "" } }
-        .onDisappear { if model.running { model.stop() } }
+    }
+
+    private var emptyText: String {
+        switch mode {
+        case .translate: "Speak, and the translation appears here."
+        case .call: "Start the call and talk. Interrupt any time."
+        case .duplex: "Full duplex: the model listens and speaks at the same time."
+        case .captions: ""
+        }
+    }
+
+    private var readout: some View {
+        let spec = Catalog.spec(speakerID)
+        return BurnIn(
+            name: spec?.displayName ?? "No model", modelID: speakerID.isEmpty ? "–" : speakerID,
+            readings: [
+                Reading(label: "State", value: model.running ? (model.preparing ? "loading models" : "listening") : "stopped", live: model.running),
+                Reading(label: "Mic level", value: model.running ? String(format: "%3.0f%%", model.level * 100) : "–", live: model.running),
+                model.latency.map { Reading(label: "First audio", value: String(format: "%.2f s", $0)) }
+                    ?? Reading(label: "First audio", value: state.metrics.typical(speakerID, .firstAudio) ?? "–", muted: true),
+                Reading(label: "Lines", value: "\(model.lines.count)"),
+                Reading(label: "Resident", value: state.resident(speakerID).map { gigabytes($0.bytes) } ?? "not loaded"),
+            ],
+            history: state.metrics.history(speakerID, .firstAudio), historyMetric: .firstAudio,
+            running: model.running,
+            api: "GET /v1/realtime\nmodel: \(speakerID)" + (mode == .captions ? "\nintent: transcription" : ""),
+            apiCopy: "ws://127.0.0.1:\(state.settings.port)/v1/realtime?model=\(speakerID)" + (mode == .captions ? "&intent=transcription" : ""))
+    }
+
+    private var options: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if needsChat {
+                Picker("Chat model", selection: $chatModel) {
+                    ForEach(state.downloadedChatSpecs) { Text($0.displayName).tag($0.id) }
+                }
+            }
+            if mode == .translate {
+                Picker("Translate to", selection: $language) { ForEach(languages, id: \.self) { Text($0) } }
+                Toggle("Speak the translation", isOn: $spoken)
+            }
+            if mode == .call || (mode == .translate && spoken) {
+                TextField("Voice (optional)", text: $voice).textFieldStyle(.roundedBorder)
+            }
+            if mode == .duplex {
+                Picker("Duplex model", selection: $duplexModel) {
+                    ForEach(state.downloadedDuplexSpecs) { Text($0.displayName).tag($0.id) }
+                }
+                Label("Experimental. Needs the RAM shown in Models.", systemImage: "flask").font(.callout).foregroundStyle(.orange)
+            }
+            if !canStart && !model.running {
+                Label(mode == .duplex ? "Download a full-duplex model in Models."
+                      : "Download Parakeet EOU, Silero VAD, PocketTTS" + (mode == .captions ? "" : " and a Qwen chat model") + " in Models.",
+                      systemImage: "arrow.down.circle").font(.callout).foregroundStyle(.orange)
+            }
+        }
+        .disabled(model.running)
+        .padding(14)
+        .frame(width: 288, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+    }
+
+    private var micBar: some View {
+        HStack(spacing: 14) {
+            Button {
+                if model.running { model.stop() } else {
+                    Task { await model.start(mode: mode, services: state.realtime, chatModel: chatModel,
+                                             duplexModel: duplexModel, language: language, spoken: spoken, voice: voice) }
+                }
+            } label: {
+                Label(model.running ? "Stop" : "Start", systemImage: model.running ? "stop.fill" : "mic.fill").frame(minWidth: 80)
+            }
+            .buttonStyle(.glassProminent).controlSize(.large)
+            .keyboardShortcut(.defaultAction).disabled(!model.running && !canStart)
+            if model.running {
+                ProgressView(value: Double(model.level)).tint(.live).frame(width: 140).accessibilityLabel("Microphone level")
+                Text(model.preparing ? "Loading models…" : "Listening").foregroundStyle(.secondary)
+            } else if let e = model.error {
+                Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).lineLimit(2)
+            }
+            Spacer()
+            Button("Copy", systemImage: "doc.on.doc") {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(model.transcript, forType: .string)
+            }
+            .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(model.lines.isEmpty).help("Copy transcript")
+            Button("Clear", systemImage: "trash") { model.clear() }
+                .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(model.lines.isEmpty).help("Clear")
+        }
+        .glassBar()
     }
 }

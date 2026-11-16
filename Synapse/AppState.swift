@@ -18,6 +18,16 @@ final class AppState {
     var startupError: String?
     var residents: [ResidentInfo] = []
     var memoryOvercommitted = false
+    /// Panes doing work right now; the sidebar marks them with the live dot.
+    var activePanes: Set<Pane> = []
+    func isActive(_ pane: Pane) -> Bool {
+        pane == .transcribe ? jobs.contains { !$0.status.isTerminal } : activePanes.contains(pane)
+    }
+    func setActive(_ pane: Pane, _ on: Bool) { if on { activePanes.insert(pane) } else { activePanes.remove(pane) } }
+    /// When each job left the queue, and how long it took once finished.
+    private(set) var jobStarted: [UUID: Date] = [:]
+    private(set) var jobElapsed: [UUID: Double] = [:]
+    let metrics = MetricsStore()
 
     let settingsBox: SettingsBox
     let store: ModelStore
@@ -50,12 +60,28 @@ final class AppState {
             for await snap in updates { self?.upsert(snap) }
         }
         Task { await refreshModels() }
+        Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshResidents()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
         applySettings(old: nil)
     }
+
+    func resident(_ id: String) -> ResidentInfo? { residents.first { $0.id == id } }
 
     // MARK: Jobs
 
     private func upsert(_ snap: JobSnapshot) {
+        if snap.status != .queued, jobStarted[snap.id] == nil { jobStarted[snap.id] = Date() }
+        if snap.status == .done, jobElapsed[snap.id] == nil, let start = jobStarted[snap.id] {
+            let elapsed = Date().timeIntervalSince(start)
+            jobElapsed[snap.id] = elapsed
+            if let model = snap.modelID, let t = snap.transcript, t.duration > 0 {
+                metrics.record(model, .realtimeSpeed, t.duration / elapsed)
+            }
+        }
         if let i = jobs.firstIndex(where: { $0.id == snap.id }) { jobs[i] = snap } else { jobs.append(snap) }
         if jobs.count > 300 { jobs.removeFirst(jobs.count - 300) }
     }

@@ -2,7 +2,7 @@ name: Synapse
 options:
   bundleIdPrefix: app.synapse
   deploymentTarget:
-    macOS: "15.0"
+    macOS: "26.0"
 packages:
   SynapseCore:
     path: Packages/SynapseCore
@@ -27,6 +27,7 @@ targets:
         ARCHS: arm64
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: YES

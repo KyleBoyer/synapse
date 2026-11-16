@@ -10,30 +10,46 @@ struct TranscriptView: View {
     var body: some View {
         let transcript = job.transcript ?? Transcript(language: nil, duration: 0, segments: [])
         VStack(spacing: 0) {
-            HStack {
-                Text(job.request.input.url.lastPathComponent).font(.headline).lineLimit(1)
-                if let l = transcript.language { Text(Languages.name(l)).foregroundStyle(.secondary) }
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(job.request.input.url.lastPathComponent).font(.headline).lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 8) {
+                        if let l = transcript.language { Text(Languages.name(l)) }
+                        Text(timecode(transcript.duration)).font(.mono(.caption))
+                        Text("\(transcript.segments.count) segments")
+                        if let m = job.modelID { Text(m).font(.mono(.caption)) }
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button("Copy Text") {
+                Button("Copy Text", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(transcript.text, forType: .string)
                 }
-                Menu("Export") {
+                Menu("Export", systemImage: "square.and.arrow.up") {
                     ForEach([OutputFormat.srt, .vtt, .txt, .json], id: \.self) { f in
                         Button(f.rawValue.uppercased()) { export(transcript, as: f) }
                     }
-                }.fixedSize()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-            }
-            .padding()
-            List(Array(transcript.segments.enumerated()), id: \.offset) { _, seg in
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(timestamp(seg.start)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    Text(seg.text.trimmingCharacters(in: .whitespaces)).textSelection(.enabled)
                 }
+                .fixedSize()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.glassProminent)
+            }
+            .buttonStyle(.glass)
+            .padding(16)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(transcript.segments.enumerated()), id: \.offset) { _, seg in
+                        HStack(alignment: .firstTextBaseline, spacing: 16) {
+                            Text(timecode(seg.start)).font(.mono(.caption)).foregroundStyle(.secondary).frame(width: 82, alignment: .leading)
+                            Text(seg.text.trimmingCharacters(in: .whitespaces)).font(.subtitle).textSelection(.enabled)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20).padding(.bottom, 20)
+                .frame(maxWidth: 760, alignment: .leading)
             }
         }
-        .frame(minWidth: 640, minHeight: 480)
+        .frame(minWidth: 680, minHeight: 520)
     }
 
     private func export(_ t: Transcript, as format: OutputFormat) {

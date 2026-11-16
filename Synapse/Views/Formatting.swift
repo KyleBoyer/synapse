@@ -15,7 +15,7 @@ struct LanguagePicker: View {
     @Binding var code: String?
     var body: some View {
         Picker(title, selection: $code) {
-            Text("Auto").tag(String?.none)
+            Text("Auto-detect language").tag(String?.none)
             Divider()
             ForEach(Languages.common, id: \.self) { Text(Languages.name($0)).tag(String?.some($0)) }
         }
@@ -29,7 +29,7 @@ struct ModelPicker: View {
     var allowDefault = true
     var body: some View {
         Picker(title, selection: $id) {
-            if allowDefault { Text("Default").tag(String?.none) }
+            if allowDefault { Text("Default model").tag(String?.none) }
             ForEach(specs) { Text($0.displayName).tag(String?.some($0.id)) }
         }
     }
@@ -46,6 +46,18 @@ extension JobStatus {
         case .failed(let m): "Failed: \(m)"
         case .cancelled: "Cancelled"
         case .skipped(let m): "Skipped: \(m)"
+        }
+    }
+}
+
+extension JobStatus {
+    /// For the readout, where the long first-run explanation does not fit.
+    var shortLabel: String {
+        switch self {
+        case .preparingModel: "Preparing model"
+        case .failed: "Failed"
+        case .skipped: "Skipped"
+        default: label
         }
     }
 }
