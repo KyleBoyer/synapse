@@ -18,6 +18,8 @@ final class AppState {
     var startupError: String?
     var residents: [ResidentInfo] = []
     var memoryOvercommitted = false
+    /// Settings is a sheet over the main window, opened from ⌘, the menu bar extra, or in-app links.
+    var showingSettings = false
     /// Panes doing work right now; the sidebar marks them with the live dot.
     var activePanes: Set<Pane> = []
     func isActive(_ pane: Pane) -> Bool {

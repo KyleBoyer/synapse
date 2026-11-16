@@ -17,6 +17,11 @@ struct MenuBarView: View {
             openWindow(id: "main")
             NSApp.activate()
         }
+        Button("Settings…") {
+            openWindow(id: "main")
+            NSApp.activate()
+            state.showingSettings = true
+        }
         Toggle("Pause Watching", isOn: Binding(
             get: { state.settings.watchingPaused },
             set: { state.settings.watchingPaused = $0 }))

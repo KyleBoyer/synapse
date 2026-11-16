@@ -158,7 +158,7 @@ struct Datasheet: View {
             case .failed(let msg):
                 Text(msg).font(.callout).foregroundStyle(.red).frame(maxWidth: 260, alignment: .trailing).multilineTextAlignment(.trailing)
                 HStack {
-                    if msg.localizedCaseInsensitiveContains("gated") { SettingsLink { Text("Add Token…") } }
+                    if msg.localizedCaseInsensitiveContains("gated") { Button("Add Token…") { state.showingSettings = true }.buttonStyle(.glass) }
                     Button("Retry") { state.download(spec.id) }.buttonStyle(.glassProminent)
                 }
             }

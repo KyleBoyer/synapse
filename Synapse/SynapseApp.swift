@@ -41,8 +41,8 @@ struct SynapseApp: App {
         Window("Synapse", id: "main") {
             MainView().environment(state).frame(minWidth: 960, minHeight: 600)
         }
-        Settings {
-            SettingsView().environment(state)
+        .commands {
+            CommandGroup(replacing: .appSettings) { SettingsCommand().environment(state) }
         }
         MenuBarExtra("Synapse", systemImage: "waveform") {
             MenuBarView().environment(state)
@@ -89,6 +89,9 @@ struct MainView: View {
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .containerBackground(.clear, for: .window)
+        .sheet(isPresented: Binding(get: { state.showingSettings }, set: { state.showingSettings = $0 })) {
+            SettingsView().environment(state)
+        }
         .background { WindowGlass(sidebarTint: sidebarTint).ignoresSafeArea() }
         .safeAreaInset(edge: .top) {
             if let e = state.startupError {
@@ -146,5 +149,18 @@ struct SidebarFooter: View {
         case .failed: .red
         case .stopped: .secondary
         }
+    }
+}
+
+/// ⌘, opens the Settings sheet on the main window, bringing the window back if it was closed.
+struct SettingsCommand: View {
+    @Environment(AppState.self) private var state
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Settings…") {
+            openWindow(id: "main")
+            state.showingSettings = true
+        }
+        .keyboardShortcut(",")
     }
 }

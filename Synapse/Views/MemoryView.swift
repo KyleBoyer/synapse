@@ -24,7 +24,7 @@ struct MemoryView: View {
                     }
                     HStack {
                         Text("Idle models unload after \(state.settings.idleUnloadMinutes == 0 ? "never" : "\(state.settings.idleUnloadMinutes) min").")
-                        SettingsLink { Text("Change budget…") }.buttonStyle(.borderless)
+                        Button("Change budget…") { state.showingSettings = true }.buttonStyle(.borderless)
                     }
                     .font(.callout).foregroundStyle(.secondary)
                 }
