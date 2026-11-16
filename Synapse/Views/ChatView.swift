@@ -141,10 +141,11 @@ struct ChatView: View {
                     }
                 }
                 if !l.message.text.isEmpty {
-                    Text(l.message.text)
-                        .font(user ? .title3 : .subtitle)
-                        .foregroundStyle(user ? .secondary : .primary)
-                        .textSelection(.enabled)
+                    if user {
+                        Text(l.message.text).font(.title3).foregroundStyle(.secondary).textSelection(.enabled)
+                    } else {
+                        MarkdownView(text: l.message.text)
+                    }
                 } else if current {
                     Text("Waiting for first token…").font(.callout).foregroundStyle(Color.live)
                 }

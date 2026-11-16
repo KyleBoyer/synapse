@@ -126,7 +126,8 @@ A colorless glass instrument with one brand voice and one signal light.
 
 ### Hierarchy
 - **Display** (`.largeTitle` bold): the model name at the top of a datasheet, with its id beneath in mono `.title3` secondary.
-- **Subtitle** (`Font.subtitle`: `.title3` medium): model output in Chat and transcripts, idle prompts ("Listening…"). The user's own message is `.title3` regular in secondary ink, so the model's words lead.
+- **Subtitle** (`Font.subtitle`: `.title3` medium): transcript segments and live captions, idle prompts ("Listening…").
+- **Chat replies** (`MarkdownView`, `.title3` regular in primary ink): Markdown from the model, parsed into blocks by `MarkdownBlock` (headings `.title2`/`.title3`/`.headline` bold, hanging-marker lists, quotes with a 2pt secondary bar, code blocks in mono callout on a 10pt quaternary tile, rules) with inline bold, italics, code and links. Regular, not medium, weight so **bold** reads as emphasis. The user's own message is `.title3` regular in secondary ink, so the model's words lead.
 - **Headline** (`.headline`): panel and section titles, model names in the burn-in panel and `ModelTitle`.
 - **Body / Callout** (`.body`, `.callout`): readout labels, datasheet parameters, metadata lines.
 - **Label** (`.caption` semibold, secondary): the speaker line above a message ("You", model name), datasheet column headers. Sentence case, never tracked or uppercased.
