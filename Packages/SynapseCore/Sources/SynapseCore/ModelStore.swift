@@ -6,18 +6,22 @@ import Foundation
 /// so a crash mid-download leaves the model "not downloaded" rather than half-ready.
 public actor ModelStore {
     public let root: URL
-    private var manifest: [String: String] = [:]   // modelID -> folder path relative to root
+    /// modelID -> folder path relative to root. Read on first use, inside the actor: the folder may sit on an
+    /// external volume whose first access waits on a macOS permission prompt, which must not block the caller.
+    private lazy var manifest: [String: String] = Self.loadManifest(root)
     private var inFlight: [String: Task<URL, Error>] = [:]
     private var progressByID: [String: Double] = [:]
     private var failures: [String: String] = [:]
 
     public init(root: URL = ModelStore.defaultRoot) {
         self.root = root
+    }
+
+    private static func loadManifest(_ root: URL) -> [String: String] {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        if let data = try? Data(contentsOf: root.appending(path: "manifest.json")),
-           let m = try? JSONDecoder().decode([String: String].self, from: data) {
-            manifest = m.filter { FileManager.default.fileExists(atPath: root.appending(path: $0.value).path) }
-        }
+        guard let data = try? Data(contentsOf: root.appending(path: "manifest.json")),
+              let m = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return m.filter { FileManager.default.fileExists(atPath: root.appending(path: $0.value).path) }
     }
 
     public static var defaultRoot: URL {
