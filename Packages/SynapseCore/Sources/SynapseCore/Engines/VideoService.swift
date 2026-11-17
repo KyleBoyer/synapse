@@ -4,7 +4,7 @@ public enum VideoError: Error, LocalizedError {
     case noModel, notDownloaded(String), unknownModel(String)
     public var errorDescription: String? {
         switch self {
-        case .noModel: "No video model is downloaded. Download LTX-2.3 Distilled in Models (needs a Mac with 96 GB or more)."
+        case .noModel: "No video model is downloaded. Download LTX-2.3 Distilled in Models."
         case .notDownloaded(let id): "Model '\(id)' is not downloaded."
         case .unknownModel(let id): "Model '\(id)' is not a video model."
         }

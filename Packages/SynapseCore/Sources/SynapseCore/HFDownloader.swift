@@ -9,7 +9,8 @@ public enum HFDownloader {
         let files = try JSONDecoder().decode([Entry].self, from: data).filter {
             $0.type == "file" && wanted($0.path, exclude: exclude) && (only.isEmpty || only.contains(where: $0.path.hasPrefix))
         }
-        guard files.contains(where: { $0.path.hasSuffix(".safetensors") }) else {
+        // A whole model needs weights; a few borrowed folders (a tokenizer) need not have any.
+        guard !only.isEmpty || files.contains(where: { $0.path.hasSuffix(".safetensors") }) else {
             throw URLError(.cannotParseResponse, userInfo: [NSLocalizedDescriptionKey: "Model snapshot has no safetensors weights."])
         }
         for file in files {

@@ -135,6 +135,11 @@ enum MLXVLMChat {
         return "image/png"
     }
 
+    /// A chunk that is only a control token, such as MiniCPM-o's `<|tts_eos|>`, which mlx-vlm's server passes through.
+    static func isSpecialToken(_ s: String) -> Bool {
+        s.wholeMatch(of: /\s*<\|[A-Za-z0-9_]+\|>\s*/) != nil
+    }
+
     /// Reads `data:` lines until `[DONE]`; usage comes in the last chunk (include_usage).
     static func stream(base: URL, body: Data, onFinish: @escaping @Sendable () -> Void) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { c in
@@ -157,11 +162,18 @@ enum MLXVLMChat {
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
                         if payload == "[DONE]" { break }
                         guard let o = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else { continue }
+                        // A failure after the 200 (out of GPU memory, say) arrives as a data line, not a status code.
+                        if let e = o["error"] {
+                            let message = (e as? String) ?? ((e as? [String: Any])?["message"] as? String) ?? "\(e)"
+                            throw EngineError.unsupported("mlx-vlm failed: \(message)")
+                        }
                         if let u = o["usage"] as? [String: Any], let p = u["prompt_tokens"] as? Int {
                             usage = ChatUsage(promptTokens: p, completionTokens: u["completion_tokens"] as? Int ?? 0)
                         }
                         guard let choice = (o["choices"] as? [[String: Any]])?.first else { continue }
-                        if let d = (choice["delta"] as? [String: Any])?["content"] as? String, !d.isEmpty { c.yield(.delta(d)) }
+                        if let d = (choice["delta"] as? [String: Any])?["content"] as? String, !d.isEmpty, !isSpecialToken(d) {
+                            c.yield(.delta(d))
+                        }
                         if let f = choice["finish_reason"] as? String { finish = f }
                     }
                     c.yield(.done(finishReason: finish, usage: usage))

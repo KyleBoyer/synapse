@@ -11,17 +11,32 @@ public actor Flux2ImageEngine: ImageEngine {
     private let model: Flux2Model
     private let encoderDir: URL
 
-    public init(spec: ModelSpec, folder: URL) async throws {
+    /// The 4-bit Qwen3-8B the library itself downloads for klein 9B; ModelStore fetches it next to klein 9B.
+    public static let small9BEncoderRepo = "lmstudio-community/Qwen3-8B-MLX-4bit"
+    /// Below this, klein 9B runs with a 4-bit encoder and transformer: its bf16 Qwen3-8B encoder alone is 16 GB.
+    static let fullPrecision9BBytes: UInt64 = 48 << 30
+
+    public init(spec: ModelSpec, folder: URL, physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) async throws {
         switch spec.id {
         case "flux2-klein-4b": model = .klein4B
         case "flux2-klein-9b": model = .klein9B
         default: throw EngineError.unsupported("\(spec.displayName) is not a FLUX.2 klein model")
         }
+        let small = model == .klein9B && physicalMemory < Self.fullPrecision9BBytes
         // The library wants config.json + tokenizer.json + weights in one directory; diffusers splits them.
         let dir = FileManager.default.temporaryDirectory.appending(path: "synapse-flux2-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        for sub in ["text_encoder", "tokenizer"] {
-            let src = folder.appending(path: sub)
+        let encoderSources: [URL]
+        if small {
+            let fourBit = try PythonRuntime.storeRoot(above: folder).appending(path: "mlx/\(Self.small9BEncoderRepo)")
+            guard FileManager.default.fileExists(atPath: fourBit.appending(path: "config.json").path) else {
+                throw EngineError.unsupported("FLUX.2 klein 9B needs its 4-bit text encoder on this Mac; download the model again in Models.")
+            }
+            encoderSources = [fourBit]
+        } else {
+            encoderSources = ["text_encoder", "tokenizer"].map { folder.appending(path: $0) }
+        }
+        for src in encoderSources {
             for name in try FileManager.default.contentsOfDirectory(atPath: src.path) {
                 let link = dir.appending(path: name)
                 if !FileManager.default.fileExists(atPath: link.path) {
@@ -35,8 +50,10 @@ public actor Flux2ImageEngine: ImageEngine {
         // 16 GB Macs. The library never holds encoder and transformer together, so the Qwen3 encoder stays bf16
         // (as shipped, nothing to download or convert) and is dropped before the transformer loads.
         // qint8's registry slot is overridden to our bf16 folder; the library quantizes it on the fly.
-        let quant = Flux2QuantizationConfig(textEncoder: .bf16, transformer: .qint8)
-        let variant = ModelRegistry.TransformerVariant.variant(for: model, quantization: .qint8)
+        // On Macs under 48 GB, klein 9B uses the 4-bit encoder and a 4-bit transformer (~5 GB each, never together).
+        let transformerQuant: TransformerQuantization = small ? .int4 : .qint8
+        let quant = Flux2QuantizationConfig(textEncoder: small ? .mlx4bit : .bf16, transformer: transformerQuant)
+        let variant = ModelRegistry.TransformerVariant.variant(for: model, quantization: transformerQuant)
         try ModelRegistry.setPathOverride(folder.appending(path: "transformer"), for: .transformer(variant))
         try ModelRegistry.setPathOverride(folder.appending(path: "vae"), for: .vae(.standard))
 

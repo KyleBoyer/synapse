@@ -37,16 +37,37 @@ public enum VideoEngines {
         "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors", "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
     ]
 
-    static func download(_ spec: ModelSpec, to dir: URL, token: String?,
+    /// Below this, LTX runs in low-memory mode: a 4-bit Gemma text encoder and the transformer quantized as it loads.
+    /// Above it, the fp32 encoder (~48 GB) and bf16 transformer (~44 GB) load one after the other.
+    static let fullPrecisionBytes: UInt64 = 64 << 30
+    static let smallEncoderRepo = "mlx-community/gemma-3-12b-it-4bit"
+    static func lowMemory(_ physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Bool {
+        physicalMemory < fullPrecisionBytes
+    }
+    /// Transformer bits in low-memory mode. 4-bit is ~12.4 GB of LTX-2.3's 22B parameters, too close to a 16 GB
+    /// Mac's GPU working set (~11.8 GiB); 3-bit is ~9.6 GB.
+    static func lowMemoryBits(_ physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
+        physicalMemory < 24 << 30 ? 3 : 4
+    }
+
+    static func download(_ spec: ModelSpec, to dir: URL, root: URL, token: String?,
+                         physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory,
                          progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         // shortcut: progress splits evenly by repo, not by bytes; the two halves are about the same size.
         _ = try await HFDownloader.download(repo: spec.variant, to: dir, exclude: ltxUnused, token: token) { progress($0 * 0.5) }
-        return try await HFDownloader.download(repo: "prince-canuma/LTX-2-distilled", to: dir, only: ["text_encoder/", "tokenizer/"],
-                                               token: token) { progress(0.5 + $0 * 0.5) }
+        guard lowMemory(physicalMemory) else {
+            return try await HFDownloader.download(repo: "prince-canuma/LTX-2-distilled", to: dir, only: ["text_encoder/", "tokenizer/"],
+                                                   token: token) { progress(0.5 + $0 * 0.5) }
+        }
+        // Low-memory Macs never load the fp32 encoder: fetch the 8 GB 4-bit Gemma instead, plus LTX-2's tokenizer.
+        _ = try await HFDownloader.download(repo: "prince-canuma/LTX-2-distilled", to: dir, only: ["tokenizer/"], token: token) { _ in }
+        _ = try await HFDownloader.download(repo: smallEncoderRepo, to: root.appending(path: "mlx/\(smallEncoderRepo)"),
+                                            token: token) { progress(0.5 + $0 * 0.5) }
+        return dir
     }
 }
 
-/// Writes a solid-color clip with fake progress, so the API and the Video pane run without a 96 GB model.
+/// Writes a solid-color clip with fake progress, so tests and the Video pane run without the model.
 public actor MockVideoEngine: VideoEngine {
     public init() {}
     public func generate(_ r: VideoRequest, to output: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
@@ -74,9 +95,16 @@ actor MLXVideoEngine: VideoEngine {
             let hint = "\(error)".lowercased().contains("git") ? " Video generation needs git (install Xcode Command Line Tools)." : ""
             throw MFluxError.runtime("Could not install mlx-video.\(hint) \(error.localizedDescription)")
         }
-        var args = ["-m", "mlx_video.models.ltx_2.generate", "--pipeline", "distilled", "--prompt", r.prompt,
-                    "--width", "\(r.width)", "--height", "\(r.height)", "--num-frames", "\(r.frames)", "--fps", "\(r.fps)",
-                    "--output-path", output.path, "--model-repo", folder.path, "--text-encoder-repo", folder.path, "--verbose"]
+        let low = VideoEngines.lowMemory()
+        let encoder = low ? try PythonRuntime.storeRoot(above: folder).appending(path: "mlx/\(VideoEngines.smallEncoderRepo)") : folder
+        if low, !FileManager.default.fileExists(atPath: encoder.appending(path: "config.json").path) {
+            throw MFluxError.runtime("LTX-2.3 needs its 4-bit text encoder on this Mac; download the model again in Models.")
+        }
+        // Low-memory Macs run the generator through a wrapper that quantizes the transformer while it loads.
+        var args = (low ? ["-c", LTXLowMemoryScript.source] : ["-m", "mlx_video.models.ltx_2.generate"]) + [
+            "--pipeline", "distilled", "--prompt", r.prompt,
+            "--width", "\(r.width)", "--height", "\(r.height)", "--num-frames", "\(r.frames)", "--fps", "\(r.fps)",
+            "--output-path", output.path, "--model-repo", folder.path, "--text-encoder-repo", encoder.path, "--verbose"]
         if let seed = r.seed { args += ["--seed", "\(seed)"] }
         var startImage: URL?
         if let image = r.inputImage {
@@ -88,7 +116,7 @@ actor MLXVideoEngine: VideoEngine {
         defer { if let startImage { try? FileManager.default.removeItem(at: startImage) } }
         let env = [
             "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
-            "HF_HOME": rt.dir.appending(path: "hf").path,
+            "HF_HOME": rt.dir.appending(path: "hf").path, "SYNAPSE_LTX_BITS": "\(VideoEngines.lowMemoryBits())",
             // Rich draws its progress bar only on a terminal; these make it print "Denoising ... 42%" lines into the pipe.
             "FORCE_COLOR": "1", "TTY_INTERACTIVE": "1", "COLUMNS": "120",
         ]

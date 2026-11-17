@@ -58,7 +58,8 @@ public enum Catalog {
         qwen("qwen3.5-4b", "Qwen3.5 4B", "mlx-community/Qwen3.5-4B-MLX-4bit", 3061),
         qwen("qwen3.5-9b", "Qwen3.5 9B", "mlx-community/Qwen3.5-9B-MLX-4bit", 5977),
         image("flux2-klein-4b", "FLUX.2 klein 4B", .flux2, "black-forest-labs/FLUX.2-klein-4B", 16000, edit: true, ramGB: 24),
-        image("flux2-klein-9b", "FLUX.2 klein 9B (gated, non-commercial)", .flux2, "black-forest-labs/FLUX.2-klein-9B", 34600, edit: true, ramGB: 48),
+        // Under 48 GB it runs with a 4-bit encoder and transformer (Flux2ImageEngine); verified on a 16 GB M4.
+        image("flux2-klein-9b", "FLUX.2 klein 9B (gated, non-commercial)", .flux2, "black-forest-labs/FLUX.2-klein-9B", 34600, edit: true, ramGB: 16),
         image("z-image-turbo", "Z-Image Turbo", .zimage, "mlx-community/Z-Image-Turbo-bf16", 20540, edit: false, ramGB: 32),
         image("z-image", "Z-Image", .zimage, "mlx-community/Z-Image-bf16", 20540, edit: false, ramGB: 32),
         image("qwen-image-2.1-q4", "Qwen-Image 2.1 (4-bit, research license)", .mflux, "mlx-community/Qwen-Image-2.1-mflux-q4", 9600, edit: false, ramGB: 16),
@@ -69,8 +70,9 @@ public enum Catalog {
         realtime("silero-vad", "Silero VAD", .speech, "silero-vad", 2, ramGB: nil),
         realtime("pocket-tts", "PocketTTS (streaming voice)", .speech, "pocket-tts", 523, ramGB: nil),
         // About 47 GB of LTX-2.3 plus 49 GB for the Gemma 3 12B text encoder borrowed from LTX-2 (see VideoEngines.download).
-        // LTX-2 Community License. The name stays short so the toolbar's model menu fits.
-        hf("ltx-2.3-distilled", "LTX-2.3 Distilled", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 96),
+        // Under 64 GB it runs in low-memory mode instead (8 GB 4-bit Gemma, transformer quantized while loading; ~55 GB
+        // download); verified on a 16 GB M4. LTX-2 Community License. The name stays short so the toolbar's menu fits.
+        hf("ltx-2.3-distilled", "LTX-2.3 Distilled", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 16),
         // Stability AI Community License (free under $1M annual revenue). The cards show a license prompt but the
         // repos are not gated, so no token is needed. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),

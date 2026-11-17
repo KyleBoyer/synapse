@@ -35,6 +35,7 @@ final class MLXVLMBackendTests: XCTestCase {
         router.post("v1/chat/completions") { _, _ -> Response in
             let lines = [#"{"choices":[{"index":0,"delta":{"role":"assistant","content":"The "}}]}"#,
                          #"{"choices":[{"index":0,"delta":{"content":"fox."}}]}"#,
+                         #"{"choices":[{"index":0,"delta":{"content":"<|tts_eos|>"}}]}"#,
                          #"{"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}"#,
                          #"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}}"#]
             let text = lines.map { "data: \($0)\n\n" }.joined() + "data: [DONE]\n\n"
@@ -53,6 +54,25 @@ final class MLXVLMBackendTests: XCTestCase {
             XCTAssertTrue(finished.withLock { $0 })
             XCTAssertEqual(events, [.delta("The "), .delta("fox."),
                                     .done(finishReason: "length", usage: ChatUsage(promptTokens: 12, completionTokens: 2))])
+        }
+    }
+
+    /// mlx-vlm reports failures mid-stream as a data line; they must reach the client, not end as an empty answer.
+    func testStreamErrorIsRaised() async throws {
+        let router = Router()
+        router.post("v1/chat/completions") { _, _ -> Response in
+            let text = #"data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}"# + "\n\n"
+                + #"data: {"error": "[METAL] Command buffer execution failed: Insufficient Memory"}"# + "\n\n"
+            return Response(status: .ok, headers: [.contentType: "text/event-stream"], body: .init(byteBuffer: ByteBuffer(string: text)))
+        }
+        try await Application(router: router).test(.live) { client in
+            let port = try XCTUnwrap(client.port)
+            do {
+                for try await _ in MLXVLMChat.stream(base: URL(string: "http://localhost:\(port)")!, body: Data("{}".utf8), onFinish: {}) {}
+                XCTFail("expected the stream to throw")
+            } catch {
+                XCTAssertTrue("\(error)".contains("Insufficient Memory"), "\(error)")
+            }
         }
     }
 

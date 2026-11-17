@@ -9,6 +9,8 @@ import XCTest
 /// Real weights through the Images API. Set SYNAPSE_IMAGE_E2E_IDS and SYNAPSE_MODELS_DIR.
 final class ImageE2ETests: XCTestCase, @unchecked Sendable {
     func testFluxGenerationAndEdit() async throws { try await check("flux2-klein-4b", edit: true) }
+    /// On Macs under 48 GB this runs with the 4-bit encoder and transformer (Flux2ImageEngine).
+    func testFlux9BGenerationAndEdit() async throws { try await check("flux2-klein-9b", edit: true) }
     func testZImageGeneration() async throws { try await check("z-image-turbo") }
     func testQwenImageGeneration() async throws { try await check("qwen-image-2.1-q4") }
 

@@ -135,7 +135,7 @@ curl -s localhost:9000/v1/audio/generations -H 'Content-Type: application/json' 
 
 ### Video generation
 
-OpenAI Videos API: `POST /v1/videos` (`prompt`, `seconds` `4`/`8`/`12`, `size` from 256 to 1920 per side, `input_reference` start image, `seed`), `GET /v1/videos/{id}`, `GET /v1/videos`, `GET /v1/videos/{id}/content` (`variant=video` or `thumbnail`), `DELETE /v1/videos/{id}`. `sora-2` and `sora-2-pro` mean the downloaded video model. Clips render one at a time and are kept for a day. Each side is generated at the nearest smaller multiple of 64 (1280x720 renders at 1280x704). The model, LTX-2.3 Distilled, needs about 96 GB of memory and disk.
+OpenAI Videos API: `POST /v1/videos` (`prompt`, `seconds` `4`/`8`/`12`, `size` from 256 to 1920 per side, `input_reference` start image, `seed`), `GET /v1/videos/{id}`, `GET /v1/videos`, `GET /v1/videos/{id}/content` (`variant=video` or `thumbnail`), `DELETE /v1/videos/{id}`. `sora-2` and `sora-2-pro` mean the downloaded video model. Clips render one at a time and are kept for a day. Each side is generated at the nearest smaller multiple of 64 (1280x720 renders at 1280x704). The model is LTX-2.3 Distilled. Macs with 64 GB or more run it at full precision (about 96 GB download). Smaller Macs use low-memory mode: an 8 GB 4-bit Gemma text encoder and the transformer quantized while it loads (3-bit under 24 GB, 4-bit up to 64 GB), about a 55 GB download. On a 16 GB M4 Mac mini a 1-second 384x256 clip takes about 90 seconds.
 
 ```python
 v = c.videos.create(model="sora-2", prompt="A red fox walking through snow", seconds="4", size="1280x720")

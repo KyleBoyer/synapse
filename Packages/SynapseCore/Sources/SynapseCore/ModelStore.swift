@@ -130,10 +130,20 @@ public actor ModelStore {
         case .duplex:
             return try await DuplexModels.download(spec, root: root, token: token, progress: progress)
         case .videogen:
-            return try await VideoEngines.download(spec, to: mlxFolder(spec, root: root), token: token, progress: progress)
+            return try await VideoEngines.download(spec, to: mlxFolder(spec, root: root), root: root, token: token, progress: progress)
         case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .audiogen, .mlxvlm:
             // FLUX also publishes a duplicate monolithic transformer beside its diffusers components.
             let exclude = spec.engine == .flux2 ? ["flux-2-klein-4b.safetensors", "flux-2-klein-9b.safetensors"] : []
+            if spec.id == "flux2-klein-9b" {
+                // Macs under 48 GB run klein 9B with the library's 4-bit Qwen3-8B encoder (Flux2ImageEngine); 4.6 GB.
+                // shortcut: progress covers klein 9B only, the encoder downloads after it at 100%.
+                let dir = try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), exclude: exclude,
+                                                          token: token, progress: progress)
+                _ = try await HFDownloader.download(repo: Flux2ImageEngine.small9BEncoderRepo,
+                                                    to: root.appending(path: "mlx/\(Flux2ImageEngine.small9BEncoderRepo)"),
+                                                    token: token) { _ in }
+                return dir
+            }
             return try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), exclude: exclude,
                                                    token: token, progress: progress)
         case .parakeet:

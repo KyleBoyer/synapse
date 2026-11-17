@@ -33,7 +33,7 @@ struct VideoView: View {
         Group {
             if specs.isEmpty {
                 ContentUnavailableView("No video models", systemImage: "film",
-                                       description: Text("Download LTX-2.3 Distilled in Models. It needs about 96 GB of memory and disk."))
+                                       description: Text("Download LTX-2.3 Distilled in Models. On Macs under 64 GB it runs in low-memory mode (about 55 GB download)."))
             } else {
                 HStack(alignment: .top, spacing: 0) {
                     canvas

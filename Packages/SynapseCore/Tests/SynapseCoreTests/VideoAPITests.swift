@@ -102,6 +102,9 @@ final class VideoAPITests: XCTestCase {
         XCTAssertTrue(main.contains("transformer/model-00001-of-00018.safetensors"))
         let borrowed = try HFDownloader.snapshotFiles(Data(tree.utf8), only: ["text_encoder/", "tokenizer/"]).map(\.path)
         XCTAssertEqual(Set(borrowed), ["text_encoder/config.json", "text_encoder/model-00001-of-00005.safetensors"])
+        // Low-memory Macs borrow only the tokenizer, which has no weights.
+        let tokenizerTree = #"[{"type":"file","path":"tokenizer/tokenizer.json"},{"type":"file","path":"transformer/model.safetensors"}]"#
+        XCTAssertEqual(try HFDownloader.snapshotFiles(Data(tokenizerTree.utf8), only: ["tokenizer/"]).map(\.path), ["tokenizer/tokenizer.json"])
     }
 }
 

@@ -50,8 +50,10 @@ public final class OmniVoice: @unchecked Sendable {
         let p = Process()
         p.executableURL = rt.python
         p.arguments = ["-c", OmniVoiceScript.source, folder.path]
+        // Not offline: some voices fetch small companion assets on first use (MiniCPM-o's Step-Audio-2 vocoder and
+        // CosyVoice2 tokenizer, ~1 GB) into the runtime's own cache. Model weights always come from the local folder.
         p.environment = ProcessInfo.processInfo.environment.merging([
-            "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
+            "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
             "HF_HOME": rt.dir.appending(path: "hf").path, "PYTHONUNBUFFERED": "1",
         ]) { $1 }
         let stdin = Pipe(), stdout = Pipe()
