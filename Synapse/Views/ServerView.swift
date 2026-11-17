@@ -118,7 +118,8 @@ struct ServerView: View {
         ("GET /v1/realtime", "Realtime WebSocket"),
         ("POST /asr", "Bazarr Whisper provider"),
         ("POST /v1/jobs", "Subtitle a file by path"),
-        ("GET /v1/models", "Downloaded models"),
+        ("GET /v1/models", "Downloaded models (OpenAI, Anthropic); /v1/models/{id} for one"),
+        ("GET /api/v1/models", "LM Studio model list"),
     ]
 
     private var base: String { Self.endpoint(state.settings) }

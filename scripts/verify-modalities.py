@@ -275,7 +275,37 @@ def lmstudio():
     check("lmstudio: previous_response_id continues the conversation", "rome" in answer.lower() and follow["stats"]["input_tokens"] > result["stats"]["input_tokens"], answer)
 
 
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio}
+def models():
+    """Model listing and retrieval through both official SDKs (Anthropic with paging), and LM Studio's list."""
+    import json, urllib.request
+    from openai import OpenAI
+    from anthropic import Anthropic
+
+    oai = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    ids = [m.id for m in oai.models.list()]
+    check("models: OpenAI list", "qwen3.5-0.8b" in ids, f"{len(ids)} models")
+    m = oai.models.retrieve("qwen3.5-0.8b")
+    check("models: OpenAI retrieve", m.id == "qwen3.5-0.8b" and m.object == "model" and m.created > 0, str(m)[:120])
+    slashed = [i for i in ids if "/" in i]
+    if slashed:
+        check("models: OpenAI retrieve an org/name id", oai.models.retrieve(slashed[0]).id == slashed[0], slashed[0])
+
+    ant = Anthropic(base_url=HOST, api_key=KEY)
+    paged = [m.id for m in ant.models.list(limit=2)]   # the SDK follows has_more / after_id
+    check("models: Anthropic list pages through every model", paged == ids, f"{len(paged)} via limit=2")
+    info = ant.models.retrieve("qwen3.5-0.8b")
+    check("models: Anthropic retrieve with capabilities", info.type == "model" and info.display_name and info.capabilities is not None
+          and info.capabilities.image_input.supported, str(info)[:160])
+    if slashed:
+        check("models: Anthropic retrieve an org/name id", ant.models.retrieve(slashed[0]).id == slashed[0], slashed[0])
+
+    req = urllib.request.Request(f"{HOST}/api/v1/models", headers={"Authorization": f"Bearer {KEY}"})
+    lms = json.load(urllib.request.urlopen(req))["models"]
+    check("models: LM Studio list has chat and embedding models only", lms and all(x["type"] in ("llm", "embedding") for x in lms),
+          ", ".join(f'{x["key"]}:{x["format"]}' for x in lms))
+
+
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

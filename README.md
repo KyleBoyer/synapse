@@ -40,7 +40,9 @@ Default address is `http://127.0.0.1:9000`. The port and LAN access are set in t
 | Method and path | Input | Output |
 |---|---|---|
 | `GET /health` | none | `{"status":"ok","version":"0.1.0"}` |
-| `GET /v1/models` | none | list of downloaded models, with the fields of both OpenAI and Anthropic model objects |
+| `GET /v1/models` | Anthropic paging: `limit` (1–1000), `after_id`, `before_id`; without `limit`, every model | downloaded models. Each object has OpenAI's fields (`object`, `created`, `owned_by`) and Anthropic's (`type`, `display_name`, `created_at`; for chat models `capabilities`, `max_input_tokens`, `max_tokens`), plus `synapse`: kind, engine, size, whether it is loaded, architecture, context length, quantization, input and output modalities, and the endpoints that serve it. `created` is the download date. |
+| `GET /v1/models/{id}` | none | one model, same object; ids with a slash (`org/name`, plain or `%2F`) work. 404 when not downloaded. |
+| `GET /api/v1/models` | none | LM Studio's list: chat (`llm`) and embedding models with publisher, format (`mlx` or `gguf`), quantization, size, `loaded_instances`, `max_context_length` and capabilities (vision, tool use, reasoning). |
 | `POST /v1/audio/transcriptions` | multipart: `file`, `model`, `language`, `response_format` (default `json`; also `diarized_json`), `diarize` (`true` labels speakers); `prompt`, `temperature`, `timestamp_granularities[]` are ignored. `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` mean the default model; `gpt-4o-transcribe-diarize` also labels speakers | transcript in the requested format; with speakers, SRT lines start with `A: `, WebVTT uses `<v Speaker A>` |
 | `POST /v1/audio/translations` | same, translates to English | same |
 | `POST /asr` | query: `task`, `language`, `output` (txt, vtt, srt, tsv, json; default `txt`), `encode` (default `true`); multipart: `audio_file`. `word_timestamps`, `vad_filter`, `initial_prompt`, `video_file` are ignored | rendered format as `text/plain` with `Content-Disposition` and `Asr-Engine: synapse` |
