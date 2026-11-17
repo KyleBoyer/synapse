@@ -144,8 +144,20 @@ def videos():
     check("delete", d.deleted and d.id == v.id)
 
 
+def sound():
+    """Run the server with SYNAPSE_MOCK_SOUND=1 unless a Stable Audio 3 model is downloaded."""
+    import json, urllib.request
+    req = urllib.request.Request(f"{HOST}/v1/audio/generations", method="POST",
+                                 data=json.dumps({"prompt": "a dog barking", "seconds": 3}).encode(),
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {KEY}"})
+    with urllib.request.urlopen(req, timeout=600) as r:
+        body, ctype = r.read(), r.headers.get("Content-Type")
+    check("audio/generations returns a WAV", ctype == "audio/wav" and body[:4] == b"RIFF" and len(body) > 100_000,
+          f"{ctype}, {len(body)} bytes")
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos}
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

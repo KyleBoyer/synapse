@@ -41,6 +41,7 @@ final class AppState {
     let speech: SpeechService
     let embeddings: EmbeddingService
     let videos: VideoService
+    let sound: SoundService
     let server: ServerController
     let watcher: FolderWatcher
 
@@ -62,8 +63,9 @@ final class AppState {
         speech = SpeechService(store: store, models: models)
         embeddings = EmbeddingService(store: store, models: models)
         videos = VideoService(store: store, models: models)
+        sound = SoundService(store: store, models: models)
         server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat, images: images, realtime: realtime,
-                                  speech: speech, embeddings: embeddings, videos: videos)
+                                  speech: speech, embeddings: embeddings, videos: videos, sound: sound)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
         Task { [weak self] in
             for await snap in updates { self?.upsert(snap) }
@@ -130,6 +132,7 @@ final class AppState {
     var downloadedEmbeddingSpecs: [ModelSpec] { readySpecs.filter(\.isEmbedding) }
     var downloadedRerankerSpecs: [ModelSpec] { readySpecs.filter(\.isReranker) }
     var downloadedVideoSpecs: [ModelSpec] { readySpecs.filter(\.isVideoGen) }
+    var downloadedSoundSpecs: [ModelSpec] { SoundEngines.mock ? Catalog.all.filter(\.isAudioGen) : readySpecs.filter(\.isAudioGen) }
     var diarizerReady: Bool { if case .ready = modelStates["speaker-diarizer"] { return true }; return false }
     var downloadedRealtimeBase: Bool { ["parakeet-eou-120m", "silero-vad", "pocket-tts"].allSatisfy { if case .ready = modelStates[$0] { return true }; return false } }
     var downloadedDuplexSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .duplex } }

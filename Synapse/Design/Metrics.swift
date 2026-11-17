@@ -4,7 +4,7 @@ import Observation
 /// A measured characteristic of a model. Each case carries its datasheet row: label, unit, test conditions,
 /// and how to print it, so every pane and the Models datasheet read from one table.
 enum Metric: String, Codable, CaseIterable, Identifiable {
-    case firstToken, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed, embedRate, videoTime
+    case firstToken, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed, embedRate, videoTime, soundSpeed
     var id: String { rawValue }
 
     var label: String {
@@ -20,6 +20,7 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
         case .ttsSpeed: "Speech speed"
         case .embedRate: "Embedding rate"
         case .videoTime: "Video time"
+        case .soundSpeed: "Generation speed"
         }
     }
 
@@ -27,7 +28,7 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .firstToken, .secondsPerStep, .imageTime, .firstAudio, .ttsFirstAudio, .videoTime: "s"
         case .decodeRate, .prefillRate, .embedRate: "tok/s"
-        case .realtimeSpeed, .ttsSpeed: "× realtime"
+        case .realtimeSpeed, .ttsSpeed, .soundSpeed: "× realtime"
         }
     }
 
@@ -44,14 +45,15 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
         case .ttsSpeed: "audio length ÷ synthesis time"
         case .embedRate: "prompt tokens ÷ wall time, model already loaded"
         case .videoTime: "one clip, model load included (each clip runs in a fresh process)"
+        case .soundSpeed: "audio length ÷ generation time, model load included (each clip runs in a fresh process)"
         }
     }
 
-    var higherIsBetter: Bool { self == .decodeRate || self == .prefillRate || self == .realtimeSpeed || self == .ttsSpeed || self == .embedRate }
+    var higherIsBetter: Bool { self == .decodeRate || self == .prefillRate || self == .realtimeSpeed || self == .ttsSpeed || self == .embedRate || self == .soundSpeed }
 
     func format(_ v: Double) -> String {
         switch self {
-        case .decodeRate, .prefillRate, .realtimeSpeed, .ttsSpeed, .embedRate: v >= 100 ? String(format: "%.0f", v) : String(format: "%.1f", v)
+        case .decodeRate, .prefillRate, .realtimeSpeed, .ttsSpeed, .embedRate, .soundSpeed: v >= 100 ? String(format: "%.0f", v) : String(format: "%.1f", v)
         default: v >= 10 ? String(format: "%.1f", v) : String(format: "%.2f", v)
         }
     }
