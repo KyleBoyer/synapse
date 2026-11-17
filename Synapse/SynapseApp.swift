@@ -125,6 +125,9 @@ struct MainView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            // Fill the column before the background: panes that size to their content (Video's empty state, Memory's
+            // centered column) otherwise get the work-area glass only behind that content, and the rest shows the desktop.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
                 // The detail column extends under the floating sidebar; keep its leading safe area so the work area's
                 // blur stops at the sidebar's edge instead of painting the clear sidebar solid.
