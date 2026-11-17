@@ -58,7 +58,8 @@ public enum Catalog {
         realtime("silero-vad", "Silero VAD", .speech, "silero-vad", 2, ramGB: nil),
         realtime("pocket-tts", "PocketTTS (streaming voice)", .speech, "pocket-tts", 523, ramGB: nil),
         // About 47 GB of LTX-2.3 plus 49 GB for the Gemma 3 12B text encoder borrowed from LTX-2 (see VideoEngines.download).
-        hf("ltx-2.3-distilled", "LTX-2.3 Distilled (video, LTX license)", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 96),
+        // LTX-2 Community License. The name stays short so the toolbar's model menu fits.
+        hf("ltx-2.3-distilled", "LTX-2.3 Distilled", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 96),
         // Stability AI Community License (free under $1M annual revenue). Gated on Hugging Face: accept the license
         // on the model page and set a token in Settings. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),

@@ -73,6 +73,7 @@ struct ImagesView: View {
             ToolbarItemGroup {
                 if !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
+                        .id(modelID)   // the toolbar measures the menu once; a new identity re-measures it for the chosen name
                 }
             }
         }
