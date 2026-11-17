@@ -60,12 +60,16 @@ public enum Catalog {
         // About 47 GB of LTX-2.3 plus 49 GB for the Gemma 3 12B text encoder borrowed from LTX-2 (see VideoEngines.download).
         // LTX-2 Community License. The name stays short so the toolbar's model menu fits.
         hf("ltx-2.3-distilled", "LTX-2.3 Distilled", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 96),
-        // Stability AI Community License (free under $1M annual revenue). Gated on Hugging Face: accept the license
-        // on the model page and set a token in Settings. Names stay short so the toolbar's model menu fits.
+        // Stability AI Community License (free under $1M annual revenue). The cards show a license prompt but the
+        // repos are not gated, so no token is needed. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),
         hf("stable-audio-3-small-music", "Stable Audio 3 Music", .audiogen, "mlx-community/stable-audio-3-small-music", 3490, ramGB: 8),
         // Omni models through a managed mlx-vlm server (audio, image and video in; Gemma 3n has no video).
         hf("gemma-3n-e2b", "Gemma 3n E2B (omni, Gemma terms)", .mlxvlm, "mlx-community/gemma-3n-E2B-it-4bit", 4295, ramGB: 8),
+        // Gemma 4 hears through mlx-vlm, which has its audio tower; mlx-swift-lm loads it without one (see P5).
+        hf("gemma-4-e2b", "Gemma 4 E2B (omni, Gemma terms)", .mlxvlm, "mlx-community/gemma-4-e2b-it-4bit", 3583, ramGB: 8),
+        // Hears, sees and speaks: mlx-vlm's generate_audio gives it a voice (Live, Voice call). LFM Open License v1.0.
+        hf("lfm3-omni-2b", "LFM3 Omni 2B (speaks)", .mlxvlm, "LiquidAI/LFM3-Omni-2B", 4500, ramGB: 8),
         hf("minicpm-o-4.5", "MiniCPM-o 4.5 (omni)", .mlxvlm, "openbmb/MiniCPM-o-4_5", 20000, ramGB: 32),
         hf("qwen3-omni-30b", "Qwen3-Omni 30B-A3B (omni)", .mlxvlm, "mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit", 21800, ramGB: 48),
         realtime("speaker-diarizer", "Speaker diarization (who spoke when)", .speech, "speaker-diarizer", 21, ramGB: nil),

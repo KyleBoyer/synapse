@@ -63,9 +63,28 @@ private actor FakeDuplex: DuplexSpeechEngine {
     func unload() async {}
 }
 
-private func services(llm: FakeLLM = FakeLLM(), ttsDelay: Int = 0) -> RealtimeServices {
+private func services(llm: FakeLLM = FakeLLM(), ttsDelay: Int = 0, voice: FakeVoice = FakeVoice()) -> RealtimeServices {
     RealtimeServices(vad: { FakeVAD() }, asr: { FakeASR() }, tts: { FakeTTS(delayMs: ttsDelay) }, llm: { _ in llm },
-                     special: { _ in RealtimeSpecialModel(duplex: FakeDuplex()) })
+                     special: { _ in RealtimeSpecialModel(duplex: FakeDuplex()) }, voice: { _ in voice })
+}
+
+/// An omni model that answers in its own voice: records what it heard, returns 0.5 s of 24 kHz audio.
+private final class FakeVoice: RealtimeVoiceLLM, @unchecked Sendable {
+    let modelID = "lfm3-omni-2b"
+    var seen: [[ChatMessage]] = []
+    var heardBytes = 0
+    func respond(_ messages: [ChatMessage], options: ChatOptions) -> AsyncThrowingStream<VoiceEvent, Error> {
+        seen.append(messages)
+        heardBytes = messages.last?.audios.first.flatMap { try? Data(contentsOf: $0).count } ?? 0
+        return AsyncThrowingStream { c in
+            c.yield(.text("I heard "))
+            c.yield(.audio([Float](repeating: 0.1, count: 6000), sampleRate: 24000))
+            c.yield(.text("you."))
+            c.yield(.audio([Float](repeating: 0.1, count: 6000), sampleRate: 24000))
+            c.yield(.done(promptTokens: 1, generationTokens: 1))
+            c.finish()
+        }
+    }
 }
 
 private final class RTCollector: @unchecked Sendable {
@@ -167,6 +186,30 @@ final class RealtimeTests: XCTestCase {
         XCTAssertEqual(llm.seen.last?.last?.text, "hello world")
         let lat = await s.lastFirstAudioLatency
         XCTAssertNotNil(lat)
+        await s.close()
+    }
+
+    /// Stage B: an omni model that speaks hears the utterance itself and answers in its own voice, with no TTS.
+    func testSpeakingOmniModelHearsTheTurnAndAnswersInItsOwnVoice() async throws {
+        let llm = FakeLLM(), voice = FakeVoice()
+        let s = RealtimeSession(model: "lfm3-omni-2b", services: services(llm: llm, voice: voice))
+        let c = start(s)
+        await speak(s)
+        let ok = await c.wait("response.done")
+        XCTAssertTrue(ok)
+        let last = try XCTUnwrap(voice.seen.last?.last)
+        XCTAssertEqual(last.role, .user)
+        XCTAssertEqual(last.text, "", "the model hears the turn instead of reading its transcript")
+        XCTAssertEqual(last.audios.count, 1)
+        XCTAssertGreaterThan(voice.heardBytes, 44, "a WAV with samples, not just a header")
+        XCTAssertTrue(llm.seen.isEmpty, "the cascade's chat model is not used")
+        let transcript = c.events.filter { $0["type"] as? String == "response.output_audio_transcript.delta" }.map { $0["delta"] as! String }.joined()
+        XCTAssertEqual(transcript, "I heard you.")
+        let audioBytes = c.events.filter { $0["type"] as? String == "response.output_audio.delta" }
+            .reduce(0) { $0 + (Data(base64Encoded: $1["delta"] as! String)?.count ?? 0) }
+        XCTAssertGreaterThan(audioBytes, 0)
+        let done = c.first("response.done")?["response"] as? [String: Any]
+        XCTAssertEqual(done?["status"] as? String, "completed")
         await s.close()
     }
 

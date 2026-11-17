@@ -130,7 +130,7 @@ struct SettingsView: View {
                     reset: state.settings.modelsFolder == nil ? nil : ("Use Default", { state.settings.modelsFolder = nil }))
             Text("Restart Synapse to use a new folder. Existing models are not moved.").font(.caption).foregroundStyle(.secondary)
             PanelRow("Hugging Face token") {
-                SecureField("For gated models", text: Binding(
+                SecureField(HFDownloader.cliToken() == nil ? "For gated models" : "Using the hf CLI login", text: Binding(
                     get: { state.settings.hfToken ?? "" },
                     set: { state.settings.hfToken = $0.isEmpty ? nil : $0 }))
                     .textFieldStyle(.roundedBorder).frame(width: 260)

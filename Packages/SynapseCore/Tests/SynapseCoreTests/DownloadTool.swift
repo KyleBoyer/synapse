@@ -10,7 +10,7 @@ final class DownloadTool: XCTestCase {
         let store = ModelStore(root: root)
         for id in ids.split(separator: ",").map(String.init) {
             let start = Date()
-            let url = try await store.download(id, token: ProcessInfo.processInfo.environment["HF_TOKEN"]) { p in
+            let url = try await store.download(id, token: HFDownloader.cliToken()) { p in
                 if Int(p * 1000) % 50 == 0 { print("[\(id)] \(Int(p * 100))%") }
             }
             print("[\(id)] done in \(Int(Date().timeIntervalSince(start)))s -> \(url.path)")

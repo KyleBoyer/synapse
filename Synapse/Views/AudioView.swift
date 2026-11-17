@@ -224,7 +224,7 @@ struct AudioView: View {
                     ContentUnavailableView("No speech models", systemImage: "speaker.wave.2", description: Text("Download PocketTTS in Models."))
                 } else {
                     ContentUnavailableView("No sound models", systemImage: "music.note",
-                                           description: Text("Download Stable Audio 3 Small in Models. It is gated: accept the license on Hugging Face and set a token in Settings."))
+                                           description: Text("Download Stable Audio 3 SFX or Music in Models."))
                 }
             } else {
                 HStack(alignment: .top, spacing: 0) {

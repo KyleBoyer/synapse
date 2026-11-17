@@ -150,6 +150,8 @@ struct LiveView: View {
     private let languages = ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "English"]
 
     private var needsChat: Bool { mode == .translate || mode == .call }
+    /// An omni model that hears the call and answers in its own voice, with no speech synthesis.
+    private var ownVoice: Bool { mode == .call && Catalog.spec(chatModel).map(OmniVoices.canSpeak) == true }
     private var canStart: Bool {
         switch mode {
         case .captions: state.downloadedRealtimeBase
@@ -197,6 +199,7 @@ struct LiveView: View {
         // `-liveMode "Voice call" -liveCamera YES` preselects a mode and the camera, so the options can be captured.
         .onAppear {
             if let m = UserDefaults.standard.string(forKey: "liveMode").flatMap(LiveMode.init(rawValue:)) { mode = m }
+            if let m = UserDefaults.standard.string(forKey: "liveModel") { chatModel = m }
             if UserDefaults.standard.bool(forKey: "liveCamera") { cameraOn = true }
         }
         #endif
@@ -275,7 +278,8 @@ struct LiveView: View {
                 model.latency.map { Reading(label: "First audio", value: String(format: "%.2f s", $0)) }
                     ?? Reading(label: "First audio", value: state.metrics.typical(speakerID, .firstAudio) ?? "–", muted: true),
                 Reading(label: "Lines", value: "\(model.lines.count)"),
-            ] + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil)] : []) + [
+            ] + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil),
+                                  Reading(label: "Voice", value: ownVoice ? "model's own" : (voice.isEmpty ? "PocketTTS" : voice))] : []) + [
                 Reading(label: "Resident", value: state.resident(speakerID).map { gigabytes($0.bytes) } ?? "not loaded"),
             ],
             history: state.metrics.history(speakerID, .firstAudio), historyMetric: .firstAudio,
@@ -299,7 +303,10 @@ struct LiveView: View {
                 Toggle("Camera", systemImage: "video", isOn: $cameraOn)
                     .help("Show the model what the camera sees each time you start talking. Needs a Qwen3.5 model.")
             }
-            if mode == .call || (mode == .translate && spoken) {
+            if ownVoice {
+                Label("Hears you and answers in its own voice.", systemImage: "waveform.and.person.filled")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else if mode == .call || (mode == .translate && spoken) {
                 TextField("Voice (optional)", text: $voice).textFieldStyle(.roundedBorder)
             }
             if mode == .duplex {

@@ -151,7 +151,7 @@ final class AppState {
         modelStates[id] = .downloading(0)
         Task {
             do {
-                _ = try await store.download(id, token: settings.hfToken) { p in
+                _ = try await store.download(id, token: settings.hfToken ?? HFDownloader.cliToken()) { p in
                     Task { @MainActor [weak self] in
                         if case .downloading = self?.modelStates[id] { self?.modelStates[id] = .downloading(p) }
                     }

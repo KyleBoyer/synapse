@@ -5,7 +5,7 @@ public enum SoundError: Error, LocalizedError {
     case noModel, notDownloaded(String), unknownModel(String), unreadable
     public var errorDescription: String? {
         switch self {
-        case .noModel: "No sound model is downloaded. Download Stable Audio 3 Small in Models (gated: accept the license on Hugging Face and set a token in Settings)."
+        case .noModel: "No sound model is downloaded. Download Stable Audio 3 SFX or Music in Models."
         case .notDownloaded(let id): "Model '\(id)' is not downloaded."
         case .unknownModel(let id): "Model '\(id)' is not a sound model."
         case .unreadable: "The sound model wrote audio Synapse could not read."
@@ -26,7 +26,7 @@ public protocol SoundEngine: Actor {
 }
 
 public enum SoundEngines {
-    /// `SYNAPSE_MOCK_SOUND=1` swaps in a sine generator (tests, and Macs without the gated model).
+    /// `SYNAPSE_MOCK_SOUND=1` swaps in a sine generator (tests, and Macs without the model).
     public static var mock: Bool { ProcessInfo.processInfo.environment["SYNAPSE_MOCK_SOUND"] == "1" }
 
     public static let real: @Sendable (ModelSpec, URL) async throws -> any SoundEngine = { _, folder in

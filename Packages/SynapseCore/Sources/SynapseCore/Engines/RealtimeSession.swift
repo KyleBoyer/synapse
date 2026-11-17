@@ -39,6 +39,10 @@ public actor RealtimeSession {
     private var asr: (any RealtimeASR)?
     private var tts: (any RealtimeTTS)?
     private var llm: (any RealtimeLLM)?
+    private var omniVoice: (any RealtimeVoiceLLM)?
+    /// The latest user utterance as WAV, kept only when the session's model hears and speaks itself.
+    private var lastUtterance: (id: String, wav: URL)?
+    private var speaks: Bool { Catalog.spec(model).map(OmniVoices.canSpeak) ?? false }
     private var special: RealtimeSpecialModel?
     private var inReady = false
 
@@ -112,7 +116,8 @@ public actor RealtimeSession {
         await activeTask?.value
         if duplexResponse != nil { await endResponse(duplexResponse!, status: "completed", reason: nil) }
         out.finish()
-        vad = nil; asr = nil; tts = nil; llm = nil; special = nil
+        vad = nil; asr = nil; tts = nil; llm = nil; special = nil; omniVoice = nil
+        if let u = lastUtterance { try? FileManager.default.removeItem(at: u.wav); lastUtterance = nil }
     }
 
     // MARK: Client events
@@ -391,6 +396,7 @@ public actor RealtimeSession {
         emitted = ""
         complete(id, text)
         guard !text.isEmpty else { return }
+        if type == "realtime", speaks { keepUtterance(id, audio) }
         if type == "realtime" {
             items.append(Item(id: id, role: "user", text: text))
             if respond { startResponse(instructions: nil, modalities: nil) }
@@ -442,8 +448,56 @@ public actor RealtimeSession {
         active = r
         let spec = Catalog.spec(model)
         let prompt = override ?? instructions
+        if audio, let spec, OmniVoices.canSpeak(spec) {
+            activeTask = Task { [weak self] in await self?.runVoice(r, instructions: prompt, spec: spec) }
+            return
+        }
         activeTask = Task { [weak self] in
             await self?.runCascade(r, instructions: prompt, spec: spec)
+        }
+    }
+
+    /// Writes the utterance (16 kHz) for the omni model to hear; only the latest is kept.
+    private func keepUtterance(_ id: String, _ audio: [Float]) {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "Synapse-voice-turns", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let wav = dir.appending(path: "\(UUID().uuidString).wav")
+        guard (try? PCM.wav16(audio, rate: 16000).write(to: wav)) != nil else { return }
+        if let old = lastUtterance { try? FileManager.default.removeItem(at: old.wav) }
+        lastUtterance = (id, wav)
+    }
+
+    /// An omni model hears the latest turn (and any camera frame) and answers in its own voice: no separate ASR
+    /// text in, no TTS out. Earlier turns go in as their transcripts.
+    private func runVoice(_ r: Response, instructions: String, spec: ModelSpec) async {
+        beginResponse(r)
+        do {
+            if omniVoice == nil { omniVoice = try await services.voice(spec) }
+            var messages = messagesForResponse(instructions: instructions)
+            if let u = lastUtterance, items.last(where: { $0.role == "user" && !$0.text.isEmpty })?.id == u.id,
+               let i = messages.lastIndex(where: { $0.role == .user }) {
+                messages[i].audios = [u.wav]
+                messages[i].text = ""
+            }
+            var down: StreamResampler?
+            for try await e in omniVoice!.respond(messages, options: ChatOptions(maxTokens: 512)) {
+                try Task.checkCancellation()
+                switch e {
+                case .text(let t): respText(r, t)
+                case .audio(let a, let rate):
+                    if down == nil { down = StreamResampler(from: Double(rate), to: Double(outputRate)) }
+                    respAudio(r, down!.convert(a))
+                case .done: break
+                }
+            }
+            await finishCascade(r, failure: nil)
+        } catch is CancellationError {
+            await finishCascade(r, failure: nil)
+        } catch {
+            if Task.isCancelled { await finishCascade(r, failure: nil) } else {
+                fail("server_error", "response_failed", error.localizedDescription)
+                await finishCascade(r, failure: "response_failed")
+            }
         }
     }
 

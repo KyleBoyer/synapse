@@ -81,3 +81,15 @@ final class AudioInputFileTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: a.path) && FileManager.default.fileExists(atPath: b.path))
     }
 }
+
+final class HFTokenTests: XCTestCase {
+    func testCLITokenComesFromEnvThenTokenFile() throws {
+        let home = try TestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: home) }
+        XCTAssertNil(HFDownloader.cliToken(environment: [:], home: home))
+        try FileManager.default.createDirectory(at: home.appending(path: ".cache/huggingface"), withIntermediateDirectories: true)
+        try "hf_file\n".write(to: home.appending(path: ".cache/huggingface/token"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(HFDownloader.cliToken(environment: [:], home: home), "hf_file")
+        XCTAssertEqual(HFDownloader.cliToken(environment: ["HF_TOKEN": "hf_env"], home: home), "hf_env")
+    }
+}

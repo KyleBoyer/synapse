@@ -146,11 +146,13 @@ c.videos.download_content(v.id).write_to_file("fox.mp4")
 
 ### Omni models
 
-`gemma-3n-e2b` (audio and image), `minicpm-o-4.5` and `qwen3-omni-30b` (audio, image and video) run in a managed mlx-vlm server and answer on every chat route. Send audio as an `input_audio` part; non-WAV audio is converted to 16 kHz WAV first. Small omni models follow the prompt closely: "Transcribe the audio." works better than "What does the speaker say?".
+`gemma-3n-e2b` (audio and image), `gemma-4-e2b`, `lfm3-omni-2b`, `minicpm-o-4.5` and `qwen3-omni-30b` run in a managed mlx-vlm server and answer on every chat route. Send audio as an `input_audio` part; non-WAV audio is converted to 16 kHz WAV first. Small omni models follow the prompt closely: "Transcribe the audio." works better than "What does the speaker say?".
+
+`lfm3-omni-2b` also speaks. Pick it for a voice call (`/v1/realtime?model=lfm3-omni-2b` with audio output, or **Live → Voice call**) and it hears your turn and any camera frame itself, then answers in its own voice, streamed as it is generated; there is no separate speech synthesis. Barge-in stops it mid-sentence. On an M4 Mac mini the first audio arrives about 0.75 s after you stop talking once the model is loaded. Speech recognition still runs, only to show your words in the transcript.
 
 ### Python runtimes
 
-Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-vlm) run through Python tools that Synapse installs on first use under `<models folder>/runtimes/`. The first use needs a network connection and takes a few minutes. Video generation also needs `git` (Xcode Command Line Tools). Stable Audio models are gated on Hugging Face: accept the license on the model page and set a token in **Settings**.
+Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-vlm) run through Python tools that Synapse installs on first use under `<models folder>/runtimes/`. The first use needs a network connection and takes a few minutes. Video generation also needs `git` (Xcode Command Line Tools). Gated models (FLUX.2 klein 9B) need their license accepted on Hugging Face and a token: Synapse uses the `hf auth login` token (or `HF_TOKEN`) automatically, or one set in **Settings**. Stable Audio is under the Stability AI Community License but is not gated.
 
 ### Realtime and duplex speech
 
@@ -181,7 +183,7 @@ Add folders in the Watch Folders tab. For each new media file, Synapse writes a 
 - Parakeet does not translate or detect language and covers 25 European languages. Synapse falls back to Whisper for other requests.
 - Speaker labels come from a separate diarization model and can split one speaker in two, or merge similar voices, on short clips.
 - Video input reads MP4 and MOV only (AVFoundation); MKV and WebM are refused.
-- Omni models do not speak: their speech output is not available through mlx-vlm's server. Voice calls use the cascade (speech recognition, chat model, speech synthesis).
+- Of the omni models, only `lfm3-omni-2b` and `minicpm-o-4.5` speak in voice calls; the others answer through the cascade (speech recognition, chat model, speech synthesis). Chat Completions does not return audio.
 - Video jobs do not survive a restart.
 
 ## Releases (maintainers)

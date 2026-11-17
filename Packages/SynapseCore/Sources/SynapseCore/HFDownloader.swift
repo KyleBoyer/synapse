@@ -32,6 +32,18 @@ public enum HFDownloader {
             || name.hasSuffix(".txt") || name.hasSuffix(".model") || name.hasSuffix(".tiktoken")
     }
 
+    /// The token the Hugging Face CLI uses, so `hf auth login` once is enough: HF_TOKEN or HUGGING_FACE_HUB_TOKEN,
+    /// then `$HF_HOME/token` (default `~/.cache/huggingface/token`). An app opened from Finder sees only the file.
+    public static func cliToken(environment: [String: String] = ProcessInfo.processInfo.environment,
+                                home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+        for key in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"] {
+            if let t = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { return t }
+        }
+        let hfHome = environment["HF_HOME"].map { URL(fileURLWithPath: $0) } ?? home.appending(path: ".cache/huggingface")
+        let t = (try? String(contentsOf: hfHome.appending(path: "token"), encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t?.isEmpty == false ? t : nil
+    }
+
     /// Downloads `repo` at `main` into `dir`. Files are written to `<name>.partial` then renamed,
     /// and existing complete files are skipped, so a retry resumes at file granularity.
     /// `only`, when set, keeps just the paths under these prefixes (a few folders borrowed from another repo).
@@ -79,7 +91,7 @@ public enum HFDownloader {
     private static func check(_ response: URLResponse, _ url: URL) throws {
         if let http = response as? HTTPURLResponse, [401, 403].contains(http.statusCode) {
             throw URLError(.userAuthenticationRequired, userInfo: [NSLocalizedDescriptionKey:
-                "\(url.host() ?? "") refused access (HTTP \(http.statusCode)). This model is gated: accept its license on huggingface.co and add a Hugging Face token in Settings."])
+                "\(url.host() ?? "") refused access (HTTP \(http.statusCode)). This model is gated: accept its license on huggingface.co, then run `hf auth login` or add a token in Settings."])
         }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) for \(url.absoluteString)"])

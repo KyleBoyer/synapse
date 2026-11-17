@@ -48,14 +48,18 @@ public struct RealtimeServices: Sendable {
     public var llm: @Sendable (String?) async throws -> any RealtimeLLM
     /// Loads the engine for a `.duplex` catalog id.
     public var special: @Sendable (ModelSpec) async throws -> RealtimeSpecialModel
+    /// Loads an omni model that answers in its own voice (`OmniVoices.canSpeak`).
+    public var voice: @Sendable (ModelSpec) async throws -> any RealtimeVoiceLLM
 
     public init(vad: @escaping @Sendable () async throws -> any RealtimeVAD,
                 asr: @escaping @Sendable () async throws -> any RealtimeASR,
                 tts: @escaping @Sendable () async throws -> any RealtimeTTS,
                 llm: @escaping @Sendable (String?) async throws -> any RealtimeLLM,
                 special: @escaping @Sendable (ModelSpec) async throws -> RealtimeSpecialModel = { spec in
-                    throw EngineError.unsupported("\(spec.displayName) is not available") }) {
-        self.vad = vad; self.asr = asr; self.tts = tts; self.llm = llm; self.special = special
+                    throw EngineError.unsupported("\(spec.displayName) is not available") },
+                voice: @escaping @Sendable (ModelSpec) async throws -> any RealtimeVoiceLLM = { spec in
+                    throw EngineError.unsupported("\(spec.displayName) cannot speak") }) {
+        self.vad = vad; self.asr = asr; self.tts = tts; self.llm = llm; self.special = special; self.voice = voice
     }
 }
 
@@ -69,6 +73,18 @@ enum PCM {
         return d.withUnsafeBytes { raw in
             (0..<n).map { Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self))) / 32768 }
         }
+    }
+
+    /// A complete 16-bit mono WAV file.
+    static func wav16(_ f: [Float], rate: Int) -> Data {
+        let pcm = pcm16LE(from: f)
+        var h = Data()
+        func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { h.append(contentsOf: $0) } }
+        func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { h.append(contentsOf: $0) } }
+        h.append(contentsOf: Array("RIFF".utf8)); u32(UInt32(36 + pcm.count)); h.append(contentsOf: Array("WAVEfmt ".utf8))
+        u32(16); u16(1); u16(1); u32(UInt32(rate)); u32(UInt32(rate * 2)); u16(2); u16(16)
+        h.append(contentsOf: Array("data".utf8)); u32(UInt32(pcm.count))
+        return h + pcm
     }
 
     static func pcm16LE(from f: [Float]) -> Data {
@@ -292,7 +308,8 @@ extension RealtimeServices {
                     return (DuplexBox(engine: e), unload: { await e.unload() })
                 }
                 return RealtimeSpecialModel(duplex: lease.value.engine, keepAlive: lease)
-            })
+            },
+            voice: { spec in LeasedOmniVoice(try await OmniVoices.lease(spec, store: store, models: models)) })
     }
 }
 
