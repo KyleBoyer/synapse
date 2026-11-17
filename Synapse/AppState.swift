@@ -38,6 +38,7 @@ final class AppState {
     let chat: ChatService
     let images: ImageService
     let realtime: RealtimeServices
+    let speech: SpeechService
     let server: ServerController
     let watcher: FolderWatcher
 
@@ -56,7 +57,8 @@ final class AppState {
         chat = ChatService(store: store, models: models)
         images = ImageService(store: store, models: models, engineFactory: ImageEngines.real)
         realtime = .real(store: store, models: models, chat: chat)
-        server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat, images: images, realtime: realtime)
+        speech = SpeechService(store: store, models: models)
+        server = ServerController(queue: queue, store: store, settings: settingsBox, chat: chat, images: images, realtime: realtime, speech: speech)
         watcher = FolderWatcher(submit: { _ = await queue.submit($0) })
         Task { [weak self] in
             for await snap in updates { self?.upsert(snap) }
@@ -118,6 +120,7 @@ final class AppState {
     }
     var downloadedSpecs: [ModelSpec] { readySpecs.filter(\.isTranscription) }
     var downloadedImageSpecs: [ModelSpec] { readySpecs.filter(\.isImage) }
+    var downloadedTTSSpecs: [ModelSpec] { readySpecs.filter(\.isTTS) }
     var downloadedRealtimeBase: Bool { ["parakeet-eou-120m", "silero-vad", "pocket-tts"].allSatisfy { if case .ready = modelStates[$0] { return true }; return false } }
     var downloadedDuplexSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .duplex } }
     var downloadedChatSpecs: [ModelSpec] { readySpecs.filter { $0.isChat } }

@@ -24,7 +24,8 @@ final class APIServerTool: XCTestCase {
         let port = env["SYNAPSE_API_TEST_PORT"].flatMap(Int.init) ?? 19000
         print("SDK check server on 127.0.0.1:\(port), fake images: \(env["SYNAPSE_FAKE_IMAGES"] == "1")")
         let realtime = RealtimeServices.real(store: store, models: models, chat: chat, tts: env["SYNAPSE_TTS"] ?? "pocket-tts")
-        let app = Application(router: buildRouter(queue: queue, store: store, settings: settings, chat: chat, images: images),
+        let app = Application(router: buildRouter(queue: queue, store: store, settings: settings, chat: chat, images: images,
+                                                speech: SpeechService(store: store, models: models, encoder: AudioEncoder(ffmpegURL: try TestSupport.ffmpeg()))),
                               server: .http1WebSocketUpgrade(webSocketRouter: buildRealtimeRouter(services: realtime, settings: settings),
                                                              configuration: realtimeWebSocketConfiguration),
                               configuration: .init(address: .hostname("127.0.0.1", port: port)))

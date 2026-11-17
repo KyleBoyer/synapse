@@ -593,8 +593,7 @@ public actor RealtimeSession {
         }
     }
 
-    private static let pocketVoices: Set<String> = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
-    private func ttsVoice() -> String? { voice.flatMap { Self.pocketVoices.contains($0) ? $0 : nil } }
+    private func ttsVoice() -> String? { SpeechService.voice(voice) }
 
     // MARK: Duplex
 

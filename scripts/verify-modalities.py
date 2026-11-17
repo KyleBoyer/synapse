@@ -23,8 +23,29 @@ def check(label, ok, detail=""):
         failures.append(label)
 
 
+def speech():
+    import tempfile
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    tmp = tempfile.mkdtemp()
+    sizes = {}
+    for fmt in ("mp3", "wav"):
+        path = f"{tmp}/fox.{fmt}"
+        client.audio.speech.create(model="tts-1", voice="alloy", input="The quick brown fox.", response_format=fmt).write_to_file(path)
+        sizes[fmt] = len(open(path, "rb").read())
+        check(f"speech {fmt} size > 5 KB", sizes[fmt] > 5000, f"{sizes[fmt]} bytes")
+    path = f"{tmp}/stream.mp3"
+    with client.audio.speech.with_streaming_response.create(model="tts-1", voice="alloy", input="The quick brown fox.") as r:
+        r.stream_to_file(path)
+    check("speech streaming response", len(open(path, "rb").read()) > 5000)
+    with open(f"{tmp}/fox.wav", "rb") as f:
+        text = client.audio.transcriptions.create(model="parakeet-v3", file=f).text
+    check("wav transcribes back to 'fox'", "fox" in text.lower(), text)
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {}
+SECTIONS = {"speech": speech}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

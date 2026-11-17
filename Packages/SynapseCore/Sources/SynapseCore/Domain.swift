@@ -47,6 +47,8 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public var isReranker: Bool { engine == .reranker }
     public var isVideoGen: Bool { engine == .videogen }
     public var isAudioGen: Bool { engine == .audiogen }
+    /// Models behind `POST /v1/audio/speech`.
+    public var isTTS: Bool { SpeechService.preference.contains(id) }
     public var isImage: Bool { engine == .flux2 || engine == .zimage || engine == .mflux }
     public var isTranscription: Bool { engine == .whisper || engine == .parakeet }
     public var isRealtime: Bool { engine == .speech || engine == .duplex }

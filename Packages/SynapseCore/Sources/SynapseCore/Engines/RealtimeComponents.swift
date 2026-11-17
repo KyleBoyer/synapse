@@ -229,6 +229,24 @@ extension ModelLease: RealtimeTTS where T: RealtimeTTS {
 }
 
 extension RealtimeServices {
+    /// PocketTTS or Kokoro behind a ModelManager lease; shared by realtime sessions and `SpeechService`.
+    static func ttsLease(id ttsID: String, store: ModelStore, models: ModelManager) async throws -> any RealtimeTTS {
+        guard let dir = await store.folder(for: ttsID) else { throw ResolveError.notDownloaded(ttsID) }
+        let bytes = (Catalog.spec(ttsID)?.approxMB ?? 100) * 1_000_000
+        if ttsID == "kokoro-82m" {
+            return try await models.lease("speech:kokoro-82m", as: KokoroTTS.self, estimatedBytes: bytes) {
+                let m = KokoroAneManager(directory: dir)
+                try await m.initialize()
+                return (KokoroTTS(manager: m), unload: { await m.cleanup() })
+            }
+        }
+        return try await models.lease("speech:pocket-tts", as: PocketStreamingTTS.self, estimatedBytes: bytes) {
+            let m = PocketTtsManager(directory: dir)
+            try await m.initialize()
+            return (PocketStreamingTTS(manager: m), unload: { await m.cleanup() })
+        }
+    }
+
     /// Real components, all loaded through the ModelManager. VAD and ASR hold per-stream state, so each session
     /// leases its own copy (both are small); TTS is shared.
     public static func real(store: ModelStore, models: ModelManager, chat: ChatService, tts ttsID: String = "pocket-tts") -> RealtimeServices {
@@ -253,21 +271,7 @@ extension RealtimeServices {
                     return (await FluidStreamingASR(manager: m), unload: { await m.cleanup() })
                 }
             },
-            tts: {
-                let dir = try await folder(ttsID)
-                if ttsID == "kokoro-82m" {
-                    return try await models.lease("speech:kokoro-82m", as: KokoroTTS.self, estimatedBytes: mb(ttsID)) {
-                        let m = KokoroAneManager(directory: dir)
-                        try await m.initialize()
-                        return (KokoroTTS(manager: m), unload: { await m.cleanup() })
-                    }
-                }
-                return try await models.lease("speech:pocket-tts", as: PocketStreamingTTS.self, estimatedBytes: mb(ttsID)) {
-                    let m = PocketTtsManager(directory: dir)
-                    try await m.initialize()
-                    return (PocketStreamingTTS(manager: m), unload: { await m.cleanup() })
-                }
-            },
+            tts: { try await ttsLease(id: ttsID, store: store, models: models) },
             llm: { requested in
                 let downloaded = await store.downloaded
                 let known = requested.flatMap { Catalog.spec($0) }.flatMap { $0.isChat ? $0 : nil }

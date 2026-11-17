@@ -77,12 +77,14 @@ struct Datasheet: View {
     @Binding var confirmDelete: ModelSpec?
 
     private var metrics: [Metric] {
+        if spec.isTTS { return [.ttsFirstAudio, .ttsSpeed] }
         if spec.isChat { return [.firstToken, .decodeRate, .prefillRate, .firstAudio] }
         if spec.isTranscription { return [.realtimeSpeed] }
         if spec.isImage { return [.secondsPerStep, .imageTime] }
         return [.firstAudio]
     }
     private var tryPane: Pane? {
+        if spec.isTTS { return .audio }
         if spec.isChat { return .chat }
         if spec.isTranscription { return .transcribe }
         if spec.isImage { return .images }
@@ -90,6 +92,7 @@ struct Datasheet: View {
         return nil
     }
     private var api: [String] {
+        if spec.isTTS { return ["POST /v1/audio/speech", "GET /v1/realtime?model=\(spec.id)"] }
         if spec.isChat { return ["POST /v1/chat/completions", "POST /v1/responses", "POST /v1/messages"] }
         if spec.isTranscription { return ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /asr"] }
         if spec.isImage { return ["POST /v1/images/generations"] + (spec.canEditImages ? ["POST /v1/images/edits"] : []) }
