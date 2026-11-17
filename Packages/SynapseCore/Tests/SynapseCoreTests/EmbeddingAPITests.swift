@@ -5,13 +5,15 @@ import NIOCore
 import XCTest
 @testable import SynapseCore
 
-/// Vectors derived from the text so routes can be checked without a model: [count of "a", count of "b", 1, 0].
+/// Vectors derived from the input so routes can be checked without a model: [count of "a", count of "b", 1, image bytes].
 private struct FakeEmbeddingBackend: EmbeddingBackend {
-    func embed(_ spec: ModelSpec, folder: URL, texts: [String]) async throws -> EmbeddingResult {
-        let vectors = texts.map { t in
-            EmbeddingService.normalized([Float(t.filter { $0 == "a" }.count), Float(t.filter { $0 == "b" }.count), 1, 0])
+    func embed(_ spec: ModelSpec, folder: URL, inputs: [EmbeddingInput]) async throws -> EmbeddingResult {
+        let vectors = inputs.map { i in
+            let t = i.text ?? ""
+            return EmbeddingService.normalized([Float(t.filter { $0 == "a" }.count), Float(t.filter { $0 == "b" }.count), 1,
+                                                Float(i.image?.count ?? 0)])
         }
-        return EmbeddingResult(vectors: vectors, promptTokens: texts.reduce(0) { $0 + $1.count })
+        return EmbeddingResult(vectors: vectors, promptTokens: inputs.reduce(0) { $0 + ($1.text?.count ?? 0) })
     }
     /// Score = shared characters with the query, so ranking is predictable.
     func scores(_ spec: ModelSpec, folder: URL, query: String, documents: [String]) async throws -> [Double] {
@@ -83,6 +85,33 @@ final class EmbeddingAPITests: XCTestCase, @unchecked Sendable {
             }
             try await self.post(c, "/v1/embeddings", #"{"input":"x","encoding_format":"int8"}"#) { r, _ in XCTAssertEqual(r.status, .badRequest) }
             try await self.post(c, "/v1/embeddings", #"{"input":"x","model":"qwen3-reranker-0.6b"}"#) { r, _ in XCTAssertEqual(r.status, .badRequest) }
+        }
+    }
+
+    /// Images (data URL or bare base64), text, and the pair, Jina-style; an image picks an image model by default.
+    func testImageInputsPickAnImageModel() async throws {
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4]).base64EncodedString()
+        try await makeApp(downloaded: ["qwen3-embedding-0.6b", "siglip2-so400m"]).test(.router) { c in
+            let body = #"{"input":["ab",{"image":"data:image/png;base64,\#(png)"},{"image":"\#(png)","text":"a"}]}"#
+            try await self.post(c, "/v1/embeddings", body) { r, o in
+                XCTAssertEqual(r.status, .ok)
+                XCTAssertEqual(o["model"] as? String, "siglip2-so400m")
+                let data = o["data"] as? [[String: Any]] ?? []
+                XCTAssertEqual(data.count, 3)
+                XCTAssertEqual(self.floats(data[1]["embedding"]), EmbeddingService.normalized([0, 0, 1, 8]))
+                XCTAssertEqual(self.floats(data[2]["embedding"]), EmbeddingService.normalized([1, 0, 1, 8]))
+            }
+            // Text alone still picks the smallest text model; a named text model refuses images.
+            try await self.post(c, "/v1/embeddings", #"{"input":"ab"}"#) { _, o in XCTAssertEqual(o["model"] as? String, "qwen3-embedding-0.6b") }
+            try await self.post(c, "/v1/embeddings", #"{"model":"qwen3-embedding-0.6b","input":[{"image":"\#(png)"}]}"#) { r, o in
+                XCTAssertEqual(r.status, .badRequest)
+                XCTAssertTrue("\(o)".contains("text only"))
+            }
+            try await self.post(c, "/v1/embeddings", #"{"input":[{"image":"not base64!"}]}"#) { r, _ in XCTAssertEqual(r.status, .badRequest) }
+            try await self.post(c, "/v1/embeddings", #"{"input":[{"other":1}]}"#) { r, _ in XCTAssertEqual(r.status, .badRequest) }
+        }
+        try await makeApp().test(.router) { c in
+            try await self.post(c, "/v1/embeddings", #"{"input":[{"image":"\#(png)"}]}"#) { r, _ in XCTAssertEqual(r.status, .serviceUnavailable) }
         }
     }
 

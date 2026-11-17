@@ -59,13 +59,13 @@ struct RerankWire: Encodable {
 func addEmbeddingRoutes(to g: RouterGroup<SynapseContext>, embeddings: EmbeddingService) {
     g.post("embeddings") { req, ctx in
         let body = try decodeJSON(EmbeddingRequest.self, try await rawBody(req, ctx))
-        let inputs = try embeddingInputs(body.input)
+        let inputs = try await embeddingInputs(body.input)
         let format = body.encoding_format ?? "float"
         guard format == "float" || format == "base64" else {
             throw HTTPError(.badRequest, message: "encoding_format must be float or base64.")
         }
         do {
-            let spec = try await embeddings.resolveEmbedding(body.model)
+            let spec = try await embeddings.resolveEmbedding(body.model, images: inputs.contains { $0.image != nil })
             let r = try await embeddings.embed(model: spec, inputs: inputs, dimensions: body.dimensions)
             let items = r.vectors.enumerated().map { i, v in
                 EmbeddingWire.Item(index: i, embedding: format == "base64" ? .base64(base64Floats(v)) : .floats(v))
@@ -73,7 +73,8 @@ func addEmbeddingRoutes(to g: RouterGroup<SynapseContext>, embeddings: Embedding
             return json(EmbeddingWire(data: items, model: spec.id,
                                       usage: .init(prompt_tokens: r.promptTokens, total_tokens: r.promptTokens)))
         } catch let e as EmbeddingError {
-            throw HTTPError(e == .noModel(kind: "embedding") ? .serviceUnavailable : .badRequest, message: e.localizedDescription)
+            if case .noModel = e { throw HTTPError(.serviceUnavailable, message: e.localizedDescription) }
+            throw HTTPError(.badRequest, message: e.localizedDescription)
         } catch let e as ResolveError {
             throw HTTPError(.badRequest, message: e.localizedDescription)
         }
@@ -104,17 +105,32 @@ func addEmbeddingRoutes(to g: RouterGroup<SynapseContext>, embeddings: Embedding
     }
 }
 
-/// Text inputs only. Token-id arrays (what LangChain sends by default) are refused with how to turn them off.
-func embeddingInputs(_ v: JSONValue) throws -> [String] {
-    if let s = v.string { return [s] }
-    guard let items = v.array else { throw HTTPError(.badRequest, message: "input must be a string or an array of strings.") }
-    return try items.map { item in
-        if let s = item.string { return s }
+/// Strings, or objects with `text`, `image`, or both (Jina's multimodal shape; the pair is one input, embedded as one
+/// vector by models that take it). `image` is a data URL, an http(s) URL, or bare base64. Token-id arrays (what
+/// LangChain sends by default) are refused with how to turn them off.
+func embeddingInputs(_ v: JSONValue) async throws -> [EmbeddingInput] {
+    let shape = "input must be a string, or an array of strings and {\"text\"} / {\"image\"} objects."
+    if let s = v.string { return [.text(s)] }
+    guard let items = v.array else { throw HTTPError(.badRequest, message: shape) }
+    var out: [EmbeddingInput] = []
+    for item in items {
+        if let s = item.string { out.append(.text(s)); continue }
         if item.number != nil || item.array != nil {
             throw HTTPError(.badRequest, message: "Token-array input is not supported; send text. In LangChain set check_embedding_ctx_length=False.")
         }
-        throw HTTPError(.badRequest, message: "input must be a string or an array of strings.")
+        let text = item["text"]?.string, image = item["image"]?.string
+        guard text != nil || image != nil else { throw HTTPError(.badRequest, message: shape) }
+        var bytes: Data?
+        if let image { bytes = try await embeddingImage(image) }
+        out.append(EmbeddingInput(text: text, image: bytes))
     }
+    return out
+}
+
+private func embeddingImage(_ s: String) async throws -> Data {
+    if s.hasPrefix("data:") || s.hasPrefix("http://") || s.hasPrefix("https://") { return try await ImageFetcher.load(s) }
+    guard let d = Data(base64Encoded: s) else { throw HTTPError(.badRequest, message: "image must be a data URL, an http(s) URL, or base64.") }
+    return d
 }
 
 func base64Floats(_ v: [Float]) -> String {

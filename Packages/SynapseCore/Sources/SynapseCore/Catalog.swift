@@ -100,6 +100,9 @@ public enum Catalog {
         hf("qwen3-embedding-0.6b", "Qwen3 Embedding 0.6B", .embedding, "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ", 335),
         hf("embeddinggemma-300m", "EmbeddingGemma 300M (Gemma terms)", .embedding, "mlx-community/embeddinggemma-300m-4bit", 200),
         hf("qwen3-reranker-0.6b", "Qwen3 Reranker 0.6B", .reranker, "mlx-community/Qwen3-Reranker-0.6B-4bit", 335),
+        // Text and images in one vector space, through mlx-embeddings.
+        hf("qwen3-vl-embedding-2b", "Qwen3-VL Embedding 2B (text and images)", .embedding, "mlx-community/Qwen3-VL-Embedding-2B-8bit", 2534, ramGB: 4),
+        hf("siglip2-so400m", "SigLIP2 so400m (text and images)", .embedding, "mlx-community/siglip2-so400m-patch16-384", 2200, ramGB: 4),
         ModelSpec(id: "parakeet-v2", engine: .parakeet, displayName: "Parakeet v2 (English)", variant: "v2", approxMB: 600,
                   languages: ["en"], canTranslate: false, canDetectLanguage: false),
     ]

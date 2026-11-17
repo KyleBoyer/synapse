@@ -19,12 +19,17 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [ ] Stream the mlx-audio models sentence by sentence (today audio arrives per generated segment)
 - [ ] Live voice calls with the mlx-audio models (Live uses PocketTTS)
 
-## Image (+text) embeddings
+## Image (+text) embeddings (done)
 
-Image and text in one vector space (CLIP/SigLIP style), for image search and image-to-text matching.
+Image and text in one vector space, for image search and image-to-text matching.
 
-- [ ] Research models with MLX support
-- [ ] `POST /v1/embeddings` accepts images; Embed pane compares images and text
+- [x] Research: mlx-swift-lm's embedders are text-only; mlx-embeddings 0.1.0 runs Qwen3-VL-Embedding-2B and SigLIP2 (it also needs mlx-lm and mlx-vlm, undeclared). Probed both: each matches zebra and penguin images to their captions.
+- [x] Engine: `ImageTextEmbedder` (mlx-embeddings sidecar) behind the existing embedding backend; `EmbeddingInput` (text, image, or both). Catalog: `qwen3-vl-embedding-2b` (8-bit, 2048 dims, also image+text pairs), `siglip2-so400m` (1152 dims). A shared `PythonSidecar` now carries this and the mlx-audio speech sidecar.
+- [x] API: `/v1/embeddings` takes `{"image"}` / `{"text"}` items (Jina's shape); images pick an image model by default; text models refuse them. Verified with the official OpenAI SDK (`verify-modalities.py --only image-embeddings`).
+- [x] App: Embed pane takes image documents (add or drop) and an image query; image rows show thumbnails; the reranker is skipped for images with a note; SigLIP2's text/image scale gap is explained when results mix both.
+- [x] Verify: EmbeddingE2ETests through Synapse. Qwen3-VL: zebra→"a zebra" 0.48 vs "a penguin" 0.08; penguin→"a penguin" 0.37 vs 0.13; image+text item nearer its image (0.77 vs 0.25). SigLIP2: 0.16 vs 0.05 and 0.15 vs 0.04. App capture: "a striped animal" ranks the zebra first and the penguin last.
+- [ ] Video inputs for Qwen3-VL Embedding (the model takes them; Synapse sends text and images only)
+- [ ] Token counts for the image models (usage is 0 today)
 
 ## Audio → audio
 

@@ -5,131 +5,62 @@ import Synchronization
 /// Each request may carry a reference clip and its transcript, which is how these models clone a voice.
 final class MLXAudioSpeech: @unchecked Sendable {
     let sampleRate: Int
-    private let process: Process
-    private let input: FileHandle
-    private let lines: LineQueue
-    private let logName: String
-    private let gate = AsyncSerial()   // the sidecar handles one request at a time
+    private let sidecar: PythonSidecar
 
-    private init(sampleRate: Int, process: Process, input: FileHandle, lines: LineQueue, logName: String) {
-        self.sampleRate = sampleRate; self.process = process; self.input = input; self.lines = lines; self.logName = logName
-    }
+    private init(sampleRate: Int, sidecar: PythonSidecar) { self.sampleRate = sampleRate; self.sidecar = sidecar }
 
     static func launch(folder: URL, modelID: String) async throws -> MLXAudioSpeech {
-        let rt = try await PythonRuntime.shared.ensureInstalled(.init(name: "mlx-audio", requirements: ["mlx-audio==\(MLXAudioSoundEngine.version)"]),
-                                                                storeRoot: try PythonRuntime.storeRoot(above: folder))
-        let p = Process()
-        p.executableURL = rt.python
-        p.arguments = ["-c", MLXAudioSpeechScript.source, folder.path]
-        // Not offline: Chatterbox fetches its speech tokenizer (mlx-community/S3TokenizerV2) into the runtime's cache
-        // on first use. Model weights always come from the local folder.
-        p.environment = ProcessInfo.processInfo.environment.merging([
-            "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
-            "HF_HOME": rt.dir.appending(path: "hf").path, "PYTHONUNBUFFERED": "1",
-        ]) { $1 }
-        let stdin = Pipe(), stdout = Pipe()
-        p.standardInput = stdin; p.standardOutput = stdout
-        let logName = "synapse-speech-\(modelID).log"
-        let logURL = FileManager.default.temporaryDirectory.appending(path: logName)
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        p.standardError = (try? FileHandle(forWritingTo: logURL)) ?? FileHandle.nullDevice
-        let lines = LineQueue()
-        stdout.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData
-            if d.isEmpty { h.readabilityHandler = nil; lines.close() } else { lines.feed(d) }
-        }
-        try p.run()
-        guard let first = try await lines.next(timeout: 600) else {
-            p.terminate()
-            let tail = (try? String(contentsOf: logURL, encoding: .utf8)).map { String($0.suffix(600)) } ?? ""
-            throw EngineError.unsupported("The speech model exited while loading: \(tail)")
-        }
-        if let fatal = first["fatal"] as? String { p.terminate(); throw EngineError.unsupported(fatal) }
-        return MLXAudioSpeech(sampleRate: first["sample_rate"] as? Int ?? 24000, process: p, input: stdin.fileHandleForWriting,
-                              lines: lines, logName: logName)
+        // Not offline: Chatterbox fetches its speech tokenizer (mlx-community/S3TokenizerV2) on first use.
+        let s = try await PythonSidecar.launch(runtime: .init(name: "mlx-audio", requirements: ["mlx-audio==\(MLXAudioSoundEngine.version)"]),
+                                               script: MLXAudioSpeechScript.source, folder: folder,
+                                               logName: "synapse-speech-\(modelID).log", offline: false)
+        return MLXAudioSpeech(sampleRate: s.ready["sample_rate"] as? Int ?? 24000, sidecar: s)
     }
 
     /// Speech for `text`, in the voice of `reference` when given. Audio streams as the model produces it.
     func synthesize(_ text: String, reference: VoiceReference?, speed: Double) -> AsyncThrowingStream<[Float], Error> {
         let id = UUID().uuidString
+        var req: [String: Any] = ["text": text, "speed": speed]
+        if let reference {
+            req["ref_audio"] = reference.sample.path
+            if let t = reference.transcript { req["ref_text"] = t }
+        }
         let finished = Mutex(false)
+        let line: Data
+        do { line = try PythonSidecar.line(req, id: id) } catch { return AsyncThrowingStream { $0.finish(throwing: error) } }
         return AsyncThrowingStream { c in
-            let task = Task {
+            let task = Task { [sidecar] in
                 do {
-                    try await gate.run { try await self.run(id, text, reference, speed) { c.yield($0) } }
+                    // MLX on the GPU: one model at a time across the app.
+                    await GPUGate.shared.acquire()
+                    let gpu = GateRelease()
+                    defer { gpu() }
+                    try await sidecar.exchange(line, id: id) { r in
+                        if let b = r["audio"] as? String, let d = Data(base64Encoded: b) {
+                            c.yield(d.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) })
+                        }
+                    }
                     c.finish()
                 } catch { c.finish(throwing: error) }
                 finished.withLock { $0 = true }
             }
-            c.onTermination = { [weak self] _ in
+            c.onTermination = { [sidecar] _ in
                 guard !finished.withLock({ $0 }) else { return }
-                self?.send(["cancel": id])   // the sidecar stops at its next chunk and still sends `done`
+                sidecar.send(["cancel": id])   // the sidecar stops at its next chunk and still sends `done`
                 _ = task
             }
         }
     }
 
-    private func send(_ obj: [String: Any]) {
-        guard var line = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        line.append(0x0A)
-        try? input.write(contentsOf: line)
-    }
-
-    private func run(_ id: String, _ text: String, _ reference: VoiceReference?, _ speed: Double,
-                     yield: @escaping @Sendable ([Float]) -> Void) async throws {
-        var req: [String: Any] = ["id": id, "text": text, "speed": speed]
-        if let reference {
-            req["ref_audio"] = reference.sample.path
-            if let t = reference.transcript { req["ref_text"] = t }
-        }
-        // MLX on the GPU: one model at a time across the app.
-        await GPUGate.shared.acquire()
-        let gpu = GateRelease()
-        defer { gpu() }
-        send(req)
-        while true {
-            guard let r = try await lines.next(timeout: 600) else {
-                throw EngineError.unsupported("The speech model stopped (see \(logName) in the temp folder).")
-            }
-            guard r["id"] as? String == id else { continue }   // a cancelled request's last lines
-            if let e = r["error"] as? String { throw EngineError.unsupported("The speech model failed: \(e)") }
-            if let b = r["audio"] as? String, let d = Data(base64Encoded: b) {
-                yield(d.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) })
-            }
-            if r["done"] as? Bool == true { return }
-        }
-    }
-
-    func terminate() {
-        try? input.close()
-        guard process.isRunning else { return }
-        process.terminate()
-        let deadline = Date().addingTimeInterval(10)
-        while process.isRunning && Date() < deadline { usleep(100_000) }
-        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-    }
+    func terminate() { sidecar.terminate() }
 }
 
-/// The mlx-audio speech sidecar. Loads one model, then answers requests read from stdin, one JSON object per line:
-///   {"id", "text", "speed", "ref_audio"?: path, "ref_text"?}   or   {"cancel": id}
-/// Replies are lines starting with "SYNAPSE ": first {"ready", "sample_rate"} (or {"fatal"}), then per request
-/// {"id", "audio": base64 float32 LE} as chunks come, and {"id", "done": true} or {"id", "error"}.
+/// The mlx-audio speech sidecar (see PythonSidecar for the protocol). Requests: {"id", "text", "speed", "ref_audio"?:
+/// path, "ref_text"?} or {"cancel": id}. Ready line: {"ready", "sample_rate"}. Replies: {"id", "audio": base64 float32
+/// LE} per chunk, then {"id", "done": true}.
 enum MLXAudioSpeechScript {
-    static let source = #"""
-import base64, inspect, json, os, queue, sys, threading, time, traceback
-
-parent = os.getppid()
-def watch():
-    # Exit with Synapse: a child outlives a parent that quits or crashes, and this one holds a model.
-    while True:
-        time.sleep(1)
-        if os.getppid() != parent:
-            os._exit(0)
-threading.Thread(target=watch, daemon=True).start()
-
-def reply(obj):
-    sys.stdout.write("SYNAPSE " + json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    static let source = PythonSidecar.prelude + #"""
+import base64, inspect, queue
 
 try:
     from pathlib import Path

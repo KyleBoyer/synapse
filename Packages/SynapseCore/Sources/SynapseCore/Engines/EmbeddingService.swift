@@ -4,6 +4,14 @@ import Foundation
 @preconcurrency import MLXLMCommon
 @preconcurrency import MLXRerankers
 
+/// One thing to embed: text, an image (encoded file bytes), or both, which Qwen3-VL embeds as one vector.
+public struct EmbeddingInput: Sendable, Equatable {
+    public var text: String?
+    public var image: Data?
+    public init(text: String? = nil, image: Data? = nil) { self.text = text; self.image = image }
+    public static func text(_ s: String) -> EmbeddingInput { EmbeddingInput(text: s) }
+}
+
 public struct EmbeddingResult: Sendable, Equatable {
     public var vectors: [[Float]]
     public var promptTokens: Int
@@ -16,8 +24,8 @@ public struct RerankScore: Sendable, Equatable {
 
 /// Runs a loaded embedding or reranking model. The real backend uses MLX; tests inject fakes.
 public protocol EmbeddingBackend: Sendable {
-    /// One unit-length vector per text, plus the total prompt tokens.
-    func embed(_ spec: ModelSpec, folder: URL, texts: [String]) async throws -> EmbeddingResult
+    /// One unit-length vector per input, plus the total prompt tokens.
+    func embed(_ spec: ModelSpec, folder: URL, inputs: [EmbeddingInput]) async throws -> EmbeddingResult
     /// One relevance score per document, in document order.
     func scores(_ spec: ModelSpec, folder: URL, query: String, documents: [String]) async throws -> [Double]
 }
@@ -38,6 +46,10 @@ public actor EmbeddingService {
     public static let maxTokensPerInput = 8192
     /// OpenAI clients often hard-code these names; they mean "the default local embedding model".
     static let embeddingAliases: Set<String> = ["", "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"]
+    /// Models that embed images as well as text, in one space (run by mlx-embeddings). Qwen3-VL also takes an image
+    /// and text together as one input; SigLIP2 takes one or the other.
+    public static let imageModels: Set<String> = ["qwen3-vl-embedding-2b", "siglip2-so400m"]
+    public static func takesImages(_ spec: ModelSpec) -> Bool { imageModels.contains(spec.id) }
 
     private let store: ModelStore
     private let backend: any EmbeddingBackend
@@ -50,8 +62,13 @@ public actor EmbeddingService {
         self.init(store: store, backend: MLXEmbeddingBackend(models: models))
     }
 
-    public func resolveEmbedding(_ requested: String?) async throws -> ModelSpec {
-        try await resolve(requested, kind: "embedding", aliases: Self.embeddingAliases) { $0.isEmbedding }
+    /// With `images`, nil or an alias picks the smallest downloaded image model. (`embed` refuses images for an
+    /// explicitly named text model.)
+    public func resolveEmbedding(_ requested: String?, images: Bool = false) async throws -> ModelSpec {
+        let named = requested.map { !Self.embeddingAliases.contains($0) } ?? false
+        return try await resolve(requested, kind: images ? "image embedding" : "embedding", aliases: Self.embeddingAliases) {
+            $0.isEmbedding && (named || !images || Self.takesImages($0))
+        }
     }
 
     public func resolveReranker(_ requested: String?) async throws -> ModelSpec {
@@ -77,11 +94,15 @@ public actor EmbeddingService {
         await (backend as? MLXEmbeddingBackend)?.models.isLoaded(id) ?? false
     }
 
-    public func embed(model spec: ModelSpec, inputs: [String], dimensions: Int? = nil) async throws -> EmbeddingResult {
+    public func embed(model spec: ModelSpec, inputs: [EmbeddingInput], dimensions: Int? = nil) async throws -> EmbeddingResult {
         guard !inputs.isEmpty else { throw EmbeddingError.badInput("input must not be empty.") }
+        guard inputs.allSatisfy({ $0.text != nil || $0.image != nil }) else { throw EmbeddingError.badInput("Each input needs text or an image.") }
+        if inputs.contains(where: { $0.image != nil }), !Self.takesImages(spec) {
+            throw EmbeddingError.badInput("\(spec.id) embeds text only; for images use qwen3-vl-embedding-2b or siglip2-so400m.")
+        }
         guard inputs.count <= Self.maxInputs else { throw EmbeddingError.badInput("At most \(Self.maxInputs) inputs per request.") }
         if let d = dimensions, d < 1 { throw EmbeddingError.badInput("dimensions must be at least 1.") }
-        var result = try await backend.embed(spec, folder: try await folder(spec), texts: inputs)
+        var result = try await backend.embed(spec, folder: try await folder(spec), inputs: inputs)
         if let d = dimensions {
             guard let full = result.vectors.first?.count, d <= full else {
                 throw EmbeddingError.badInput("dimensions must be at most \(result.vectors.first?.count ?? 0) for \(spec.id).")
@@ -122,7 +143,9 @@ public actor EmbeddingService {
 struct MLXEmbeddingBackend: EmbeddingBackend {
     let models: ModelManager
 
-    func embed(_ spec: ModelSpec, folder: URL, texts: [String]) async throws -> EmbeddingResult {
+    func embed(_ spec: ModelSpec, folder: URL, inputs: [EmbeddingInput]) async throws -> EmbeddingResult {
+        if EmbeddingService.takesImages(spec) { return try await ImageTextEmbedder.embed(spec, folder: folder, inputs: inputs, models: models) }
+        let texts = inputs.compactMap(\.text)
         let lease = try await models.lease(spec.id, as: EmbedderModelContainer.self, estimatedBytes: spec.estimatedBytes) {
             (try await EmbedderModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader()), unload: {})
         }

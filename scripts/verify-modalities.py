@@ -339,7 +339,30 @@ def voices():
     check("voices: consent deleted", consent.id not in ids)
 
 
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices}
+def image_embeddings():
+    """Images and text in one space through the official SDK (it passes Jina-style {"image"} items through as given)."""
+    import base64, os
+    import numpy as np
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    fx = os.path.join(os.path.dirname(__file__), "..", "Packages", "SynapseCore", "Tests", "SynapseCoreTests", "Fixtures")
+    def data_url(name, mime):
+        return f"data:{mime};base64," + base64.b64encode(open(os.path.join(fx, name), "rb").read()).decode()
+    inputs = [{"image": data_url("zebra.jpg", "image/jpeg")}, {"image": data_url("penguin.png", "image/png")}, "a zebra", "a penguin"]
+    for model in ["qwen3-vl-embedding-2b", "siglip2-so400m"]:
+        r = client.embeddings.create(model=model, input=inputs)   # base64 encoding, the SDK default
+        v = np.array([d.embedding for d in r.data])
+        sims = v[:2] @ v[2:].T
+        check(f"image-embeddings: {model} matches each image to its caption", sims[0, 0] > sims[0, 1] and sims[1, 1] > sims[1, 0],
+              f"zebra {sims[0].round(2).tolist()}, penguin {sims[1].round(2).tolist()}")
+    r = client.embeddings.create(model="text-embedding-3-small", input=[{"image": data_url("zebra.jpg", "image/jpeg")}])
+    check("image-embeddings: an image picks an image model by default", r.model in ("qwen3-vl-embedding-2b", "siglip2-so400m"), r.model)
+    both = client.embeddings.create(model="qwen3-vl-embedding-2b", input=[{"image": data_url("zebra.jpg", "image/jpeg"), "text": "a zebra"}])
+    check("image-embeddings: an image and its text as one input", len(both.data) == 1 and len(both.data[0].embedding) == 2048)
+
+
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:
