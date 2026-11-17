@@ -94,6 +94,16 @@ struct MainView: View {
             }
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        #if DEBUG
+        // `-tryModel <id>` does what Models' "Try in" button does, a moment after launch, for checks.
+        .task {
+            guard let id = UserDefaults.standard.string(forKey: "tryModel"), let spec = Catalog.spec(id) else { return }
+            try? await Task.sleep(for: .seconds(2))
+            let target: Pane = spec.isChat ? .chat : spec.isImage ? .images : spec.isVideoGen ? .video : .audio
+            state.tryRequest = .init(pane: target, modelID: id)
+            pane = target
+        }
+        #endif
         .containerBackground(.clear, for: .window)
         .sheet(isPresented: Binding(get: { state.showingSettings }, set: { state.showingSettings = $0 })) {
             SettingsView().environment(state)

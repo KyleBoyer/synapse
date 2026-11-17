@@ -68,6 +68,7 @@ struct ImagesView: View {
                 .safeAreaInset(edge: .bottom) { promptBar.padding([.horizontal, .bottom], 16) }
             }
         }
+        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.images) { modelID = s.id } }
         .navigationTitle("Images")
         .toolbar {
             ToolbarItemGroup {

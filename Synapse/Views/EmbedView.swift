@@ -90,6 +90,7 @@ struct EmbedView: View {
                 .safeAreaInset(edge: .bottom) { bar.padding([.horizontal, .bottom], 16) }
             }
         }
+        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.embed) { if s.isEmbedding { modelID = s.id } } }
         .navigationTitle("Embed")
         .toolbar {
             ToolbarItemGroup {

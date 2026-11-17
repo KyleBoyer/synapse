@@ -26,6 +26,7 @@ struct TranscribeView: View {
                 RoundedRectangle(cornerRadius: 18).strokeBorder(Color.live, lineWidth: 2).padding(10).allowsHitTesting(false)
             }
         }
+        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.transcribe) { modelID = s.id } }
         .navigationTitle("Transcribe")
         .toolbar {
             ToolbarItemGroup {

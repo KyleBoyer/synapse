@@ -58,6 +58,7 @@ struct ChatView: View {
                 .safeAreaInset(edge: .bottom) { composer.padding([.horizontal, .bottom], 16) }
             }
         }
+        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.chat) { modelID = s.id } }
         .navigationTitle("Chat")
         .toolbar {
             ToolbarItemGroup {

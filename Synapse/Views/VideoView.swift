@@ -48,6 +48,7 @@ struct VideoView: View {
                 .safeAreaInset(edge: .bottom) { promptBar.padding([.horizontal, .bottom], 16) }
             }
         }
+        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.video) { modelID = s.id } }
         .navigationTitle("Video")
         .toolbar {
             ToolbarItemGroup {

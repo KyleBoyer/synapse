@@ -185,7 +185,10 @@ struct Datasheet: View {
                     }
                 }
                 if let tryPane {
-                    Button("Try in \(tryPane.rawValue)", systemImage: tryPane.icon) { openPane(tryPane) }
+                    Button("Try in \(tryPane.rawValue)", systemImage: tryPane.icon) {
+                        state.tryRequest = .init(pane: tryPane, modelID: spec.id)
+                        openPane(tryPane)
+                    }
                         .buttonStyle(.glassProminent).controlSize(.large)
                 }
                 Button("Delete…", systemImage: "trash", role: .destructive) { confirmDelete = spec }.buttonStyle(.glass)

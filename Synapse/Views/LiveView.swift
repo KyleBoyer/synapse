@@ -181,6 +181,7 @@ struct LiveView: View {
             
         }
         .safeAreaInset(edge: .bottom) { micBar.padding([.horizontal, .bottom], 16) }
+        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.live) { if s.engine == .duplex { mode = .duplex; duplexModel = s.id } else { mode = .captions } } }
         .navigationTitle("Live")
         .toolbar {
             ToolbarItem(placement: .principal) {

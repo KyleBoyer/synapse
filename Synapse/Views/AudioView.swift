@@ -243,6 +243,7 @@ struct AudioView: View {
                 .safeAreaInset(edge: .bottom) { bar.padding([.horizontal, .bottom], 16) }
             }
         }
+        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.audio) { if s.isAudioGen { mode = .compose; soundModelID = s.id } else { mode = .speak; modelID = s.id } } }
         .navigationTitle("Audio")
         .toolbar {
             ToolbarItem(placement: .principal) {
