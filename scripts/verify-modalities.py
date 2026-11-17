@@ -305,7 +305,41 @@ def models():
           ", ".join(f'{x["key"]}:{x["format"]}' for x in lms))
 
 
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models}
+def voices():
+    """Custom voices through the official SDK: consent, clone from a sample, speak in that voice, hear it back, delete."""
+    import os, subprocess, tempfile
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    tmp = tempfile.mkdtemp()
+    def say(voice, text, name):
+        out = os.path.join(tmp, name + ".aiff")
+        subprocess.run(["say", "-v", voice, "-o", out, text], check=True)
+        wav = os.path.join(tmp, name + ".wav")
+        subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@24000", "-c", "1", out, wav], check=True)
+        return wav
+
+    consent_wav = say("Daniel", "I agree to have my voice used to create a synthetic voice.", "consent")
+    sample_wav = say("Daniel", "Good evening. I have been walking along the coast all afternoon, and the weather turned out "
+                     "far better than the forecast suggested.", "sample")
+    consent = client.audio.voice_consents.create(name="Daniel", language="en-GB", recording=open(consent_wav, "rb"))
+    check("voices: consent created", consent.id and consent.object == "audio.voice_consent", consent.id)
+    voice = client.audio.voices.create(name="Daniel", audio_sample=open(sample_wav, "rb"), consent=consent.id)
+    check("voices: voice cloned", voice.id.startswith("voice_") and voice.object == "audio.voice", voice.id)
+    audio = client.audio.speech.create(model="tts-1", voice={"id": voice.id}, input="The quick brown fox jumps over the lazy dog.",
+                                       response_format="wav")
+    data = audio.read()
+    check("voices: speech in the cloned voice", len(data) > 20000, f"{len(data)} bytes")
+    heard = client.audio.transcriptions.create(model="whisper-1", file=("clone.wav", data)).text
+    check("voices: the cloned speech says the text", "fox" in heard.lower(), heard)
+    deleted = client.audio.voices.delete(voice.id)
+    check("voices: voice deleted", deleted.deleted and deleted.object == "audio.voice.deleted")
+    client.audio.voice_consents.delete(consent.id)
+    ids = [c.id for c in client.audio.voice_consents.list()]
+    check("voices: consent deleted", consent.id not in ids)
+
+
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

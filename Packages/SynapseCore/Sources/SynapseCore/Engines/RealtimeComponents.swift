@@ -197,6 +197,22 @@ public actor PocketStreamingTTS: RealtimeTTS {
     }
 }
 
+extension PocketStreamingTTS: VoiceCloning {
+    func clone(wav: URL) async throws -> PocketTtsVoiceData { try await manager.cloneVoice(from: wav) }
+
+    nonisolated func synthesize(_ text: String, voiceData: PocketTtsVoiceData) -> AsyncThrowingStream<[Float], Error> {
+        AsyncThrowingStream { c in
+            let task = Task {
+                do {
+                    for try await f in try await manager.synthesizeStreaming(text: text, voiceData: voiceData) { c.yield(f.samples) }
+                    c.finish()
+                } catch { c.finish(throwing: error) }
+            }
+            c.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
 public actor KokoroTTS: RealtimeTTS {
     public nonisolated let sampleRate = 24000
     private let manager: KokoroAneManager

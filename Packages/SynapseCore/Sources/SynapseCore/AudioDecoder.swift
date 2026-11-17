@@ -18,16 +18,20 @@ public struct AudioDecoder: Sendable {
     public init(ffmpegURL: URL) { self.ffmpegURL = ffmpegURL }
 
     public static func bundled() -> AudioDecoder? {
-        Bundle.main.url(forAuxiliaryExecutable: "ffmpeg").map(AudioDecoder.init)
+        if let u = Bundle.main.url(forAuxiliaryExecutable: "ffmpeg") { return AudioDecoder(ffmpegURL: u) }
+        // Running from source (tests, the SDK test server): the repo's vendor build.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appending(path: "../../../../vendor/ffmpeg/bin/ffmpeg").standardizedFileURL
+        return FileManager.default.isExecutableFile(atPath: repo.path) ? AudioDecoder(ffmpegURL: repo) : nil
     }
 
-    /// Decodes to 16 kHz mono s16le WAV at `<dir>/audio.wav`.
-    public func decodeToWAV(_ input: AudioInput, into dir: URL) async throws -> URL {
+    /// Decodes to mono s16le WAV at `<dir>/audio.wav`: 16 kHz for speech recognition, 24 kHz for voice cloning.
+    public func decodeToWAV(_ input: AudioInput, into dir: URL, sampleRate: Int = 16000) async throws -> URL {
         let out = dir.appendingPathComponent("audio.wav")
         var args = ["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
         if case .pcm16le = input { args += ["-f", "s16le", "-ar", "16000", "-ac", "1"] }
         args += ["-i", input.url.path, "-map", "0:a:0", "-vn", "-sn", "-dn",
-                 "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", out.path]
+                 "-ac", "1", "-ar", String(sampleRate), "-c:a", "pcm_s16le", "-f", "wav", out.path]
 
         let process = Process()
         process.executableURL = ffmpegURL

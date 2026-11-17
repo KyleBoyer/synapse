@@ -43,7 +43,10 @@ func addSpeechRoutes(to g: RouterGroup<SynapseContext>, speech: SpeechService) {
         do { model = try await speech.resolve(model: p.model) } catch let e as ResolveError {
             throw HTTPError(.badRequest, message: e.localizedDescription)
         } catch let e as SpeechError { throw HTTPError(.serviceUnavailable, message: e.localizedDescription) }
-        let (rate, pcm) = try await speech.synthesize(model: model, text: input, voice: p.voice?.name, speed: speed)
+        let rate: Int, pcm: AsyncThrowingStream<[Float], Error>
+        do { (rate, pcm) = try await speech.synthesize(model: model, text: input, voice: p.voice?.name, speed: speed) } catch let e as SpeechError {
+            throw HTTPError(.badRequest, message: e.localizedDescription)
+        }
         let encoded = speech.encoder.encode(pcm, sampleRate: rate, as: format)
 
         if streamFormat == "sse" {

@@ -37,6 +37,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addModelRoutes(to: group, store: store, chat: chat, settings: settings)
         addImageRoutes(to: group, images: images, files: imageFiles, chat: chat, settings: settings)
         addSpeechRoutes(to: group, speech: speech)
+        addVoiceRoutes(to: group, speech: speech)
         addEmbeddingRoutes(to: group, embeddings: embeddings)
         addVideoRoutes(to: group, videos: videos)
         addSoundRoutes(to: group, sound: sound)

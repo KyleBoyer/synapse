@@ -25,6 +25,8 @@ enum SpeechModels {
             let m = PocketTtsManager(directory: dir)
             try await m.initialize()
             await m.cleanup()
+            // The Mimi encoder clones voices; fetch it now so cloning works offline.
+            _ = try await PocketTtsResourceDownloader.ensureMimiEncoder(directory: dir)
         case "speaker-diarizer":
             // Downloads and compiles the offline pipeline's Core ML models into `dir`; a second call reuses them.
             let m = OfflineDiarizerManager()
