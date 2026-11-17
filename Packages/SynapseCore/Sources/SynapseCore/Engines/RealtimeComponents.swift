@@ -213,6 +213,33 @@ extension PocketStreamingTTS: VoiceCloning {
     }
 }
 
+/// PocketTTS that also speaks cloned voices: a `voice_…` id uses that voice's conditioning from the library, so every
+/// caller of the shared TTS (speech API, realtime sessions, Live) gets custom voices without knowing about them.
+struct ClonedVoices: RealtimeTTS, VoiceCloning {
+    let base: ModelLease<PocketStreamingTTS>
+    let library: VoiceLibrary
+    var sampleRate: Int { base.sampleRate }
+
+    func synthesize(_ text: String, voice: String?, speed: Double) -> AsyncThrowingStream<[Float], Error> {
+        guard let voice, voice.hasPrefix("voice_") else { return base.synthesize(text, voice: voice, speed: speed) }
+        return AsyncThrowingStream { c in
+            let task = Task {
+                do {
+                    guard let data = try await library.voiceData(voice) else { throw SpeechError.voice("Unknown voice '\(voice)'.") }
+                    for try await frame in base.synthesize(text, voiceData: data) { c.yield(frame) }
+                    c.finish()
+                } catch { c.finish(throwing: error) }
+            }
+            c.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func clone(wav: URL) async throws -> PocketTtsVoiceData { try await base.clone(wav: wav) }
+    func synthesize(_ text: String, voiceData: PocketTtsVoiceData) -> AsyncThrowingStream<[Float], Error> {
+        base.synthesize(text, voiceData: voiceData)
+    }
+}
+
 public actor KokoroTTS: RealtimeTTS {
     public nonisolated let sampleRate = 24000
     private let manager: KokoroAneManager
@@ -272,11 +299,12 @@ extension RealtimeServices {
                 return (KokoroTTS(manager: m), unload: { await m.cleanup() })
             }
         }
-        return try await models.lease("speech:pocket-tts", as: PocketStreamingTTS.self, estimatedBytes: bytes) {
+        let lease = try await models.lease("speech:pocket-tts", as: PocketStreamingTTS.self, estimatedBytes: bytes) {
             let m = PocketTtsManager(directory: dir)
             try await m.initialize()
             return (PocketStreamingTTS(manager: m), unload: { await m.cleanup() })
         }
+        return ClonedVoices(base: lease, library: VoiceLibrary(root: store.root.appending(path: "voices", directoryHint: .isDirectory)))
     }
 
     /// Real components, all loaded through the ModelManager. VAD and ASR hold per-stream state, so each session

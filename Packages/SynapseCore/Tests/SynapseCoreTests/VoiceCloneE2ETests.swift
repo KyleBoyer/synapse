@@ -66,6 +66,17 @@ final class VoiceCloneE2ETests: XCTestCase {
         print(String(format: "[clone] similarity to the reference: same speaker %.2f, clone %.2f, stock voice %.2f", same, clone, alba))
         XCTAssertGreaterThan(clone, alba + 0.1, "the clone should sound closer to the reference than a stock voice")
 
+        // Realtime sessions and Live get their TTS from the shared lease, which speaks cloned ids itself.
+        let shared = try await RealtimeServices.ttsLease(id: "pocket-tts", store: store, models: ModelManager())
+        var realtime: [Float] = []
+        for try await chunk in shared.synthesize("The quick brown fox jumps over the lazy dog by the river.",
+                                                 voice: SpeechService.voice(voice.id), speed: 1) { realtime += chunk }
+        let realtimeURL = work.appending(path: "realtime.wav")
+        try PCM.wav16(realtime, rate: shared.sampleRate).write(to: realtimeURL)
+        let viaLease = cos(ref, try diarizer.extractSpeakerEmbedding(from: try await samples(realtimeURL)))
+        print(String(format: "[clone] through the shared realtime TTS: %.2f", viaLease))
+        XCTAssertGreaterThan(viaLease, alba + 0.1)
+
         var s = Settings()
         s.defaultModelID = "parakeet-v3"
         let q = JobQueue(store: store, decoder: decoder, settings: SettingsBox(s))

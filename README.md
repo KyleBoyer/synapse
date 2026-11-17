@@ -120,9 +120,19 @@ Qwen3.5 models and the omni models (except Gemma 3n) read video. Send a `video_u
 
 ### Speech, sound and embeddings
 
+**Audio → Speak → Clone Voice…** clones a voice from a clip; it then appears in the Voice menu and works on the API by its id. Clone only your own voice or a voice you have permission to use.
+
+```python
+consent = c.audio.voice_consents.create(name="Kyle", language="en-US", recording=open("consent.wav", "rb"))
+voice = c.audio.voices.create(name="Kyle", audio_sample=open("sample.wav", "rb"), consent=consent.id)
+c.audio.speech.create(model="tts-1", voice={"id": voice.id}, input="Hello in my own voice.").write_to_file("hi.mp3")
+```
+
 | Route | Notes |
 |---|---|
 | `POST /v1/audio/speech` | OpenAI speech: `input` (up to 4096 characters), `voice`, `response_format` (`mp3` default, `opus`, `aac`, `flac`, `wav`, `pcm`), `speed`, `stream_format` (`audio` or `sse`). `tts-1`, `tts-1-hd` and `gpt-4o-mini-tts` mean the first downloaded of PocketTTS and Kokoro. PocketTTS ignores `speed`; OpenAI voice names use the default voice. |
+| `POST /v1/audio/voice_consents` | OpenAI voice consents: multipart `name`, `language`, `recording` (up to 10 MiB). Also `GET` (list, `after`, `limit`), `GET`/`POST` (rename)/`DELETE` `/v1/audio/voice_consents/{id}`. Synapse keeps the recording; it does not check what it says. |
+| `POST /v1/audio/voices` | OpenAI custom voices: multipart `name`, `audio_sample` (up to 10 MiB, any format ffmpeg reads), `consent` (a consent id). PocketTTS clones the voice from the first 10 seconds; 5 to 10 seconds of one person speaking works best. Returns `{"id": "voice_…", "object": "audio.voice"}`; speak with `voice: {"id": "voice_…"}`. `DELETE /v1/audio/voices/{id}` removes it, and `GET /v1/audio/voices` (Synapse's addition) lists them. Voices from a text prompt are refused. |
 | `POST /v1/audio/generations` | Synapse's own: `prompt`, `seconds` (1 to 120, default 8), `seed`, `response_format` (`wav` default keeps stereo; other formats are mono). Models: `stable-audio-3-small-sfx`, `stable-audio-3-small-music`. |
 | `POST /v1/embeddings` | OpenAI embeddings: `input` (text or a list of texts, up to 256), `encoding_format` (`float` or `base64`, the SDK default), `dimensions`. `text-embedding-3-small`, `-3-large` and `ada-002` mean the default model. Token-array input returns 400; in LangChain set `check_embedding_ctx_length=False`. |
 | `POST /v1/rerank` | Cohere and Jina shape: `query`, `documents` (strings or `{"text"}`), `top_n`, `return_documents`. Model: `qwen3-reranker-0.6b`. |

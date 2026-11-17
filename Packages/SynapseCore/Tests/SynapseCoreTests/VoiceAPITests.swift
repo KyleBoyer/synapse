@@ -112,6 +112,14 @@ final class VoiceAPITests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// Realtime sessions pass the session voice through this filter: stock and cloned voices survive, OpenAI names fall back.
+    func testSessionVoicesKeepClonedIds() {
+        XCTAssertEqual(SpeechService.voice("alba"), "alba")
+        XCTAssertEqual(SpeechService.voice("voice_abc"), "voice_abc")
+        XCTAssertNil(SpeechService.voice("alloy"))
+        XCTAssertNil(SpeechService.voice(nil))
+    }
+
     func testVoiceCreationIsRefusedWithoutConsentOrWithAShortSample() async throws {
         try await makeApp().test(.router) { c in
             let (noConsent, t1) = multipart(["name": "X"], file: ("audio_sample", clip(seconds: 3)))

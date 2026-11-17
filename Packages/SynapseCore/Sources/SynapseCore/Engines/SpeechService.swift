@@ -89,9 +89,9 @@ public actor SpeechService {
         return (engine.sampleRate, pcm)
     }
 
-    /// A known PocketTTS voice, else nil (the engine default).
+    /// A known PocketTTS voice or a cloned voice id, else nil (the engine default; OpenAI names like alloy land here).
     public static func voice(_ requested: String?) -> String? {
-        requested.flatMap { pocketVoices.contains($0) ? $0 : nil }
+        requested.flatMap { pocketVoices.contains($0) || $0.hasPrefix("voice_") ? $0 : nil }
     }
 }
 

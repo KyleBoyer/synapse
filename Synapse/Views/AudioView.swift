@@ -205,6 +205,9 @@ struct AudioView: View {
     @State private var modelID = ""
     @State private var soundModelID = ""
     @State private var voice = SpeechService.pocketVoices[0]
+    @State private var customVoices: [CustomVoice] = []
+    @State private var cloning = false
+    @State private var deleting: CustomVoice?
     @State private var text = ""
     @State private var model = SpeakModel()
     @State private var composer = ComposeModel()
@@ -232,7 +235,10 @@ struct AudioView: View {
                     if let spec {
                         ScrollView {
                             VStack(spacing: 12) {
-                                if mode == .speak { readout(spec) } else { composeReadout(spec); composePanel }
+                                if mode == .speak {
+                                    readout(spec)
+                                    if spec.id == "pocket-tts" { voicesPanel }
+                                } else { composeReadout(spec); composePanel }
                             }
                             .padding(16).frame(maxWidth: .infinity)
                         }
@@ -256,7 +262,26 @@ struct AudioView: View {
                 }
             }
         }
-        .task { await state.refreshModels() }
+        .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
+        .sheet(isPresented: $cloning) {
+            CloneVoiceSheet { v in
+                customVoices.append(v); voice = v.id
+                #if DEBUG
+                if let t = UserDefaults.standard.string(forKey: "autoSpeak"), !t.isEmpty, let spec { model.speak(text: t, spec: spec, voice: v.id, state: state) }
+                #endif
+            }
+            .environment(state)
+        }
+        .confirmationDialog("Delete the voice \(deleting?.name ?? "")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            presenting: deleting) { v in
+            Button("Delete Voice", role: .destructive) {
+                Task {
+                    _ = await state.speech.voices.deleteVoice(v.id)
+                    customVoices.removeAll { $0.id == v.id }
+                    if voice == v.id { voice = SpeechService.pocketVoices[0] }
+                }
+            }
+        } message: { _ in Text("Clips already made keep their audio. API clients using this voice id will get an error.") }
         .onChange(of: state.downloadedTTSSpecs.map(\.id), initial: true) { _, ids in
             if !ids.contains(modelID) { modelID = ids.first ?? "" }
         }
@@ -268,6 +293,8 @@ struct AudioView: View {
         // `-autoSpeak "..."` speaks once after launch, and `-autoCompose "..."` generates one sound, so the readout
         // can be captured without typing.
         .task(id: spec?.id) {
+            // `-cloneSample <path>` opens the clone sheet with that clip (see CloneVoiceSheet).
+            if UserDefaults.standard.string(forKey: "cloneSample") != nil, spec?.id == "pocket-tts" { cloning = true; return }
             if let t = UserDefaults.standard.string(forKey: "autoSpeak"), !t.isEmpty, model.clips.isEmpty, mode == .speak, let spec {
                 model.speak(text: t, spec: spec, voice: voice, state: state)
             }
@@ -326,6 +353,36 @@ struct AudioView: View {
         }
     }
 
+    private func voiceName(_ id: String) -> String { customVoices.first { $0.id == id }?.name ?? id }
+
+    /// Voices cloned from a clip; each id is what API clients send as `voice`.
+    private var voicesPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Custom voices").font(.headline)
+                Spacer()
+                Button("Clone Voice…", systemImage: "person.wave.2") { cloning = true }.buttonStyle(.glass).disabled(model.running)
+            }
+            if customVoices.isEmpty {
+                Text("Clone a voice from 5 to 10 seconds of one person speaking.").font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(customVoices) { v in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(v.name)
+                        Text(v.id).font(.mono(.caption)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    }
+                    Spacer(minLength: 8)
+                    Text(String(format: "%.1f s", v.seconds)).font(.mono(.caption)).foregroundStyle(.secondary)
+                    Button("Delete \(v.name)", systemImage: "trash") { deleting = v }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 288, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+    }
+
     private var composePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             PanelRow("Length") {
@@ -363,7 +420,7 @@ struct AudioView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(clip.text).font(.title3).lineLimit(2).textSelection(.enabled)
-                            Text("\(clip.model) · \(clip.voice) · \(String(format: "%.1f s", clip.seconds))")
+                            Text("\(clip.model) · \(voiceName(clip.voice)) · \(String(format: "%.1f s", clip.seconds))")
                                 .font(.mono(.caption)).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 12)
@@ -382,7 +439,8 @@ struct AudioView: View {
 
     private func submit() {
         guard let spec, !running, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if mode == .speak { model.speak(text: text, spec: spec, voice: voice, state: state) } else {
+        // Only PocketTTS has named and cloned voices; Kokoro speaks in its own.
+        if mode == .speak { model.speak(text: text, spec: spec, voice: spec.id == "pocket-tts" ? voice : "default", state: state) } else {
             composer.generate(prompt: text, spec: spec, seconds: length, seed: randomSeed ? nil : UInt64(seed), state: state)
         }
         text = ""
@@ -394,7 +452,8 @@ struct AudioView: View {
                 .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
                 .onSubmit(submit).composerKeys()
             if mode == .speak, spec?.id == "pocket-tts" {
-                ChoiceMenu(title: "Voice", selection: $voice, options: SpeechService.pocketVoices.map { ($0, $0) })
+                ChoiceMenu(title: "Voice", selection: $voice,
+                           options: SpeechService.pocketVoices.map { ($0, $0) } + customVoices.map { ($0.id, $0.name) })
             }
             if running {
                 Button("Stop", systemImage: "stop.fill") { if mode == .speak { model.stop() } else { composer.stop() } }.buttonStyle(.glass)

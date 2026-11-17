@@ -146,6 +146,7 @@ struct LiveView: View {
     @State private var language = "Spanish"
     @State private var spoken = false
     @State private var voice = ""
+    @State private var customVoices: [CustomVoice] = []
     @State private var cameraOn = false
     private let languages = ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "English"]
 
@@ -189,7 +190,7 @@ struct LiveView: View {
                     .pickerStyle(.segmented).disabled(model.running)
             }
         }
-        .task { await state.refreshModels() }
+        .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
         .onAppear { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: state.downloadedChatSpecs.count) { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: state.downloadedDuplexSpecs.count, initial: true) { if duplexModel.isEmpty { duplexModel = state.downloadedDuplexSpecs.first?.id ?? "" } }
@@ -280,7 +281,7 @@ struct LiveView: View {
                     ?? Reading(label: "First audio", value: state.metrics.typical(speakerID, .firstAudio) ?? "–", muted: true),
                 Reading(label: "Lines", value: "\(model.lines.count)"),
             ] + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil),
-                                  Reading(label: "Voice", value: ownVoice ? "model's own" : (voice.isEmpty ? "PocketTTS" : voice))] : []) + [
+                                  Reading(label: "Voice", value: ownVoice ? "model's own" : (voice.isEmpty ? "PocketTTS" : customVoices.first { $0.id == voice }?.name ?? voice))] : []) + [
                 Reading(label: "Resident", value: state.resident(speakerID).map { gigabytes($0.bytes) } ?? "not loaded"),
             ],
             history: state.metrics.history(speakerID, .firstAudio), historyMetric: .firstAudio,
@@ -308,7 +309,14 @@ struct LiveView: View {
                 Label("Hears you and answers in its own voice.", systemImage: "waveform.and.person.filled")
                     .font(.callout).foregroundStyle(.secondary)
             } else if mode == .call || (mode == .translate && spoken) {
-                TextField("Voice (optional)", text: $voice).textFieldStyle(.roundedBorder)
+                Picker("Voice", selection: $voice) {
+                    Text("Default").tag("")
+                    ForEach(SpeechService.pocketVoices, id: \.self) { Text($0).tag($0) }
+                    if !customVoices.isEmpty {
+                        Divider()
+                        ForEach(customVoices) { Text($0.name).tag($0.id) }
+                    }
+                }
             }
             if mode == .duplex {
                 Picker("Duplex model", selection: $duplexModel) {

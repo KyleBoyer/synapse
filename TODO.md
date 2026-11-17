@@ -2,17 +2,19 @@
 
 New input/output pairings, in the order we plan to build them. Each item moves through: research → build → verify on the 16 GB Mac mini → docs. Check items off as they land and note what was verified.
 
-## Voice cloning (in progress)
+## Voice cloning (done)
 
 Speak in the voice of a short reference clip, from the API and the Audio pane.
 
 - [x] Research: PocketTTS, already Synapse's default voice, clones in FluidAudio (Mimi encoder, 1–10 s clip, no transcript needed). FluidAudio also ships Chatterbox, NeuTTS and LuxTTS backends if quality needs a step up. OpenAI's API shape: `/v1/audio/voice_consents` + `/v1/audio/voices`, then `voice: {"id": "voice_…"}`.
 - [x] Engine: `VoiceLibrary` (voices and consents under `<models>/voices/`), `SpeechService.createVoice`, custom-voice synthesis. Verified: clone of a 9.8 s clip in 7.5 s; speaker similarity to the reference 0.54 (stock voice 0.11, same speaker 0.94); output transcribes word for word.
 - [x] API: OpenAI's custom voices. `POST/GET/DELETE /v1/audio/voice_consents` (+ rename), `POST /v1/audio/voices` (name, audio_sample, consent; text-prompt voices refused), `DELETE /v1/audio/voices/{id}`, plus `GET /v1/audio/voices`; `voice: {"id": "voice_…"}` on `/v1/audio/speech`. Verified with the official OpenAI SDK against real PocketTTS (`verify-modalities.py --only voices`): consent → clone → speech → transcribed back → deleted.
-- [ ] Realtime: custom voices in `/v1/realtime` sessions and Live voice calls
-- [ ] App: Audio → Speak takes a reference clip
-- [ ] Verify: clone a voice from a fixture clip and check the output by transcribing it back
-- [ ] Docs: README, status page, licenses
+- [x] Realtime: the shared PocketTTS lease speaks `voice_…` ids, so `/v1/realtime` sessions (`session.audio.output.voice`) and Live voice calls use cloned voices; Live's voice field is now a menu with them. Verified: speech through the shared TTS scores 0.54 similarity to the reference (stock voice 0.06). The Live menu was built but not captured.
+- [x] App: Audio → Speak → Clone Voice… (choose or drop a clip, name it, confirm permission); cloned voices join the Voice menu and a Custom voices panel with delete. Verified in the app: a 7.3 s clip cloned, then spoke with first audio in 0.38 s at 2.6× realtime.
+- [x] Verify: VoiceCloneE2ETests (speaker similarity and transcription) and the SDK run above.
+- [x] Docs: README routes and example. Notices unchanged (FluidAudio was already listed).
+- [ ] Record a sample with the microphone in the clone sheet (today it takes a file)
+- [ ] Check that the consent recording and the sample are the same speaker (OpenAI does; Synapse stores consent without checking)
 
 ## Image (+text) embeddings
 
