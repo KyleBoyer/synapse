@@ -69,14 +69,9 @@ public enum HFDownloader {
             }
             let src = base.appending(path: "\(repo)/resolve/main/\(f.path)")
             let before = done
-            let (tmp, resp) = try await session.download(for: authorized(src, token), delegate: ProgressDelegate { written in
+            try await fetch(src, to: dst, token: token, configuration: session.configuration) { written in
                 progress(Double(before + written) / Double(total))
-            })
-            try check(resp, src)
-            let partial = dir.appending(path: f.path + ".partial")
-            try? FileManager.default.removeItem(at: partial)
-            try FileManager.default.moveItem(at: tmp, to: partial)
-            _ = try FileManager.default.replaceItemAt(dst, withItemAt: partial)
+            }
             done += f.size ?? 0
             progress(Double(done) / Double(total))
         }
@@ -99,11 +94,75 @@ public enum HFDownloader {
         }
     }
 
-    private final class ProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-        let onWritten: @Sendable (Int64) -> Void
-        init(_ onWritten: @escaping @Sendable (Int64) -> Void) { self.onWritten = onWritten }
-        func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64,
-                        totalBytesWritten: Int64, totalBytesExpectedToWrite _: Int64) { onWritten(totalBytesWritten) }
-        func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
+    /// Streams one file into `<dst>.partial` beside it, so large weights never stage on the boot disk, then renames it.
+    /// A `.partial` left by an interrupted attempt is resumed with a Range request. `onBytes` gets bytes written so far.
+    static func fetch(_ src: URL, to dst: URL, token: String?, configuration: URLSessionConfiguration = .default,
+                      onBytes: @escaping @Sendable (Int64) -> Void) async throws {
+        let partial = dst.appendingPathExtension("partial")
+        let fm = FileManager.default
+        let have = (try? partial.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        if !fm.fileExists(atPath: partial.path) { fm.createFile(atPath: partial.path, contents: nil) }
+        var request = authorized(src, token)
+        if have > 0 { request.setValue("bytes=\(have)-", forHTTPHeaderField: "Range") }
+        let writer = try PartialWriter(partial, resumeAt: have, onBytes: onBytes)
+        let session = URLSession(configuration: configuration, delegate: writer, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let task = session.dataTask(with: request)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                writer.done = c
+                task.resume()
+            }
+        } onCancel: { task.cancel() }
+        if let response = writer.response { try check(response, src) }
+        _ = try fm.replaceItemAt(dst, withItemAt: partial)
+    }
+
+    /// Appends a response body to a file as it arrives; a 200 to a Range request starts the file over.
+    private final class PartialWriter: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let handle: FileHandle
+        private var written: Int64
+        private var lastReport: Int64 = 0
+        private let onBytes: @Sendable (Int64) -> Void
+        var response: URLResponse?
+        var done: CheckedContinuation<Void, Error>?
+        private var failure: Error?
+
+        init(_ url: URL, resumeAt: Int64, onBytes: @escaping @Sendable (Int64) -> Void) throws {
+            handle = try FileHandle(forWritingTo: url)
+            written = resumeAt
+            self.onBytes = onBytes
+            super.init()
+            try handle.seekToEnd()
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            self.response = response
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else { completionHandler(.cancel); return }
+            if status == 200, written > 0 {   // the server ignored the Range: start over
+                do { try handle.truncate(atOffset: 0) } catch { failure = error; completionHandler(.cancel); return }
+                written = 0
+            }
+            onBytes(written)
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            do { try handle.write(contentsOf: data) } catch { failure = error; dataTask.cancel(); return }
+            written += Int64(data.count)
+            if written - lastReport >= 4 << 20 { lastReport = written; onBytes(written) }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            try? handle.close()
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            // A refused status is reported by `check` with its message, not as the cancellation it caused.
+            if let failure { done?.resume(throwing: failure) }
+            else if let error, (200..<300).contains(status) || response == nil { done?.resume(throwing: error) }
+            else { onBytes(written); done?.resume() }
+            done = nil
+        }
     }
 }

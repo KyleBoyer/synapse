@@ -1,3 +1,4 @@
+import Synchronization
 import Foundation
 import XCTest
 @testable import SynapseCore
@@ -16,7 +17,10 @@ final class CustomModelE2ETests: XCTestCase {
         try JSONEncoder().encode([String: String]()).write(to: root.appending(path: "manifest.json"))
         Catalog.setCustom([report.model])
         let store = ModelStore(root: root)
-        _ = try await store.download(report.model.id, token: nil) { _ in }
+        let updates = Mutex(0)
+        _ = try await store.download(report.model.id, token: nil) { _ in updates.withLock { $0 += 1 } }
+        // One 700 MB weights file: progress must move while it downloads, not jump at the end.
+        XCTAssertGreaterThan(updates.withLock { $0 }, 20)
         let chat = ChatService(store: store)
         let spec = try XCTUnwrap(Catalog.spec(report.model.id))
         var answer = ""
