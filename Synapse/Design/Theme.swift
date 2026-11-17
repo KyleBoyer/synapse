@@ -234,6 +234,8 @@ enum WindowLook {
     static let defaultContentTint = 0.35
     /// The window glass itself stays nearly clear; the sidebar and work area add their own tint on top.
     static let windowTint = 0.08
+    /// A tint at or above this is 0% transparency (the slider's last step).
+    static let solid = 0.995
 }
 
 enum AppAppearance: String, CaseIterable, Identifiable {
@@ -255,6 +257,9 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 /// what this app draws, so the window background uses AppKit's NSGlassEffectView on a non-opaque window.
 struct WindowGlass: NSViewRepresentable {
     var sidebarTint: Double
+    /// Both sliders at 0% transparency. In Dark appearance the glass stays see-through even fully tinted, so the
+    /// window itself turns opaque and the glass sits on solid window color.
+    var solidWindow = false
 
     func makeNSView(context: Context) -> NSGlassEffectView {
         let v = WindowGlassView()
@@ -266,10 +271,17 @@ struct WindowGlass: NSViewRepresentable {
 
     func updateNSView(_ v: NSGlassEffectView, context: Context) {
         (v as? WindowGlassView)?.sidebarTint = sidebarTint
+        (v as? WindowGlassView)?.solidWindow = solidWindow
     }
 
     final class WindowGlassView: NSGlassEffectView {
         var sidebarTint = WindowLook.defaultSidebarTint { didSet { needsLayout = true } }
+        var solidWindow = false { didSet { applyWindow() } }
+
+        private func applyWindow() {
+            window?.isOpaque = solidWindow
+            window?.backgroundColor = solidWindow ? .windowBackgroundColor : .clear
+        }
 
         // The split view rebuilds its sidebar background on resize and collapse, so restyle on every layout pass.
         override func layout() {
@@ -294,8 +306,7 @@ struct WindowGlass: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            window?.isOpaque = false
-            window?.backgroundColor = .clear
+            applyWindow()
         }
     }
 }

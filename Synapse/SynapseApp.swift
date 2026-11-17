@@ -106,6 +106,10 @@ struct MainView: View {
                 Section("Run") { ForEach(Pane.runPanes) { row($0) } }
             }
             .scrollContentBackground(.hidden)
+            .background {
+                // The sidebar's own glass samples the desktop even in an opaque window (seen in Dark appearance).
+                if sidebarTint >= WindowLook.solid { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
+            }
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
             .safeAreaInset(edge: .bottom) { SidebarFooter().padding(10) }
         } detail: {
@@ -131,8 +135,11 @@ struct MainView: View {
             .background {
                 // The detail column extends under the floating sidebar; keep its leading safe area so the work area's
                 // blur stops at the sidebar's edge instead of painting the clear sidebar solid.
-                WorkAreaGlass(tint: contentTint)
-                    .ignoresSafeArea(edges: [.top, .bottom, .trailing])
+                Group {
+                    // Fully tinted glass is still see-through in Dark appearance; 0% transparency means solid.
+                    if contentTint >= WindowLook.solid { Color(nsColor: .windowBackgroundColor) } else { WorkAreaGlass(tint: contentTint) }
+                }
+                .ignoresSafeArea(edges: [.top, .bottom, .trailing])
             }
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
@@ -150,7 +157,9 @@ struct MainView: View {
         .sheet(isPresented: Binding(get: { state.showingSettings }, set: { state.showingSettings = $0 })) {
             SettingsView().environment(state)
         }
-        .background { WindowGlass(sidebarTint: sidebarTint).ignoresSafeArea() }
+        .background {
+            WindowGlass(sidebarTint: sidebarTint, solidWindow: sidebarTint >= WindowLook.solid && contentTint >= WindowLook.solid).ignoresSafeArea()
+        }
         .safeAreaInset(edge: .top) {
             if let e = state.startupError {
                 Label(e, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
