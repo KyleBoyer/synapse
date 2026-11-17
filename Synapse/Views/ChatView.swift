@@ -116,7 +116,8 @@ struct ChatView: View {
             ],
             history: state.metrics.history(spec.id, .decodeRate), historyMetric: .decodeRate,
             running: generating,
-            api: "POST /v1/chat/completions\nmodel: \(spec.id)")
+            apiFormats: APIFormat.chat(model: spec.id, base: ServerView.endpoint(state.settings),
+                                       key: state.settings.allowLAN ? state.settings.apiKey : nil))
     }
 
     private var transcript: some View {

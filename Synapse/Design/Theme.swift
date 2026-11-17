@@ -68,6 +68,9 @@ struct BurnIn: View {
     var api: String?
     /// What Copy puts on the pasteboard when the display form is not itself a usable call (e.g. a URL split for reading).
     var apiCopy: String?
+    /// Several protocols for one model (chat): shown as one row that opens every format, instead of `api`.
+    var apiFormats: [APIFormat] = []
+    @State private var showingFormats = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -93,7 +96,24 @@ struct BurnIn: View {
             }
             .font(.callout)
             if let historyMetric, !history.isEmpty { RunHistory(values: history, metric: historyMetric) }
-            if let api {
+            if !apiFormats.isEmpty {
+                Divider()
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(apiFormats.map(\.shortName).joined(separator: " · ")).lineLimit(1)
+                        Text("model: \(modelID)").lineLimit(1).truncationMode(.middle)
+                    }
+                    .font(.mono(.caption)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("API formats", systemImage: "chevron.left.forwardslash.chevron.right") { showingFormats = true }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless).help("Show the API formats for this model")
+                        .popover(isPresented: $showingFormats, arrowEdge: .leading) { APIFormatsPopover(formats: apiFormats, modelID: modelID) }
+                        #if DEBUG
+                        // `-showAPIFormats YES` opens the popover after launch, for captures.
+                        .task { if UserDefaults.standard.bool(forKey: "showAPIFormats") { try? await Task.sleep(for: .seconds(1)); showingFormats = true } }
+                        #endif
+                }
+            } else if let api {
                 Divider()
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 1) {
@@ -113,6 +133,63 @@ struct BurnIn: View {
         .padding(14)
         .frame(width: 288)
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
+    }
+}
+
+/// One way to call a model over HTTP: the protocol's name, its route, and a ready-to-run curl command.
+struct APIFormat: Identifiable, Hashable {
+    let name: String
+    let shortName: String
+    let route: String
+    let example: String
+    var id: String { route }
+
+    /// The chat protocols, newest first: OpenAI Responses, Anthropic Messages, then OpenAI Chat Completions.
+    static func chat(model: String, base: String, key: String?) -> [APIFormat] {
+        let bearer = key.map { " -H 'Authorization: Bearer \($0)'" } ?? ""
+        let apiKey = key.map { " -H 'x-api-key: \($0)'" } ?? ""
+        let json = " -H 'content-type: application/json'"
+        return [
+            APIFormat(name: "OpenAI Responses", shortName: "Responses", route: "POST /v1/responses",
+                      example: "curl\(bearer) \(base)/v1/responses\(json) -d '{\"model\":\"\(model)\",\"input\":\"Hello\"}'"),
+            APIFormat(name: "Anthropic Messages", shortName: "Messages", route: "POST /v1/messages",
+                      example: "curl\(apiKey) \(base)/v1/messages\(json) -H 'anthropic-version: 2023-06-01' -d '{\"model\":\"\(model)\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'"),
+            APIFormat(name: "OpenAI Chat Completions", shortName: "Chat Completions", route: "POST /v1/chat/completions",
+                      example: "curl\(bearer) \(base)/v1/chat/completions\(json) -d '{\"model\":\"\(model)\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'"),
+        ]
+    }
+}
+
+/// Every format a model answers in, each with a copyable curl command.
+struct APIFormatsPopover: View {
+    let formats: [APIFormat]
+    let modelID: String
+    @State private var copied: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Call this model").font(.headline)
+                Text("Any of these; clients only need the host and key.").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(formats) { f in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(f.name).font(.callout.weight(.semibold))
+                        Text(f.route).font(.mono(.caption)).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    Spacer(minLength: 16)
+                    Button(copied == f.id ? "Copied" : "Copy curl", systemImage: copied == f.id ? "checkmark" : "doc.on.doc") {
+                        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(f.example, forType: .string)
+                        copied = f.id
+                    }
+                    .buttonStyle(.glass).controlSize(.small)
+                }
+            }
+            Text("model: \(modelID)").font(.mono(.caption)).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+        .padding(16)
+        .frame(width: 360)
     }
 }
 

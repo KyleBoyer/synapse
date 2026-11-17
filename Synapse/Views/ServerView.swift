@@ -103,10 +103,10 @@ struct ServerView: View {
     }
 
     static let routes: [(String, String)] = [
-        ("POST /v1/chat/completions", "OpenAI chat and vision"),
-        ("POST /v1/completions", "OpenAI legacy text completion"),
-        ("POST /v1/responses", "OpenAI Responses, image tool"),
+        ("POST /v1/responses", "OpenAI Responses: chat, vision, image tool"),
         ("POST /v1/messages", "Anthropic Messages"),
+        ("POST /v1/chat/completions", "OpenAI Chat Completions"),
+        ("POST /v1/completions", "OpenAI legacy text completion"),
         ("POST /v1/audio/transcriptions", "OpenAI transcription, speaker labels"),
         ("POST /v1/audio/speech", "OpenAI text to speech"),
         ("POST /v1/audio/generations", "Sound and music"),
@@ -120,9 +120,11 @@ struct ServerView: View {
         ("GET /v1/models", "Downloaded models"),
     ]
 
-    private var base: String {
-        let host = state.settings.allowLAN ? (Self.lanIP() ?? "127.0.0.1") : "127.0.0.1"
-        return "http://\(host):\(state.settings.port)"
+    private var base: String { Self.endpoint(state.settings) }
+
+    /// The URL clients use: this Mac's LAN address when LAN access is on, else localhost.
+    static func endpoint(_ s: SynapseCore.Settings) -> String {
+        "http://\(s.allowLAN ? (lanIP() ?? "127.0.0.1") : "127.0.0.1"):\(s.port)"
     }
 
     private var bazarrEndpoint: String {
@@ -135,7 +137,7 @@ struct ServerView: View {
             "curl\(auth) \(base)/v1/audio/transcriptions -F file=@movie.mkv -F response_format=srt",
             "curl\(auth) \(base)/v1/jobs -H 'content-type: application/json' -d '{\"path\":\"/Volumes/Media/movie.mkv\"}'",
             "curl\(auth) \(base)/v1/models",
-            "curl\(auth) \(base)/v1/chat/completions -H 'content-type: application/json' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}'",
+            "curl\(auth) \(base)/v1/responses -H 'content-type: application/json' -d '{\"input\":\"Hi\"}'",
             "curl\(state.settings.allowLAN ? " -H 'x-api-key: \(state.settings.apiKey)'" : "") \(base)/v1/messages -H 'content-type: application/json' -d '{\"model\":\"qwen3.5-0.8b\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}'",
         ]
     }
