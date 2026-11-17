@@ -52,6 +52,9 @@ struct ChatCompletionRequest: Decodable {
     var stream_options: JSONValue?
     var stop: JSONValue?
     var reasoning_effort: String?
+    /// `["text", "audio"]` asks for a spoken reply; `audio` carries `format` and `voice`.
+    var modalities: [String]?
+    var audio: JSONValue?
 }
 
 struct ResponsesRequest: Decodable {
@@ -193,7 +196,10 @@ struct ChatUsageWire: Encodable {
 
 struct ChatCompletionWire: Encodable {
     struct Choice: Encodable {
-        struct Message: Encodable { var role = "assistant"; var content: String; var refusal: String? = nil }
+        struct Message: Encodable {
+            var role = "assistant"; var content: String?; var refusal: String? = nil
+            var audio: ChatAudioWire? = nil
+        }
         var index = 0
         var message: Message
         var logprobs: String? = nil
@@ -209,7 +215,7 @@ struct ChatCompletionWire: Encodable {
 
 struct ChatChunkWire: Encodable {
     struct Choice: Encodable {
-        struct Delta: Encodable { var role: String?; var content: String? }
+        struct Delta: Encodable { var role: String?; var content: String?; var audio: ChatAudioDeltaWire? = nil }
         var index = 0
         var delta: Delta
         var logprobs: String? = nil
@@ -257,6 +263,52 @@ struct ResponseWire: Encodable {
 
 // MARK: Routes
 
+/// Chat Completions with a spoken reply: `message.audio` whole, or `delta.audio` pieces (pcm16) when streaming.
+private func audioReply(_ p: ChatAudio.Params, id: String, created: Int, spec: ModelSpec, messages: [ChatMessage],
+                        options: ChatOptions, stream: Bool, includeUsage: Bool, chat: ChatService,
+                        speech: SpeechService) async throws -> Response {
+    let events = ChatAudio.events(spec: spec, messages: messages, options: options, voice: p.voice, chat: chat, speech: speech)
+    let audioID = ChatAudio.newID()
+    let expires = Int(Date().timeIntervalSince1970) + 3600
+    guard stream else {
+        var transcript = "", samples: [Float] = [], finish = "stop", usage = ChatUsage(promptTokens: 0, completionTokens: 0)
+        for try await e in events {
+            switch e {
+            case .transcript(let t): transcript += t
+            case .audio(let a): samples += a
+            case .done(let f, let u): finish = f; usage = u
+            }
+        }
+        let data = try await ChatAudio.encode(samples, as: p.format, encoder: speech.encoder)
+        return json(ChatCompletionWire(id: id, created: created, model: spec.id, choices: [
+            .init(message: .init(content: nil, audio: .init(id: audioID, data: data.base64EncodedString(), expires_at: expires,
+                                                             transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines))),
+                  finish_reason: finish),
+        ], usage: ChatUsageWire(usage)))
+    }
+    return sse { write in
+        func chunk(_ delta: ChatChunkWire.Choice.Delta, finish: String? = nil) -> ChatChunkWire {
+            ChatChunkWire(id: id, created: created, model: spec.id, choices: [.init(delta: delta, finish_reason: finish)])
+        }
+        try await write(nil, chunk(.init(role: "assistant")))
+        for try await e in events {
+            switch e {
+            case .transcript(let t):
+                try await write(nil, chunk(.init(audio: .init(id: audioID, transcript: t))))
+            case .audio(let a):
+                try await write(nil, chunk(.init(audio: .init(id: audioID, data: PCM.pcm16LE(from: a).base64EncodedString()))))
+            case .done(let finish, let usage):
+                try await write(nil, chunk(.init(audio: .init(id: audioID, expires_at: expires))))
+                try await write(nil, chunk(.init(), finish: finish))
+                if includeUsage {
+                    try await write(nil, ChatChunkWire(id: id, created: created, model: spec.id, choices: [], usage: ChatUsageWire(usage)))
+                }
+            }
+        }
+        try await writeRaw(write, "[DONE]")
+    }
+}
+
 /// A model without a video processor would silently drop the frames, so refuse instead.
 func requireMediaSupport(_ chat: ChatService, _ spec: ModelSpec, _ messages: [ChatMessage]) async throws {
     if messages.contains(where: { !$0.videos.isEmpty }), await !chat.supportsVideo(spec) {
@@ -267,7 +319,8 @@ func requireMediaSupport(_ chat: ChatService, _ spec: ModelSpec, _ messages: [Ch
     }
 }
 
-func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, settings: SettingsBox) {
+func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, speech: SpeechService,
+                   settings: SettingsBox) {
     g.post("chat/completions") { req, ctx in
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/chat/completions", chat: chat, settings: settings) { return proxied }
@@ -279,6 +332,12 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                                   topP: body.top_p, enableThinking: thinking(body.reasoning_effort))
         let id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
+
+        if let audio = try ChatAudio.params(modalities: body.modalities, audio: body.audio, stream: body.stream == true) {
+            return try await audioReply(audio, id: id, created: created, spec: spec, messages: messages, options: options,
+                                        stream: body.stream == true, includeUsage: body.stream_options?["include_usage"]?.bool == true,
+                                        chat: chat, speech: speech)
+        }
 
         let events = applyStops(try await chat.stream(model: spec, messages: messages, options: options), stopSequences(body.stop))
         guard body.stream == true else {

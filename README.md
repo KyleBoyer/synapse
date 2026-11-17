@@ -68,7 +68,7 @@ Give a client only the host (for example `http://192.168.1.20:9000`) and the API
 
 | Route | Notes |
 |---|---|
-| `POST /v1/chat/completions` | `messages` with string content or parts (`text`, `image_url` with a `data:` or `http(s)` URL, `video_url` with an MP4/MOV `data:` or `http(s)` URL, `input_audio` with base64 `data` and a `format` for omni models); `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stop`, `stream`, `stream_options.include_usage`. |
+| `POST /v1/chat/completions` | `messages` with string content or parts (`text`, `image_url` with a `data:` or `http(s)` URL, `video_url` with an MP4/MOV `data:` or `http(s)` URL, `input_audio` with base64 `data` and a `format` for omni models); `modalities: ["text", "audio"]` with `audio: {"format", "voice"}` for a spoken reply in `message.audio` (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm16`; streaming needs `pcm16` and sends `delta.audio`); `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stop`, `stream`, `stream_options.include_usage`. |
 | `POST /v1/completions` | OpenAI legacy completions: one `prompt` string continued as raw text (no chat template); `max_tokens` (default 256), `temperature`, `top_p`, `stop`, `echo`, `stream`, `stream_options.include_usage`. |
 | `POST /v1/responses` | `input` as a string or message items with `input_text` / `input_image` / `input_video` / `input_audio` parts; `instructions`, `max_output_tokens`, `temperature`, `top_p`, `stream` (typed SSE events through `response.completed`). |
 | `POST /v1/messages` | Anthropic Messages: `system`, `messages` with `text`, `image` (base64 or url), `tool_use` and `tool_result` blocks; `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tools`, `tool_choice`, `thinking`, `stream` (named SSE events `message_start` through `message_stop`). `claude-*` model ids map to the default chat model. |
@@ -148,7 +148,7 @@ c.videos.download_content(v.id).write_to_file("fox.mp4")
 
 `gemma-3n-e2b` (audio and image), `gemma-4-e2b`, `lfm3-omni-2b`, `minicpm-o-4.5` and `qwen3-omni-30b` run in a managed mlx-vlm server and answer on every chat route. Send audio as an `input_audio` part; non-WAV audio is converted to 16 kHz WAV first. Small omni models follow the prompt closely: "Transcribe the audio." works better than "What does the speaker say?".
 
-`lfm3-omni-2b` also speaks. Pick it for a voice call (`/v1/realtime?model=lfm3-omni-2b` with audio output, or **Live → Voice call**) and it hears your turn and any camera frame itself, then answers in its own voice, streamed as it is generated; there is no separate speech synthesis. Barge-in stops it mid-sentence. On an M4 Mac mini the first audio arrives about 0.75 s after you stop talking once the model is loaded. Speech recognition still runs, only to show your words in the transcript.
+`lfm3-omni-2b` also speaks. Ask Chat Completions for audio with it, or pick it for a voice call (`/v1/realtime?model=lfm3-omni-2b` with audio output, or **Live → Voice call**) and it hears your turn and any camera frame itself, then answers in its own voice, streamed as it is generated; there is no separate speech synthesis. Barge-in stops it mid-sentence. On an M4 Mac mini the first audio arrives about 0.75 s after you stop talking once the model is loaded. Speech recognition still runs, only to show your words in the transcript.
 
 ### Python runtimes
 
@@ -183,7 +183,7 @@ Add folders in the Watch Folders tab. For each new media file, Synapse writes a 
 - Parakeet does not translate or detect language and covers 25 European languages. Synapse falls back to Whisper for other requests.
 - Speaker labels come from a separate diarization model and can split one speaker in two, or merge similar voices, on short clips.
 - Video input reads MP4 and MOV only (AVFoundation); MKV and WebM are refused.
-- Of the omni models, only `lfm3-omni-2b` and `minicpm-o-4.5` speak in voice calls; the others answer through the cascade (speech recognition, chat model, speech synthesis). Chat Completions does not return audio.
+- Of the omni models, only `lfm3-omni-2b` and `minicpm-o-4.5` speak themselves. Other chat models answer voice calls and Chat Completions audio requests through speech synthesis (PocketTTS or Kokoro), whose voices do not follow OpenAI's voice names.
 - Video jobs do not survive a restart.
 
 ## Releases (maintainers)

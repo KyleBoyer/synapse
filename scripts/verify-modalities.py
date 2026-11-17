@@ -182,8 +182,63 @@ def omni():
         check("audio refused for a model without audio input", getattr(e, "status_code", None) == 400, str(e)[:80])
 
 
+def chat_audio():
+    """Spoken replies on Chat Completions: a chat model plus TTS, and an omni model in its own voice."""
+    import base64, io, wave
+    from openai import OpenAI
+    from openai.types.chat import ChatCompletion, ChatCompletionChunk
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    ask = [{"role": "system", "content": "Answer in one short sentence."},
+           {"role": "user", "content": "What is the capital of France?"}]
+
+    def heard(wav_bytes):
+        return client.audio.transcriptions.create(model="whisper-1", file=("reply.wav", wav_bytes)).text
+
+    for model in ["qwen3.5-0.8b", "lfm3-omni-2b"]:
+        r = client.chat.completions.create(model=model, modalities=["text", "audio"], audio={"voice": "alloy", "format": "wav"},
+                                           messages=ask, max_tokens=60)
+        ChatCompletion.model_validate(r.model_dump())
+        a = r.choices[0].message.audio
+        wav = base64.b64decode(a.data)
+        with wave.open(io.BytesIO(wav)) as w:
+            seconds = w.getnframes() / w.getframerate()
+        said = heard(wav)
+        check(f"{model}: message.audio wav, transcript and speech say Paris",
+              a.id.startswith("audio_") and 0.5 < seconds < 60 and "paris" in a.transcript.lower() and "paris" in said.lower(),
+              f"{seconds:.1f}s; transcript {a.transcript!r}; heard {said!r}")
+
+        stream = client.chat.completions.create(model=model, modalities=["text", "audio"], audio={"voice": "alloy", "format": "pcm16"},
+                                                messages=ask, max_tokens=60, stream=True, stream_options={"include_usage": True})
+        text, pcm, ids, expiry, usage = "", b"", set(), None, None
+        for ch in stream:
+            ChatCompletionChunk.model_validate(ch.model_dump())
+            if ch.usage: usage = ch.usage
+            for c in ch.choices:
+                d = c.delta.audio
+                if d is None: continue
+                d = d if isinstance(d, dict) else d.model_dump()
+                if d.get("id"): ids.add(d["id"])
+                text += d.get("transcript") or ""
+                if d.get("data"): pcm += base64.b64decode(d["data"])
+                expiry = d.get("expires_at") or expiry
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(pcm)
+        said = heard(buf.getvalue())
+        check(f"{model}: streamed pcm16 deltas say Paris",
+              len(ids) == 1 and expiry and len(pcm) > 24000 and "paris" in text.lower() and "paris" in said.lower() and usage,
+              f"{len(pcm) / 48000:.1f}s; transcript {text.strip()!r}; heard {said!r}")
+    try:
+        client.chat.completions.create(model="qwen3.5-0.8b", modalities=["text", "audio"], audio={"voice": "alloy", "format": "mp3"},
+                                       messages=ask, stream=True)
+        check("streaming mp3 refused", False, "accepted")
+    except Exception as e:
+        check("streaming mp3 refused", getattr(e, "status_code", None) == 400, str(e)[:80])
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni}
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

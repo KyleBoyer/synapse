@@ -30,7 +30,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addCompletionsRoutes(to: group, chat: chat)
         addASRRoutes(to: group, queue: queue, store: store, settings: settings)
         addJobRoutes(to: group, queue: queue, settings: settings)
-        addChatRoutes(to: group, chat: chat, images: images, settings: settings)
+        addChatRoutes(to: group, chat: chat, images: images, speech: speech, settings: settings)
         addAnthropicRoutes(to: group, chat: chat)
         addImageRoutes(to: group, images: images, files: imageFiles, chat: chat, settings: settings)
         addSpeechRoutes(to: group, speech: speech)

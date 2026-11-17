@@ -138,6 +138,11 @@ public actor ChatService {
                              stripThinking: !options.enableThinking) { try await container.prepare(input: input) }
     }
 
+    /// A model that answers in its own voice (`OmniVoices.canSpeak`); the lease lasts as long as the returned value.
+    public func voice(_ spec: ModelSpec) async throws -> any RealtimeVoiceLLM {
+        LeasedOmniVoice(try await OmniVoices.lease(spec, store: store, models: models))
+    }
+
     /// Omni models run in their own mlx-vlm server; the lease keeps it alive and eviction stops it. Tool calls are not
     /// passed through: mlx-vlm parses them per model and only Qwen3.5's format is verified here.
     private func streamMLXVLM(_ spec: ModelSpec, _ messages: [ChatMessage], _ options: ChatOptions) async throws
