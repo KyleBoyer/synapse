@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 import SynapseCore
 import UniformTypeIdentifiers
@@ -32,6 +33,7 @@ struct ChatView: View {
     @State private var started: Date?
     @State private var input = ""
     @State private var pending: [Data] = []
+    @State private var pendingVideos: [URL] = []
     @State private var generating = false
     @State private var task: Task<Void, Never>?
     @State private var error: String?
@@ -61,7 +63,9 @@ struct ChatView: View {
                 if !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                 }
-                Button("New Chat", systemImage: "square.and.pencil") { stop(); lines = []; started = nil; pending = []; error = nil; run = nil }
+                Button("New Chat", systemImage: "square.and.pencil") {
+                    stop(); lines = []; started = nil; pending = []; pendingVideos = []; error = nil; run = nil
+                }
                     .help("New Chat")
             }
         }
@@ -71,6 +75,8 @@ struct ChatView: View {
         // `-autoSendPrompt "..."` sends one message after launch, so streaming states can be captured without typing.
         .task(id: spec?.id) {
             guard let p = UserDefaults.standard.string(forKey: "autoSendPrompt"), !p.isEmpty, lines.isEmpty, spec != nil else { return }
+            // `-autoAttach <path>` attaches a file first, so video and image runs can be captured too.
+            if let path = UserDefaults.standard.string(forKey: "autoAttach") { add([URL(fileURLWithPath: path)]) }
             input = p; send()
         }
         #endif
@@ -99,6 +105,8 @@ struct ChatView: View {
                     "\(u.promptTokens) tok" + (r?.promptRate.map { " · " + Metric.prefillRate.format($0) + "/s" } ?? "")
                 }, .prefillRate),
                 Reading(label: "Output", value: r.map { "\($0.usage?.completionTokens ?? $0.chunks) tok" } ?? "–"),
+            ] + (lines.last(where: { $0.message.role == .user })?.message.videos.isEmpty == false
+                 ? [Reading(label: "Video", value: "\(ChatOptions().videoFrames ?? 8) frames")] : []) + [
                 Reading(label: "Resident", value: resident.map { gigabytes($0.bytes) } ?? "not loaded"),
             ],
             history: state.metrics.history(spec.id, .decodeRate), historyMetric: .decodeRate,
@@ -111,7 +119,7 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if lines.isEmpty {
-                        Text("Send a message or drop an image to try \(spec?.displayName ?? "the model").")
+                        Text("Send a message, or drop an image or video, to try \(spec?.displayName ?? "the model").")
                             .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                     }
                     ForEach(lines.indices, id: \.self) { i in line(lines[i], current: generating && i == lines.count - 1) }
@@ -135,6 +143,7 @@ struct ChatView: View {
                 .frame(width: 82, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
                 Text(user ? "You" : (spec?.displayName ?? "Model")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(l.message.videos, id: \.self) { VideoThumb(url: $0, height: 160) }
                 ForEach(Array(l.message.images.enumerated()), id: \.offset) { _, d in
                     if let img = NSImage(data: d) {
                         Image(nsImage: img).resizable().scaledToFit().frame(maxHeight: 160).clipShape(.rect(cornerRadius: 10))
@@ -155,9 +164,16 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !pending.isEmpty {
+            if !pending.isEmpty || !pendingVideos.isEmpty {
                 ScrollView(.horizontal) {
                     HStack {
+                        ForEach(pendingVideos, id: \.self) { url in
+                            ZStack(alignment: .topTrailing) {
+                                VideoThumb(url: url, height: 56)
+                                Button("Remove attachment", systemImage: "xmark.circle.fill") { pendingVideos.removeAll { $0 == url } }
+                                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+                            }
+                        }
                         ForEach(Array(pending.enumerated()), id: \.offset) { i, d in
                             ZStack(alignment: .topTrailing) {
                                 if let img = NSImage(data: d) {
@@ -171,8 +187,8 @@ struct ChatView: View {
                 }
             }
             HStack(alignment: .bottom, spacing: 10) {
-                Button("Attach Image", systemImage: "photo") { attach() }
-                    .labelStyle(.iconOnly).buttonStyle(.borderless).help("Attach Image")
+                Button("Attach Image or Video", systemImage: "photo") { attach() }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless).help("Attach Image or Video")
                 TextField("Message \(spec?.displayName ?? "")", text: $input, axis: .vertical)
                     .lineLimit(1...6).textFieldStyle(.plain).font(.title3)
                     .onSubmit(send).disabled(generating)
@@ -183,46 +199,51 @@ struct ChatView: View {
                 } else {
                     Button("Send", systemImage: "arrow.up", action: send)
                         .labelStyle(.iconOnly).buttonStyle(.glassProminent).help("Send")
-                        .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pending.isEmpty)
+                        .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pending.isEmpty && pendingVideos.isEmpty)
                 }
             }
         }
         .padding(.horizontal, 6).padding(.vertical, 4)
         .glassBar()
-        .dropDestination(for: URL.self) { urls, _ in
-            pending += urls.compactMap(Self.imageData); return true
-        }
+        .dropDestination(for: URL.self) { urls, _ in add(urls); return true }
     }
 
-    private static func imageData(_ url: URL) -> Data? {
-        guard let t = UTType(filenameExtension: url.pathExtension), t.conforms(to: .image) else { return nil }
-        return try? Data(contentsOf: url)
+    /// Images are read now; videos stay files, because the model's processor samples frames from the file.
+    private func add(_ urls: [URL]) {
+        for url in urls {
+            guard let t = UTType(filenameExtension: url.pathExtension) else { continue }
+            if t.conforms(to: .movie) { pendingVideos.append(url) }
+            else if t.conforms(to: .image), let d = try? Data(contentsOf: url) { pending.append(d) }
+        }
     }
 
     private func attach() {
         let p = NSOpenPanel()
-        p.allowedContentTypes = [.image]
+        p.allowedContentTypes = [.image, .movie]
         p.allowsMultipleSelection = true
-        if p.runModal() == .OK { pending += p.urls.compactMap(Self.imageData) }
+        if p.runModal() == .OK { add(p.urls) }
     }
 
     private func stop() { task?.cancel(); task = nil; generating = false }
 
     private func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !generating, !text.isEmpty || !pending.isEmpty, let spec else { return }
+        guard !generating, !text.isEmpty || !pending.isEmpty || !pendingVideos.isEmpty, let spec else { return }
         let now = Date()
         if started == nil { started = now }
         let offset = now.timeIntervalSince(started ?? now)
-        lines.append(Line(message: ChatMessage(role: .user, text: text, images: pending), at: offset))
+        lines.append(Line(message: ChatMessage(role: .user, text: text, images: pending, videos: pendingVideos), at: offset))
         let history = lines.map(\.message)
         lines.append(Line(message: ChatMessage(role: .assistant, text: ""), at: offset))
-        input = ""; pending = []; error = nil; generating = true
+        input = ""; pending = []; pendingVideos = []; error = nil; generating = true
         run = Run(sent: now)
         Task { try? await Task.sleep(for: .seconds(1)); await state.refreshResidents() }
         let chat = state.chat, metrics = state.metrics
         task = Task {
             do {
+                if history.contains(where: { !$0.videos.isEmpty }), await !chat.supportsVideo(spec) {
+                    throw VideoUnsupported(model: spec.displayName)
+                }
                 for try await ev in try await chat.stream(model: spec, messages: history, options: ChatOptions()) {
                     switch ev {
                     case .delta(let s):
@@ -247,6 +268,42 @@ struct ChatView: View {
             if run?.ended == nil { run?.ended = Date() }
             generating = false
             composerFocused = true
+        }
+    }
+}
+
+private struct VideoUnsupported: LocalizedError {
+    let model: String
+    var errorDescription: String? { "\(model) does not accept video. Qwen3.5 models do." }
+}
+
+/// A video's first frame with a play badge and its length.
+private struct VideoThumb: View {
+    let url: URL
+    let height: CGFloat
+    @State private var frame: NSImage?
+    @State private var seconds: Double?
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                if let frame { Image(nsImage: frame).resizable().scaledToFill() } else { Color.secondary.opacity(0.2) }
+            }
+            .frame(width: height * 16 / 9, height: height)
+            .clipShape(.rect(cornerRadius: height > 80 ? 10 : 8))
+            Label(seconds.map { String(format: "%d:%02d", Int($0) / 60, Int($0.rounded()) % 60) } ?? "video", systemImage: "play.fill")
+                .font(.mono(.caption2)).foregroundStyle(.white)
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .background(.black.opacity(0.55), in: .capsule)
+                .padding(4)
+        }
+        .task(id: url) {
+            let asset = AVURLAsset(url: url)
+            seconds = try? await asset.load(.duration).seconds
+            let gen = AVAssetImageGenerator(asset: asset)
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize = CGSize(width: 480, height: 480)
+            if let cg = try? await gen.image(at: .zero).image { frame = NSImage(cgImage: cg, size: .zero) }
         }
     }
 }

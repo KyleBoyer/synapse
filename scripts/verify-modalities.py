@@ -94,8 +94,31 @@ def diarize():
           " ".join(speakers))
 
 
+def video_input():
+    import base64
+    from pathlib import Path
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    fixture = Path(__file__).resolve().parent.parent / "Packages/SynapseCore/Tests/SynapseCoreTests/Fixtures/zebra.mp4"
+    url = "data:video/mp4;base64," + base64.b64encode(fixture.read_bytes()).decode()
+    r = client.chat.completions.create(
+        model="qwen3.5-0.8b", temperature=0, max_tokens=16,
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": "What animal is in this video? Answer with one word."},
+            {"type": "video_url", "video_url": {"url": url}}]}])
+    answer = r.choices[0].message.content or ""
+    check("chat completion names the animal in a video", "zebra" in answer.lower(), answer.strip())
+    try:
+        client.chat.completions.create(model="qwen3.5-0.8b", messages=[{"role": "user", "content": [
+            {"type": "video_url", "video_url": {"url": "file:///etc/hosts"}}]}])
+        check("file:// video URL refused", False, "accepted")
+    except Exception as e:  # openai.BadRequestError
+        check("file:// video URL refused", getattr(e, "status_code", None) == 400, str(e)[:80])
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize}
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

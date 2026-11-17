@@ -27,4 +27,8 @@ say -v Daniel -o "$TMP/t4.aiff" "Yes, let us pack sandwiches and some fruit, and
 /opt/homebrew/bin/ffmpeg -loglevel error -y -i "$TMP/t1.aiff" -i "$TMP/t2.aiff" -i "$TMP/t3.aiff" -i "$TMP/t4.aiff" \
   -filter_complex "[0:a]aresample=22050[a];[1:a]aresample=22050[b];[2:a]aresample=22050[c];[3:a]aresample=22050[d];[a][b][c][d]concat=n=4:v=0:a=1" "$TMP/two.aiff"
 afconvert -f m4af -d aac "$TMP/two.aiff" "$OUT/two-speakers.m4a"
+
+# A 2 s still-image video for video-input tests (Homebrew ffmpeg for libx264, dev-only).
+/opt/homebrew/bin/ffmpeg -loglevel error -y -loop 1 -i "$OUT/zebra.jpg" -t 2 -r 8 -vf "scale=320:-2" -pix_fmt yuv420p \
+  -c:v libx264 -movflags +faststart "$OUT/zebra.mp4"
 ls -l "$OUT"

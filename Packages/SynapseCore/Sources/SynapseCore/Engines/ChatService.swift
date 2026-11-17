@@ -11,9 +11,13 @@ public struct ChatMessage: Sendable, Equatable {
     public var text: String
     /// Encoded image bytes (PNG, JPEG, HEIC...). Remote URLs are fetched at the API boundary.
     public var images: [Data]
+    /// Local video files (MP4/MOV), already validated; frames are sampled by the model's processor.
+    public var videos: [URL]
+    /// Local 16 kHz WAV files for models that take audio input.
+    public var audios: [URL]
 
-    public init(role: Role, text: String, images: [Data] = []) {
-        self.role = role; self.text = text; self.images = images
+    public init(role: Role, text: String, images: [Data] = [], videos: [URL] = [], audios: [URL] = []) {
+        self.role = role; self.text = text; self.images = images; self.videos = videos; self.audios = audios
     }
 }
 
@@ -25,11 +29,13 @@ public struct ChatOptions: Sendable, Equatable {
     public var enableThinking: Bool
     /// Function tools in OpenAI/HF chat-template form: {"type":"function","function":{name,description,parameters}}.
     public var tools: [ChatTool]
+    /// Frames sampled evenly across each video (nil = 8).
+    public var videoFrames: Int?
 
     public init(maxTokens: Int? = nil, temperature: Float? = nil, topP: Float? = nil, enableThinking: Bool = false,
-                tools: [ChatTool] = []) {
+                tools: [ChatTool] = [], videoFrames: Int? = nil) {
         self.maxTokens = maxTokens; self.temperature = temperature; self.topP = topP; self.enableThinking = enableThinking
-        self.tools = tools
+        self.tools = tools; self.videoFrames = videoFrames
     }
 }
 
@@ -97,6 +103,20 @@ public actor ChatService {
 
     public init(store: ModelStore, models: ModelManager = ModelManager()) {
         self.store = store; self.models = models
+    }
+
+    /// A model takes video when its snapshot ships a video preprocessor (Qwen3.5 does).
+    public func supportsVideo(_ spec: ModelSpec) async -> Bool {
+        guard let folder = await store.folder(for: spec.id) else { return false }
+        return FileManager.default.fileExists(atPath: folder.appending(path: "video_preprocessor_config.json").path)
+    }
+
+    /// A model takes audio when its config declares an audio tower.
+    public func supportsAudio(_ spec: ModelSpec) async -> Bool {
+        guard let folder = await store.folder(for: spec.id),
+              let data = try? Data(contentsOf: folder.appending(path: "config.json")),
+              let config = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+        return config["audio_config"] != nil
     }
 
     public func resolve(_ requested: String?) async throws -> ModelSpec {
@@ -215,13 +235,15 @@ public actor ChatService {
                 guard let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else { throw ChatError.badImage }
                 return .ciImage(ci)
             }
+            let videos = m.videos.map { UserInput.Video.url($0) }
             switch m.role {
-            case .system: return .system(m.text, images: images)
-            case .user: return .user(m.text, images: images)
-            case .assistant: return .assistant(m.text, images: images)
+            case .system: return .system(m.text, images: images, videos: videos)
+            case .user: return .user(m.text, images: images, videos: videos, audios: m.audios.map { UserInput.Audio.url($0) })
+            case .assistant: return .assistant(m.text, images: images, videos: videos)
             }
         }
         var processing = UserInput.Processing()
+        processing.video = .init(targetFrames: options.videoFrames ?? 8)
         // Cap image tokens: phone photos otherwise become thousands of tokens on small models.
         processing.maxPixels = 1024 * 1024
         return UserInput(chat: chat, processing: processing, tools: options.tools.isEmpty ? nil : options.tools.map(\.spec),

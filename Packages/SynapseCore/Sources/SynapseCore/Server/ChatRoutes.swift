@@ -71,6 +71,7 @@ struct ResponsesRequest: Decodable {
 enum ContentPart: Equatable {
     case text(String)
     case image(String)   // data: URL or http(s) URL
+    case video(String)   // data: URL or http(s) URL
 }
 
 enum ChatParse {
@@ -91,6 +92,10 @@ enum ChatParse {
                 let url = item["image_url"]?.string ?? item["image_url"]?["url"]?.string
                 guard let url else { throw bad("Image part is missing image_url.") }
                 return .image(url)
+            case "video_url", "input_video":
+                let url = item["video_url"]?.string ?? item["video_url"]?["url"]?.string
+                guard let url else { throw bad("Video part is missing video_url.") }
+                return .video(url)
             case let t:
                 throw bad("Unsupported content part type '\(t ?? "nil")'.")
             }
@@ -159,13 +164,15 @@ enum ImageFetcher {
         for (role, parts) in parsed {
             var text: [String] = []
             var images: [Data] = []
+            var videos: [URL] = []
             for p in parts {
                 switch p {
                 case .text(let t): text.append(t)
                 case .image(let u): images.append(try await load(u))
+                case .video(let u): videos.append(try await MediaFiles.loadVideo(u))
                 }
             }
-            out.append(ChatMessage(role: role, text: text.joined(separator: "\n"), images: images))
+            out.append(ChatMessage(role: role, text: text.joined(separator: "\n"), images: images, videos: videos))
         }
         return out
     }
@@ -244,6 +251,16 @@ struct ResponseWire: Encodable {
 
 // MARK: Routes
 
+/// A model without a video processor would silently drop the frames, so refuse instead.
+func requireMediaSupport(_ chat: ChatService, _ spec: ModelSpec, _ messages: [ChatMessage]) async throws {
+    if messages.contains(where: { !$0.videos.isEmpty }), await !chat.supportsVideo(spec) {
+        throw HTTPError(.badRequest, message: "Model '\(spec.id)' does not accept video.")
+    }
+    if messages.contains(where: { !$0.audios.isEmpty }), await !chat.supportsAudio(spec) {
+        throw HTTPError(.badRequest, message: "Model '\(spec.id)' does not accept audio.")
+    }
+}
+
 func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, settings: SettingsBox) {
     g.post("chat/completions") { req, ctx in
         let raw = try await rawBody(req, ctx)
@@ -251,6 +268,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let body = try decodeJSON(ChatCompletionRequest.self, raw)
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.chatMessages(body.messages))
+        try await requireMediaSupport(chat, spec, messages)
         let options = ChatOptions(maxTokens: body.max_completion_tokens ?? body.max_tokens, temperature: body.temperature,
                                   topP: body.top_p, enableThinking: thinking(body.reasoning_effort))
         let id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -304,6 +322,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         }
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.responseMessages(body.input, instructions: body.instructions))
+        try await requireMediaSupport(chat, spec, messages)
         let effort = body.reasoning?["effort"]?.string
         let options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature,
                                   topP: body.top_p, enableThinking: thinking(effort))
