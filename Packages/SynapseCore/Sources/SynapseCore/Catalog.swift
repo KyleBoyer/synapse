@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public enum Catalog {
     private static func whisper(_ id: String, _ name: String, _ variant: String, _ mb: Int) -> ModelSpec {
@@ -29,7 +30,17 @@ public enum Catalog {
                   canTranslate: false, canDetectLanguage: false, recommendedRAMGB: ramGB)
     }
 
-    public static let all: [ModelSpec] = [
+    /// Models added from Hugging Face (Settings.customModels), merged in by `setCustom`.
+    private static let customStore = Mutex<[ModelSpec]>([])
+    public static var custom: [ModelSpec] { customStore.withLock { $0 } }
+    /// A repo id that is also a built-in id stays built-in.
+    public static func setCustom(_ models: [CustomModel]) {
+        let ids = Set(builtIn.map(\.id))
+        customStore.withLock { $0 = models.map(\.spec).filter { !ids.contains($0.id) } }
+    }
+    public static var all: [ModelSpec] { builtIn + custom }
+
+    public static let builtIn: [ModelSpec] = [
         whisper("whisper-tiny", "Whisper Tiny", "tiny", 75),
         whisper("whisper-base", "Whisper Base", "base", 145),
         whisper("whisper-small", "Whisper Small", "small", 480),

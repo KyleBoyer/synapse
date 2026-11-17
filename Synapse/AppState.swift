@@ -7,6 +7,7 @@ final class AppState {
     var settings: Settings {
         didSet {
             guard settings != oldValue else { return }
+            if settings.customModels != oldValue.customModels { Catalog.setCustom(settings.customModels) }
             settingsBox.current = settings
             settings.save()
             applySettings(old: oldValue)
@@ -70,6 +71,7 @@ final class AppState {
         Task { [weak self] in
             for await snap in updates { self?.upsert(snap) }
         }
+        Catalog.setCustom(s.customModels)
         Task { await refreshModels() }
         Task { [weak self] in
             while !Task.isCancelled {
@@ -162,6 +164,25 @@ final class AppState {
     }
 
     func cancelDownload(_ id: String) { Task { await store.cancelDownload(id) } }
+
+    /// Adds a model found on Hugging Face to the list (it downloads like any catalog model).
+    func addCustom(_ model: CustomModel) {
+        guard !settings.customModels.contains(where: { $0.repo == model.repo }) else { return }
+        settings.customModels.append(model)
+        Task { await refreshModels() }
+    }
+
+    /// Takes an added model off the list, deleting its files first if it was downloaded.
+    func removeCustom(_ id: String) {
+        Task {
+            if case .ready = modelStates[id] {
+                guard await models.unload(id) else { modelStates[id] = .failed("Model is in use by a running job"); return }
+                try? await store.delete(id)
+            }
+            settings.customModels.removeAll { $0.repo == id }
+            await refreshModels()
+        }
+    }
 
     func delete(_ id: String) {
         Task {

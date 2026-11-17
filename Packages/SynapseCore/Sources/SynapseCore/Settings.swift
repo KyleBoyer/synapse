@@ -50,6 +50,8 @@ public struct Settings: Codable, Sendable, Equatable {
     public var hfToken: String?
     /// Path to a vOOM checkout; enables `voom:<model>` chat models served by its paging runtime.
     public var voomCheckout: String?
+    /// Models added from Hugging Face in Models; they join the catalog under their repo id.
+    public var customModels: [CustomModel] = []
 
     public init() {}
 
@@ -79,6 +81,7 @@ public struct Settings: Codable, Sendable, Equatable {
         modelsFolder = try c.decodeIfPresent(String.self, forKey: .modelsFolder)
         hfToken = try c.decodeIfPresent(String.self, forKey: .hfToken)
         voomCheckout = try c.decodeIfPresent(String.self, forKey: .voomCheckout)
+        customModels = try c.decodeIfPresent([CustomModel].self, forKey: .customModels) ?? []
     }
 
     public var modelsRoot: URL {

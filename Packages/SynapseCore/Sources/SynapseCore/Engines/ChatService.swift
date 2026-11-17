@@ -1,6 +1,7 @@
 import CoreImage
 import Foundation
 @preconcurrency import MLX
+@preconcurrency import MLXLLM
 @preconcurrency import MLXLMCommon
 @preconcurrency import MLXVLM
 @preconcurrency import Tokenizers
@@ -276,7 +277,16 @@ public actor ChatService {
     private func containerLease(for spec: ModelSpec) async throws -> ModelLease<ModelContainer> {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
         return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedBytes) {
-            let container = try await VLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
+            // Vision-language architectures load through MLXVLM; text-only ones (Llama, Mistral, ... added from
+            // Hugging Face) are only in MLXLLM's registry.
+            let config = (try? Data(contentsOf: folder.appending(path: "config.json")))
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let modelType = config?["model_type"] as? String
+            let vlm: Bool
+            if let modelType { vlm = await VLMTypeRegistry.shared.contains(modelType) } else { vlm = true }
+            let container = vlm
+                ? try await VLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
+                : try await LLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
             return (container, unload: {})
         }
     }

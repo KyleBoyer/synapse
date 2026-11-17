@@ -6,19 +6,21 @@ struct ModelsView: View {
     @Environment(AppState.self) private var state
     @State private var selection: String? = "qwen3.5-0.8b"
     @State private var confirmDelete: ModelSpec?
+    @State private var adding = false
 
     /// Catalog families in the order this pane lists them.
     private var families: [(String, [ModelSpec])] {
-        let all: [(String, [ModelSpec])] = [("Transcription · Parakeet", Catalog.all.filter { $0.engine == .parakeet }),
-         ("Transcription · Whisper", Catalog.all.filter { $0.engine == .whisper }),
-         ("Chat and vision · Qwen3.5", Catalog.all.filter { $0.engine == .mlx }),
-         ("Images", Catalog.all.filter(\.isImage)),
-         ("Realtime speech", Catalog.all.filter { $0.engine == .speech }),
-         ("Full duplex", Catalog.all.filter { $0.engine == .duplex }),
-         ("Embeddings and rerankers", Catalog.all.filter { $0.isEmbedding || $0.isReranker }),
-         ("Video generation", Catalog.all.filter(\.isVideoGen)),
-         ("Sound generation", Catalog.all.filter(\.isAudioGen)),
-         ("Omni (mlx-vlm)", Catalog.all.filter { $0.engine == .mlxvlm })]
+        let all: [(String, [ModelSpec])] = [("Added from Hugging Face", Catalog.custom),
+         ("Transcription · Parakeet", Catalog.builtIn.filter { $0.engine == .parakeet }),
+         ("Transcription · Whisper", Catalog.builtIn.filter { $0.engine == .whisper }),
+         ("Chat and vision · Qwen3.5", Catalog.builtIn.filter { $0.engine == .mlx }),
+         ("Images", Catalog.builtIn.filter(\.isImage)),
+         ("Realtime speech", Catalog.builtIn.filter { $0.engine == .speech }),
+         ("Full duplex", Catalog.builtIn.filter { $0.engine == .duplex }),
+         ("Embeddings and rerankers", Catalog.builtIn.filter { $0.isEmbedding || $0.isReranker }),
+         ("Video generation", Catalog.builtIn.filter(\.isVideoGen)),
+         ("Sound generation", Catalog.builtIn.filter(\.isAudioGen)),
+         ("Omni (mlx-vlm)", Catalog.builtIn.filter { $0.engine == .mlxvlm })]
         return all.filter { !$0.1.isEmpty }  // a family appears once its first model is in the catalog
     }
 
@@ -40,6 +42,16 @@ struct ModelsView: View {
             }
         }
         .navigationTitle("Models")
+        .toolbar {
+            ToolbarItem {
+                Button("Add from Hugging Face…", systemImage: "plus") { adding = true }.help("Add any model from Hugging Face")
+            }
+        }
+        .sheet(isPresented: $adding) { AddModelSheet { selection = $0 } }
+        #if DEBUG
+        // `-addModel <org/name>` opens the sheet with the repo filled in and checked, for captures.
+        .onAppear { if UserDefaults.standard.string(forKey: "addModel") != nil { adding = true } }
+        #endif
         .task { await state.refreshModels() }
         .confirmationDialog("Delete \(confirmDelete?.displayName ?? "")?", isPresented: .constant(confirmDelete != nil),
                             presenting: confirmDelete) { spec in
@@ -104,7 +116,7 @@ struct Datasheet: View {
         if spec.isReranker { return ["POST /v1/rerank"] }
         if spec.isVideoGen { return ["POST /v1/videos", "GET /v1/videos/{id}/content"] }
         if spec.isAudioGen { return ["POST /v1/audio/generations"] }
-        if spec.isChat { return ["POST /v1/chat/completions", "POST /v1/responses", "POST /v1/messages"] }
+        if spec.isChat { return ["POST /v1/responses", "POST /v1/messages", "POST /v1/chat/completions"] }
         if spec.isTranscription { return ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /asr"] }
         if spec.isImage { return ["POST /v1/images/generations"] + (spec.canEditImages ? ["POST /v1/images/edits"] : []) }
         return ["GET /v1/realtime?model=\(spec.id)"]
@@ -149,11 +161,14 @@ struct Datasheet: View {
         }
     }
 
+    private var isCustom: Bool { Catalog.custom.contains { $0.id == spec.id } }
+
     @ViewBuilder private var actions: some View {
         VStack(alignment: .trailing, spacing: 12) {
             switch state.modelStates[spec.id] ?? .notDownloaded {
             case .notDownloaded:
                 Button("Download", systemImage: "arrow.down") { state.download(spec.id) }.buttonStyle(.glassProminent).controlSize(.large)
+                if isCustom { Button("Remove from List", systemImage: "minus.circle") { state.removeCustom(spec.id) }.buttonStyle(.glass) }
             case .downloading(let p):
                 HStack {
                     ProgressView(value: p).tint(.live).frame(width: 140)
@@ -174,6 +189,10 @@ struct Datasheet: View {
                         .buttonStyle(.glassProminent).controlSize(.large)
                 }
                 Button("Delete…", systemImage: "trash", role: .destructive) { confirmDelete = spec }.buttonStyle(.glass)
+                if isCustom {
+                    Button("Remove from List", systemImage: "minus.circle") { state.removeCustom(spec.id) }.buttonStyle(.glass)
+                        .help("Delete its files and take it off the list")
+                }
             case .failed(let msg):
                 Text(msg).font(.callout).foregroundStyle(.red).frame(maxWidth: 260, alignment: .trailing).multilineTextAlignment(.trailing)
                 HStack {

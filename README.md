@@ -150,6 +150,10 @@ c.videos.download_content(v.id).write_to_file("fox.mp4")
 
 `lfm3-omni-2b` also speaks. Ask Chat Completions for audio with it, or pick it for a voice call (`/v1/realtime?model=lfm3-omni-2b` with audio output, or **Live → Voice call**) and it hears your turn and any camera frame itself, then answers in its own voice, streamed as it is generated; there is no separate speech synthesis. Barge-in stops it mid-sentence. On an M4 Mac mini the first audio arrives about 0.75 s after you stop talking once the model is loaded. Speech recognition still runs, only to show your words in the transcript.
 
+### Any model from Hugging Face
+
+**Models → +** takes a Hugging Face repo (`org/name`) or its link. Synapse reads the repo's files and `config.json` and tells you how it would run it before anything downloads: chat and vision models whose architecture the Swift MLX libraries know run in-process (text-only architectures such as Llama included); other architectures run through mlx-vlm; embedding models run in Embed. GGUF-only repos, diffusers pipelines and speech or image generators are refused with the reason. Added models appear under "Added from Hugging Face", download like catalog models, and are called by their repo id (`"model": "mlx-community/Llama-3.2-1B-Instruct-4bit"`).
+
 ### Python runtimes
 
 Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-vlm) run through Python tools that Synapse installs on first use under `<models folder>/runtimes/`. The first use needs a network connection and takes a few minutes. Video generation also needs `git` (Xcode Command Line Tools). Gated models (FLUX.2 klein 9B) need their license accepted on Hugging Face and a token: Synapse uses the `hf auth login` token (or `HF_TOKEN`) automatically, or one set in **Settings**. Stable Audio is under the Stability AI Community License but is not gated.
