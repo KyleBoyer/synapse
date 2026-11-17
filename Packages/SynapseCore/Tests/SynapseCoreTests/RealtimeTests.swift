@@ -267,6 +267,40 @@ final class RealtimeTests: XCTestCase {
         await s.close()
     }
 
+    /// Camera frames (P6): an image-only item joins the user's next words, and only the latest two frames stay.
+    func testInputImageItemsReachTheModel() async throws {
+        let llm = FakeLLM()
+        let s = RealtimeSession(services: services(llm: llm))
+        let c = start(s)
+        let png = "data:image/png;base64," + Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
+        func frame() async {
+            await send(s, ["type": "conversation.item.create", "item": ["type": "message", "role": "user",
+                           "content": [["type": "input_image", "image_url": png]]]])
+        }
+        await frame()
+        await send(s, ["type": "conversation.item.create", "item": ["type": "message", "role": "user",
+                       "content": [["type": "input_text", "text": "What do you see?"]]]])
+        await send(s, ["type": "response.create"])
+        let ok = await c.wait("response.done")
+        XCTAssertTrue(ok)
+        let users = llm.seen.last?.filter { $0.role == .user } ?? []
+        XCTAssertEqual(users.map(\.text), ["What do you see?"])
+        XCTAssertEqual(users.map(\.images.count), [1])
+
+        for _ in 0..<3 { await frame() }
+        await send(s, ["type": "response.create"])
+        _ = await c.wait("response.done", count: 2)
+        let all = llm.seen.last ?? []
+        XCTAssertEqual(all.reduce(0) { $0 + $1.images.count }, RealtimeSession.maxImageItems)
+        XCTAssertEqual(all.last?.text, "(camera frame)")
+
+        await send(s, ["type": "conversation.item.create", "item": ["type": "message", "role": "user",
+                       "content": [["type": "input_image", "image_url": "https://example.com/a.png"]]]])
+        let refused = await c.wait("error")
+        XCTAssertTrue(refused)
+        await s.close()
+    }
+
     func testDuplexModelStreamsAudioWithoutCascade() async throws {
         let s = RealtimeSession(model: "voicechat-11b", services: services())
         let c = start(s)

@@ -57,7 +57,9 @@ public actor RealtimeSession {
     private var speechStoppedAt: Date?
 
     // Conversation and response state.
-    private struct Item { var id: String; var role: String; var text: String }
+    private struct Item { var id: String; var role: String; var text: String; var images: [Data] = [] }
+    /// Camera frames cost hundreds of prompt tokens each, so only the latest few stay in the conversation.
+    static let maxImageItems = 2
     private var items: [Item] = []
     private var activeTask: Task<Void, Never>?
     private var active: Response?
@@ -410,8 +412,21 @@ public actor RealtimeSession {
         }
         let parts = item["content"] as? [[String: Any]] ?? []
         let text = parts.compactMap { ($0["text"] as? String) ?? ($0["transcript"] as? String) }.joined(separator: "\n")
+        var images: [Data] = []
+        for p in parts where p["type"] as? String == "input_image" {
+            let url = (p["image_url"] as? String) ?? ((p["image_url"] as? [String: Any])?["url"] as? String) ?? ""
+            // Only inline frames: a session must not fetch URLs mid-conversation.
+            guard url.hasPrefix("data:image/"), let comma = url.firstIndex(of: ","), url[..<comma].hasSuffix(";base64"),
+                  let data = Data(base64Encoded: String(url[url.index(after: comma)...]), options: .ignoreUnknownCharacters),
+                  data.count <= 20 * 1024 * 1024 else {
+                return fail("invalid_request_error", "invalid_value", "input_image must be a base64 data:image/... URL up to 20 MB.", param: "item.content")
+            }
+            images.append(data)
+        }
         let id = (item["id"] as? String) ?? newItemID()
-        items.append(Item(id: id, role: role, text: text))
+        items.append(Item(id: id, role: role, text: text, images: images))
+        let withImages = items.indices.filter { !items[$0].images.isEmpty }
+        for i in withImages.dropLast(Self.maxImageItems) { items[i].images = [] }
         var echoed = item
         echoed["id"] = id; echoed["object"] = "realtime.item"; echoed["status"] = "completed"
         emit("conversation.item.added", ["item": echoed])
@@ -540,9 +555,18 @@ public actor RealtimeSession {
             return [ChatMessage(role: .system, text: sys), ChatMessage(role: .user, text: last?.text ?? "")]
         }
         var m = [ChatMessage(role: .system, text: instructions)]
+        // A camera frame arrives as its own image-only item just before the user's words; it joins that next turn.
+        var carried: [Data] = []
         for i in items.suffix(40) {
-            m.append(ChatMessage(role: ChatMessage.Role(rawValue: i.role) ?? .user, text: i.text))
+            let role = ChatMessage.Role(rawValue: i.role) ?? .user
+            if role == .user, i.text.isEmpty, !i.images.isEmpty { carried += i.images; continue }
+            if role == .user {
+                m.append(ChatMessage(role: .user, text: i.text, images: carried + i.images)); carried = []
+            } else {
+                m.append(ChatMessage(role: role, text: i.text))
+            }
         }
+        if !carried.isEmpty { m.append(ChatMessage(role: .user, text: "(camera frame)", images: carried)) }
         return m
     }
 

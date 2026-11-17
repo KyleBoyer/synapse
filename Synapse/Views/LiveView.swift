@@ -18,6 +18,8 @@ final class LiveModel {
     var level: Float = 0
     var error: String?
     var latency: Double?
+    /// Running camera, when Voice call was started with Camera on.
+    private(set) var camera: LiveCamera?
     /// When the session started; lines carry their offset from it as timecode.
     var started: Date?
 
@@ -30,7 +32,7 @@ final class LiveModel {
     func clear() { lines = []; latency = nil; error = nil }
 
     func start(mode: LiveMode, services: RealtimeServices, chatModel: String, duplexModel: String,
-               language: String, spoken: Bool, voice: String) async {
+               language: String, spoken: Bool, voice: String, camera useCamera: Bool = false) async {
         guard !running else { return }
         error = nil
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
@@ -65,6 +67,13 @@ final class LiveModel {
             self.error = "Could not start the microphone: \(error.localizedDescription)"
             await s.close(); return
         }
+        if useCamera && mode == .call {
+            let cam = LiveCamera()
+            do { try await cam.start(); camera = cam } catch {
+                self.error = error.localizedDescription
+                a.stop(); await s.close(); return
+            }
+        }
         session = s; audio = a; running = true; preparing = true; muted = false; started = Date()
         task = Task { [weak self] in
             for await data in s.events { self?.handle(data, session: s, mode: mode) }
@@ -75,12 +84,22 @@ final class LiveModel {
 
     func stop() {
         audio?.stop(); audio = nil
+        camera?.stop(); camera = nil
         let s = session; session = nil
         Task { await s?.close() }   // ends the events stream, which calls finish()
         running = false; preparing = false; level = 0
     }
 
-    private func finish() { task = nil; running = false; preparing = false; level = 0 }
+    private func finish() { task = nil; running = false; preparing = false; level = 0; camera?.stop(); camera = nil }
+
+    /// Puts what the camera sees into the conversation as the user starts talking, so it precedes their words.
+    private func sendFrame(_ s: RealtimeSession) {
+        guard let jpeg = camera?.latestJPEG() else { return }
+        let event: [String: Any] = ["type": "conversation.item.create", "item": [
+            "type": "message", "role": "user",
+            "content": [["type": "input_image", "image_url": "data:image/jpeg;base64," + jpeg.base64EncodedString()]]]]
+        if let d = try? JSONSerialization.data(withJSONObject: event) { Task { await s.handle(d) } }
+    }
 
     private func upsert(_ id: String, role: String, text: String, final: Bool, append: Bool) {
         if let i = lines.firstIndex(where: { $0.id == id }) {
@@ -106,6 +125,7 @@ final class LiveModel {
             if !muted, let b = e["delta"] as? String, let d = Data(base64Encoded: b) { audio?.play(pcm16: d) }
         case "input_audio_buffer.speech_started":
             muted = true; audio?.flush()   // barge-in: cut local playback now
+            sendFrame(s)
         case "response.done":
             if let id = (e["response"] as? [String: Any])?["id"] as? String, let i = lines.firstIndex(where: { $0.id == id }) { lines[i].final = true }
             if mode == .call { Task { let l = await s.lastFirstAudioLatency; self.latency = l } }
@@ -126,6 +146,7 @@ struct LiveView: View {
     @State private var language = "Spanish"
     @State private var spoken = false
     @State private var voice = ""
+    @State private var cameraOn = false
     private let languages = ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "English"]
 
     private var needsChat: Bool { mode == .translate || mode == .call }
@@ -172,6 +193,13 @@ struct LiveView: View {
         .onChange(of: model.running) { state.setActive(.live, model.running) }
         .onChange(of: model.latency) { if let l = model.latency, !chatModel.isEmpty { state.metrics.record(chatModel, .firstAudio, l) } }
         .onDisappear { if model.running { model.stop() } }
+        #if DEBUG
+        // `-liveMode "Voice call" -liveCamera YES` preselects a mode and the camera, so the options can be captured.
+        .onAppear {
+            if let m = UserDefaults.standard.string(forKey: "liveMode").flatMap(LiveMode.init(rawValue:)) { mode = m }
+            if UserDefaults.standard.bool(forKey: "liveCamera") { cameraOn = true }
+        }
+        #endif
     }
 
     @ViewBuilder private var stage: some View {
@@ -198,6 +226,12 @@ struct LiveView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
+                        if let cam = model.camera {
+                            CameraPreview(session: cam.session)
+                                .frame(maxWidth: 392, minHeight: 220, maxHeight: 220)
+                                .clipShape(.rect(cornerRadius: 14))
+                                .accessibilityLabel("Camera preview")
+                        }
                         if model.lines.isEmpty {
                             Text(emptyText).font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                         }
@@ -241,6 +275,7 @@ struct LiveView: View {
                 model.latency.map { Reading(label: "First audio", value: String(format: "%.2f s", $0)) }
                     ?? Reading(label: "First audio", value: state.metrics.typical(speakerID, .firstAudio) ?? "–", muted: true),
                 Reading(label: "Lines", value: "\(model.lines.count)"),
+            ] + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil)] : []) + [
                 Reading(label: "Resident", value: state.resident(speakerID).map { gigabytes($0.bytes) } ?? "not loaded"),
             ],
             history: state.metrics.history(speakerID, .firstAudio), historyMetric: .firstAudio,
@@ -259,6 +294,10 @@ struct LiveView: View {
             if mode == .translate {
                 Picker("Translate to", selection: $language) { ForEach(languages, id: \.self) { Text($0) } }
                 Toggle("Speak the translation", isOn: $spoken)
+            }
+            if mode == .call {
+                Toggle("Camera", systemImage: "video", isOn: $cameraOn)
+                    .help("Show the model what the camera sees each time you start talking. Needs a Qwen3.5 model.")
             }
             if mode == .call || (mode == .translate && spoken) {
                 TextField("Voice (optional)", text: $voice).textFieldStyle(.roundedBorder)
@@ -286,7 +325,8 @@ struct LiveView: View {
             Button {
                 if model.running { model.stop() } else {
                     Task { await model.start(mode: mode, services: state.realtime, chatModel: chatModel,
-                                             duplexModel: duplexModel, language: language, spoken: spoken, voice: voice) }
+                                             duplexModel: duplexModel, language: language, spoken: spoken, voice: voice,
+                                             camera: cameraOn) }
                 }
             } label: {
                 Label(model.running ? "Stop" : "Start", systemImage: model.running ? "stop.fill" : "mic.fill").frame(minWidth: 80)

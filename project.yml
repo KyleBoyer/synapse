@@ -33,6 +33,7 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: Synapse/Synapse.entitlements
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Synapse transcribes and talks with local models; audio never leaves this Mac."
+        INFOPLIST_KEY_NSCameraUsageDescription: "Synapse shows camera frames to local models; video never leaves this Mac."
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_USER_SCRIPT_SANDBOXING: NO
