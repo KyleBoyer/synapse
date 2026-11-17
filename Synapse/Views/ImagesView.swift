@@ -223,6 +223,7 @@ struct ImagesView: View {
                 }
                 TextField("Describe the image", text: $prompt, axis: .vertical)
                     .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
+                    .onSubmit(generate)
                 if running {
                     Button("Stop", systemImage: "stop.fill") { task?.cancel() }.buttonStyle(.glass)
                 } else {
@@ -273,13 +274,14 @@ struct ImagesView: View {
     }
 
     private func generate() {
-        guard let spec else { return }
+        guard let spec, !running, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let (w, h) = (try? ImageService.parseSize(size)) ?? (1024, 1024)
         let req = ImageRequest(
             prompt: prompt, negativePrompt: negative.isEmpty ? nil : negative, width: w, height: h,
             steps: useDefaultSteps ? nil : steps, seed: randomSeed ? nil : UInt64(seed),
             inputImages: spec.canEditImages ? references : [])
         let n = count, text = prompt, images = state.images, metrics = state.metrics
+        prompt = ""
         error = nil; running = true; progress = nil; imageIndex = 0; timing = Timing(); started = Date()
         task = Task {
             preparing = !(await images.isLoaded(spec.id))

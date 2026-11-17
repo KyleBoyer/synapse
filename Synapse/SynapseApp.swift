@@ -10,6 +10,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // The server and folder watcher keep working from the menu bar after the window closes.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Quitting mid-generation crashed: exit() runs MLX's C++ static destructors, which free the Metal device while a
+    /// background thread is still evaluating on it. With GPU work in flight, end the process without them; the OS
+    /// reclaims GPU memory, and the server sidecars stop on their own when this process is gone.
+    func applicationWillTerminate(_ notification: Notification) {
+        guard GPUGate.shared.isBusy else { return }
+        UserDefaults.standard.synchronize()
+        _exit(0)
+    }
 }
 
 enum Pane: String, CaseIterable, Identifiable {

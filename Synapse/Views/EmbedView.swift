@@ -183,13 +183,18 @@ struct EmbedView: View {
         }
     }
 
+    /// The query stays in the field: comparisons are usually refined, not replaced.
+    private func compare() {
+        guard let spec, !model.running, !query.trimmingCharacters(in: .whitespaces).isEmpty, !docLines.isEmpty else { return }
+        model.compare(query: query, documents: docLines, spec: spec, reranker: reranker, state: state)
+    }
+
     private var bar: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField("Query", text: $query, axis: .vertical)
                 .lineLimit(1...3).textFieldStyle(.plain).font(.title3)
-            Button("Compare", systemImage: "arrow.up.arrow.down") {
-                if let spec { model.compare(query: query, documents: docLines, spec: spec, reranker: reranker, state: state) }
-            }
+                .onSubmit(compare)
+            Button("Compare", systemImage: "arrow.up.arrow.down", action: compare)
             .buttonStyle(.glassProminent)
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(model.running || query.trimmingCharacters(in: .whitespaces).isEmpty || docLines.isEmpty || spec == nil)

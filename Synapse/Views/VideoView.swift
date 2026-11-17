@@ -210,6 +210,7 @@ struct VideoView: View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField("Describe the clip", text: $prompt, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
+                .onSubmit(generate)
             Button("Generate", systemImage: "film") { generate() }
                 .buttonStyle(.glassProminent)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -233,11 +234,11 @@ struct VideoView: View {
 
     /// Queues a clip; several can wait in line, the service runs one at a time.
     private func generate() {
-        guard let spec else { return }
+        guard let spec, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let dims = size.split(separator: "x").compactMap { Int($0) }
         let req = VideoRequest(prompt: prompt, width: dims[0], height: dims[1], frames: VideoService.frames(seconds: seconds),
                                seed: randomSeed ? nil : UInt64(seed), inputImage: startImage)
-        error = nil
+        error = nil; prompt = ""
         Task { _ = await state.videos.create(model: spec, request: req) }
     }
 }

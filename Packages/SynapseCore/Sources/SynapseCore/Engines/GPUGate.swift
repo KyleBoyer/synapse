@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Serializes MLX inference across every engine in the process. Two models running MLX work at once can trip
 /// the Metal command-buffer watchdog (seen as "GPU Timeout" with a chat reply overlapping an image generation),
@@ -6,8 +7,12 @@ import Foundation
 public actor GPUGate {
     public static let shared = GPUGate()
 
-    private var busy = false
+    private var busy = false { didSet { held.withLock { $0 = busy } } }
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let held = Mutex(false)
+
+    /// Whether MLX work is running now; readable from any thread (the app checks it while quitting).
+    public nonisolated var isBusy: Bool { held.withLock { $0 } }
 
     public func acquire() async {
         guard busy else { busy = true; return }

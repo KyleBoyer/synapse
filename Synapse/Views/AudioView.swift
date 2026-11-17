@@ -380,22 +380,26 @@ struct AudioView: View {
         }
     }
 
+    private func submit() {
+        guard let spec, !running, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if mode == .speak { model.speak(text: text, spec: spec, voice: voice, state: state) } else {
+            composer.generate(prompt: text, spec: spec, seconds: length, seed: randomSeed ? nil : UInt64(seed), state: state)
+        }
+        text = ""
+    }
+
     private var bar: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField(mode == .speak ? "Text to speak" : "Describe the sound", text: $text, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
+                .onSubmit(submit)
             if mode == .speak, spec?.id == "pocket-tts" {
                 ChoiceMenu(title: "Voice", selection: $voice, options: SpeechService.pocketVoices.map { ($0, $0) })
             }
             if running {
                 Button("Stop", systemImage: "stop.fill") { if mode == .speak { model.stop() } else { composer.stop() } }.buttonStyle(.glass)
             } else {
-                Button(mode == .speak ? "Speak" : "Generate", systemImage: mode == .speak ? "speaker.wave.2.fill" : "music.note") {
-                    guard let spec else { return }
-                    if mode == .speak { model.speak(text: text, spec: spec, voice: voice, state: state) } else {
-                        composer.generate(prompt: text, spec: spec, seconds: length, seed: randomSeed ? nil : UInt64(seed), state: state)
-                    }
-                }
+                Button(mode == .speak ? "Speak" : "Generate", systemImage: mode == .speak ? "speaker.wave.2.fill" : "music.note", action: submit)
                 .buttonStyle(.glassProminent)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil)
