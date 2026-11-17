@@ -193,10 +193,9 @@ struct EmbedView: View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField("Query", text: $query, axis: .vertical)
                 .lineLimit(1...3).textFieldStyle(.plain).font(.title3)
-                .onSubmit(compare)
+                .onSubmit(compare).composerKeys()
             Button("Compare", systemImage: "arrow.up.arrow.down", action: compare)
             .buttonStyle(.glassProminent)
-            .keyboardShortcut(.return, modifiers: .command)
             .disabled(model.running || query.trimmingCharacters(in: .whitespaces).isEmpty || docLines.isEmpty || spec == nil)
         }
         .padding(.horizontal, 6).padding(.vertical, 4)

@@ -374,3 +374,15 @@ struct LiveProgress: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+extension View {
+    /// Composer keys, the same in every pane: Return submits (the field's onSubmit); ⌘↩ or ⌃↩ inserts a line break
+    /// at the cursor, as ⌥↩ already does in AppKit text fields.
+    func composerKeys() -> some View {
+        onKeyPress(.return, phases: .down) { press in
+            guard press.modifiers.contains(.command) || press.modifiers.contains(.control) else { return .ignored }
+            NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
+            return .handled
+        }
+    }
+}

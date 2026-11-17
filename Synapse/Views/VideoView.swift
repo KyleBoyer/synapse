@@ -143,7 +143,7 @@ struct VideoView: View {
             VStack(alignment: .leading, spacing: 20) {
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
                 if jobs.isEmpty {
-                    Text("Describe a clip below and press ⌘↩.").font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
+                    Text("Describe a clip below and press Return.").font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                 }
                 ForEach(jobs) { job in clip(job) }
             }
@@ -210,10 +210,9 @@ struct VideoView: View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField("Describe the clip", text: $prompt, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
-                .onSubmit(generate)
+                .onSubmit(generate).composerKeys()
             Button("Generate", systemImage: "film") { generate() }
                 .buttonStyle(.glassProminent)
-                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil)
         }
         .padding(.horizontal, 6).padding(.vertical, 4)

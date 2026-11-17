@@ -223,7 +223,7 @@ struct ChatView: View {
                     .labelStyle(.iconOnly).buttonStyle(.borderless).help("Attach Image, Video or Audio")
                 TextField("Message \(spec?.displayName ?? "")", text: $input, axis: .vertical)
                     .lineLimit(1...6).textFieldStyle(.plain).font(.title3)
-                    .onSubmit(send).disabled(generating)
+                    .onSubmit(send).composerKeys().disabled(generating)
                     .focused($composerFocused)
                 if generating {
                     Button("Stop", systemImage: "stop.fill", action: stop)

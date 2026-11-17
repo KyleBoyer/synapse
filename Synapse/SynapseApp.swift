@@ -11,6 +11,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The server and folder watcher keep working from the menu bar after the window closes.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    #if DEBUG
+    /// `-composerKeyTest YES`: sends ⌘↩, ⌃↩ and Return to this app's own focused composer (never to other apps) and
+    /// prints what each did, so the composer keys can be checked without typing.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard UserDefaults.standard.bool(forKey: "composerKeyTest") else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) else { return print("composerKeyTest: no window") }
+            window.makeKeyAndOrderFront(nil)
+            guard let field = window.firstResponder as? NSTextView else { return print("composerKeyTest: no focused field") }
+            @MainActor func press(_ flags: NSEvent.ModifierFlags) async {
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: window.windowNumber, context: nil, characters: "\r",
+                                                charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) { NSApp.sendEvent(e) }
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            field.insertText("first", replacementRange: NSRange(location: NSNotFound, length: 0))
+            await press(.command)
+            print("composerKeyTest: after ⌘↩ \(field.string.debugDescription)")
+            field.insertText("second", replacementRange: NSRange(location: NSNotFound, length: 0))
+            await press(.control)
+            print("composerKeyTest: after ⌃↩ \(field.string.debugDescription)")
+            await press([])
+            print("composerKeyTest: after ↩ \(field.string.debugDescription)")
+        }
+    }
+    #endif
+
     /// Quitting mid-generation crashed: exit() runs MLX's C++ static destructors, which free the Metal device while a
     /// background thread is still evaluating on it. With GPU work in flight, end the process without them; the OS
     /// reclaims GPU memory, and the server sidecars stop on their own when this process is gone.

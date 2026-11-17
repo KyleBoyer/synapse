@@ -356,7 +356,7 @@ struct AudioView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
                 if clips.isEmpty && !running {
-                    Text(speak ? "Type something below and press ⌘↩." : "Describe a sound or a piece of music and press ⌘↩.")
+                    Text(speak ? "Type something below and press Return." : "Describe a sound or a piece of music and press Return.")
                         .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                 }
                 ForEach(clips) { clip in
@@ -392,7 +392,7 @@ struct AudioView: View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField(mode == .speak ? "Text to speak" : "Describe the sound", text: $text, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
-                .onSubmit(submit)
+                .onSubmit(submit).composerKeys()
             if mode == .speak, spec?.id == "pocket-tts" {
                 ChoiceMenu(title: "Voice", selection: $voice, options: SpeechService.pocketVoices.map { ($0, $0) })
             }
@@ -401,7 +401,6 @@ struct AudioView: View {
             } else {
                 Button(mode == .speak ? "Speak" : "Generate", systemImage: mode == .speak ? "speaker.wave.2.fill" : "music.note", action: submit)
                 .buttonStyle(.glassProminent)
-                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil)
             }
         }

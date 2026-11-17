@@ -174,7 +174,7 @@ struct ImagesView: View {
                 }
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
                 if history.isEmpty && !running {
-                    Text("Describe an image below and press ⌘↩.").font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
+                    Text("Describe an image below and press Return.").font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                 }
                 ForEach(history.reversed()) { g in
                     VStack(alignment: .leading, spacing: 8) {
@@ -223,13 +223,12 @@ struct ImagesView: View {
                 }
                 TextField("Describe the image", text: $prompt, axis: .vertical)
                     .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
-                    .onSubmit(generate)
+                    .onSubmit(generate).composerKeys()
                 if running {
                     Button("Stop", systemImage: "stop.fill") { task?.cancel() }.buttonStyle(.glass)
                 } else {
                     Button("Generate", systemImage: "sparkles") { generate() }
                         .buttonStyle(.glassProminent)
-                        .keyboardShortcut(.return, modifiers: .command)
                         .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil)
                 }
             }
