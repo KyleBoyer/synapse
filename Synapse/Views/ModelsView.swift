@@ -9,12 +9,17 @@ struct ModelsView: View {
 
     /// Catalog families in the order this pane lists them.
     private var families: [(String, [ModelSpec])] {
-        [("Transcription · Parakeet", Catalog.all.filter { $0.engine == .parakeet }),
+        let all: [(String, [ModelSpec])] = [("Transcription · Parakeet", Catalog.all.filter { $0.engine == .parakeet }),
          ("Transcription · Whisper", Catalog.all.filter { $0.engine == .whisper }),
          ("Chat and vision · Qwen3.5", Catalog.all.filter { $0.engine == .mlx }),
          ("Images", Catalog.all.filter(\.isImage)),
          ("Realtime speech", Catalog.all.filter { $0.engine == .speech }),
-         ("Full duplex", Catalog.all.filter { $0.engine == .duplex })]
+         ("Full duplex", Catalog.all.filter { $0.engine == .duplex }),
+         ("Embeddings and rerankers", Catalog.all.filter { $0.isEmbedding || $0.isReranker }),
+         ("Video generation", Catalog.all.filter(\.isVideoGen)),
+         ("Sound generation", Catalog.all.filter(\.isAudioGen)),
+         ("Omni (mlx-vlm)", Catalog.all.filter { $0.engine == .mlxvlm })]
+        return all.filter { !$0.1.isEmpty }  // a family appears once its first model is in the catalog
     }
 
     var body: some View {

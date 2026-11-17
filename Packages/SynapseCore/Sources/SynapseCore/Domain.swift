@@ -10,6 +10,12 @@ public enum EngineKind: String, Codable, Sendable {
     case speech
     /// Full-duplex speech-to-speech and speech translation models (vendored speech-swift).
     case duplex
+    /// Text embedding models (MLXEmbedders) and rerankers (MLXRerankers); `variant` is the Hugging Face repo id.
+    case embedding, reranker
+    /// Python helper processes: video generation (mlx-video) and music/sound generation (mlx-audio).
+    case videogen, audiogen
+    /// Chat models served by a managed mlx-vlm server (omni models with audio/video input).
+    case mlxvlm
 }
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
@@ -36,7 +42,11 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
         self.canEditImages = canEditImages; self.recommendedRAMGB = recommendedRAMGB
     }
 
-    public var isChat: Bool { engine == .mlx }
+    public var isChat: Bool { engine == .mlx || engine == .mlxvlm }
+    public var isEmbedding: Bool { engine == .embedding }
+    public var isReranker: Bool { engine == .reranker }
+    public var isVideoGen: Bool { engine == .videogen }
+    public var isAudioGen: Bool { engine == .audiogen }
     public var isImage: Bool { engine == .flux2 || engine == .zimage || engine == .mflux }
     public var isTranscription: Bool { engine == .whisper || engine == .parakeet }
     public var isRealtime: Bool { engine == .speech || engine == .duplex }

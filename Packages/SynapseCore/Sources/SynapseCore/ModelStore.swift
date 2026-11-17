@@ -108,7 +108,7 @@ public actor ModelStore {
 
     private static func partialFolder(_ spec: ModelSpec, root: URL) -> URL {
         switch spec.engine {
-        case .mlx, .flux2, .zimage, .mflux: return mlxFolder(spec, root: root)
+        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .videogen, .audiogen, .mlxvlm: return mlxFolder(spec, root: root)
         case .speech: return SpeechModels.folder(spec, root: root)
         case .duplex: return DuplexModels.folder(spec, root: root)
         case .parakeet: return parakeetFolder(spec, root: root)
@@ -129,7 +129,7 @@ public actor ModelStore {
             return try await SpeechModels.download(spec, root: root, progress: progress)
         case .duplex:
             return try await DuplexModels.download(spec, root: root, token: token, progress: progress)
-        case .mlx, .flux2, .zimage, .mflux:
+        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .videogen, .audiogen, .mlxvlm:
             // FLUX also publishes a duplicate monolithic transformer beside its diffusers components.
             let exclude = spec.engine == .flux2 ? ["flux-2-klein-4b.safetensors", "flux-2-klein-9b.safetensors"] : []
             return try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), exclude: exclude,

@@ -18,6 +18,11 @@ public enum Catalog {
                   canTranslate: false, canDetectLanguage: false, canEditImages: edit, recommendedRAMGB: ramGB)
     }
 
+    private static func hf(_ id: String, _ name: String, _ engine: EngineKind, _ repo: String, _ mb: Int,
+                           ramGB: Int? = nil) -> ModelSpec {
+        image(id, name, engine, repo, mb, edit: false, ramGB: ramGB)
+    }
+
     private static func realtime(_ id: String, _ name: String, _ engine: EngineKind, _ variant: String, _ mb: Int,
                                  ramGB: Int?) -> ModelSpec {
         ModelSpec(id: id, engine: engine, displayName: name, variant: variant, approxMB: mb, languages: nil,
@@ -86,7 +91,7 @@ public enum ModelResolver {
                                downloaded: Set<String>) throws -> ModelSpec {
         let id = (requested == nil || requested == "whisper-1") ? defaultID : requested!
         guard var spec = Catalog.spec(id) else { throw ResolveError.unknownModel(id) }
-        guard !spec.isChat else { throw ResolveError.wrongKind(id) }
+        guard !spec.isChat, !spec.isEmbedding, !spec.isReranker, !spec.isVideoGen, !spec.isAudioGen else { throw ResolveError.wrongKind(id) }
         if (task == .translate && !spec.canTranslate) || !spec.supports(language: language) {
             guard let fb = whisperFallbackOrder.compactMap(Catalog.spec).first(where: {
                 downloaded.contains($0.id) && ($0.canTranslate || task != .translate) && $0.supports(language: language)

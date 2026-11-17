@@ -69,7 +69,7 @@ public struct AudioDecoder: Sendable {
     }
 }
 
-private final class LockedData: @unchecked Sendable {
+final class LockedData: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = Data()
     func append(_ d: Data) { lock.lock(); storage.append(d); lock.unlock() }
