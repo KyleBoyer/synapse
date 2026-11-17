@@ -43,7 +43,11 @@ public struct AudioDecoder: Sendable {
         let status: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 // Drain while running so ffmpeg never blocks on a full pipe.
-                reader.readabilityHandler = { buffer.append($0.availableData) }
+                // An empty read is end of file; left set, the handler would re-fire in a tight loop until exit.
+                reader.readabilityHandler = { h in
+                    let d = h.availableData
+                    if d.isEmpty { h.readabilityHandler = nil } else { buffer.append(d) }
+                }
                 process.terminationHandler = { p in
                     reader.readabilityHandler = nil
                     buffer.append((try? reader.readToEnd()) ?? Data())

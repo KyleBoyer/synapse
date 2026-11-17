@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public enum AudioFormat: String, Sendable, CaseIterable {
     case mp3, opus, aac, flac, wav, pcm
@@ -60,30 +61,40 @@ public struct AudioEncoder: Sendable {
             let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
             p.standardInput = stdin; p.standardOutput = stdout; p.standardError = stderr
             let errText = LockedData()
-            stderr.fileHandleForReading.readabilityHandler = { errText.append($0.availableData) }
+            // Clear the handler at end of file: an empty read re-fires forever and starves the file-handle queue.
+            stderr.fileHandleForReading.readabilityHandler = { h in
+                let d = h.availableData
+                if d.isEmpty { h.readabilityHandler = nil } else { errText.append(d) }
+            }
+            let exited = DispatchSemaphore(value: 0)
+            p.terminationHandler = { _ in exited.signal() }
+            let stopped = Mutex(false)
             do { try p.run() } catch { out.finish(throwing: error); return }
 
-            // stdin is written and stdout drained concurrently, or ffmpeg deadlocks on a full pipe.
-            let writer = Task.detached {
-                defer { try? stdin.fileHandleForWriting.close() }
+            // stdin is written and stdout drained concurrently, or ffmpeg deadlocks on a full pipe. Both block, so
+            // they run on a serial queue and a thread of their own, never on Swift's small cooperative pool.
+            let stdinQueue = DispatchQueue(label: "synapse.audioencoder.stdin")
+            let writer = Task {
                 do {
                     for try await chunk in pcm {
+                        let bytes = PCM.pcm16LE(from: chunk)
                         // A failed write means ffmpeg is gone; the reader reports why.
-                        do { try stdin.fileHandleForWriting.write(contentsOf: PCM.pcm16LE(from: chunk)) } catch { return }
+                        stdinQueue.async { try? stdin.fileHandleForWriting.write(contentsOf: bytes) }
                     }
                 } catch { out.finish(throwing: error) }
+                stdinQueue.async { try? stdin.fileHandleForWriting.close() }
             }
-            let reader = Task.detached {
+            Thread.detachNewThread {
                 let handle = stdout.fileHandleForReading
                 while let d = try? handle.read(upToCount: 1 << 16), !d.isEmpty { out.yield(d) }
-                p.waitUntilExit()
-                stderr.fileHandleForReading.readabilityHandler = nil
-                if p.terminationStatus == 0 || Task.isCancelled { out.finish() } else {
+                exited.wait()
+                if p.terminationStatus == 0 || stopped.withLock({ $0 }) { out.finish() } else {
                     out.finish(throwing: DecodeError.ffmpeg(String(decoding: errText.data.suffix(600), as: UTF8.self)))
                 }
             }
             out.onTermination = { _ in
-                writer.cancel(); reader.cancel()
+                stopped.withLock { $0 = true }
+                writer.cancel()
                 if p.isRunning { p.terminate() }
             }
         }

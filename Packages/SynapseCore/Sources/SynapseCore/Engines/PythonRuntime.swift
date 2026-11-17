@@ -110,7 +110,11 @@ actor PythonRuntime {
         let reader = pipe.fileHandleForReading
         let status: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
-                reader.readabilityHandler = { let d = $0.availableData; tail.append(d); pending.feed(d) }
+                // An empty read is end of file; left set, the handler would re-fire in a tight loop until exit.
+                reader.readabilityHandler = { h in
+                    let d = h.availableData
+                    if d.isEmpty { h.readabilityHandler = nil } else { tail.append(d); pending.feed(d) }
+                }
                 p.terminationHandler = { p in
                     reader.readabilityHandler = nil
                     let rest = (try? reader.readToEnd()) ?? Data()
