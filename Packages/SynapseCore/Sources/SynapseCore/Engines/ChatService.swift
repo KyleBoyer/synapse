@@ -111,13 +111,9 @@ public actor ChatService {
         return FileManager.default.fileExists(atPath: folder.appending(path: "video_preprocessor_config.json").path)
     }
 
-    /// A model takes audio when its config declares an audio tower.
-    public func supportsAudio(_ spec: ModelSpec) async -> Bool {
-        guard let folder = await store.folder(for: spec.id),
-              let data = try? Data(contentsOf: folder.appending(path: "config.json")),
-              let config = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
-        return config["audio_config"] != nil
-    }
+    /// Audio input needs the mlx-vlm backend: in mlx-swift-lm no processor turns UserInput.audios into model
+    /// input, and Gemma 4 (model_type gemma4) loads without its audio tower, even though its config lists one.
+    public func supportsAudio(_ spec: ModelSpec) -> Bool { spec.engine == .mlxvlm }
 
     public func resolve(_ requested: String?) async throws -> ModelSpec {
         try ModelResolver.resolveChat(requested: requested, downloaded: await store.downloaded)
