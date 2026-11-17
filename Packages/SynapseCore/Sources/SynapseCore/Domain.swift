@@ -78,8 +78,10 @@ public struct Segment: Codable, Sendable, Equatable {
     public var end: Double
     public var text: String
     public var words: [Word]
-    public init(start: Double, end: Double, text: String, words: [Word] = []) {
-        self.start = start; self.end = end; self.text = text; self.words = words
+    /// Speaker label ("A", "B", ...) when the transcript was diarized.
+    public var speaker: String?
+    public init(start: Double, end: Double, text: String, words: [Word] = [], speaker: String? = nil) {
+        self.start = start; self.end = end; self.text = text; self.words = words; self.speaker = speaker
     }
 }
 
@@ -102,6 +104,8 @@ public enum TaskKind: String, Codable, Sendable, CaseIterable { case transcribe,
 public enum OutputFormat: String, Codable, Sendable, CaseIterable {
     // "text" is OpenAI's name for txt; both render identically.
     case srt, vtt, txt, tsv, json, verboseJSON = "verbose_json", text
+    /// OpenAI's speaker-labelled transcript (`gpt-4o-transcribe-diarize`); requesting it turns diarization on.
+    case diarizedJSON = "diarized_json"
 }
 
 public enum AudioInput: Sendable, Equatable {
@@ -128,16 +132,18 @@ public struct JobRequest: Sendable, Equatable {
     public var writeSidecarNextTo: URL?
     public var force: Bool
     public var origin: JobOrigin
+    /// Label who speaks when (needs the speaker-diarizer model).
+    public var diarize: Bool
 
     public init(input: AudioInput, modelID: String? = nil, language: String? = nil, task: TaskKind = .transcribe,
-                writeSidecarNextTo: URL? = nil, force: Bool = false, origin: JobOrigin) {
+                writeSidecarNextTo: URL? = nil, force: Bool = false, origin: JobOrigin, diarize: Bool = false) {
         self.input = input; self.modelID = modelID; self.language = language; self.task = task
-        self.writeSidecarNextTo = writeSidecarNextTo; self.force = force; self.origin = origin
+        self.writeSidecarNextTo = writeSidecarNextTo; self.force = force; self.origin = origin; self.diarize = diarize
     }
 }
 
 public enum JobStatus: Sendable, Equatable {
-    case queued, preparingModel, decoding, transcribing(Double?), done, failed(String), cancelled, skipped(String)
+    case queued, preparingModel, decoding, transcribing(Double?), diarizing, done, failed(String), cancelled, skipped(String)
 
     public var isTerminal: Bool {
         switch self {
@@ -153,6 +159,7 @@ public enum JobStatus: Sendable, Equatable {
         case .preparingModel: return "preparing_model"
         case .decoding: return "decoding"
         case .transcribing: return "transcribing"
+        case .diarizing: return "diarizing"
         case .done: return "done"
         case .failed: return "failed"
         case .cancelled: return "cancelled"

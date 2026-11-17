@@ -4,7 +4,11 @@ public struct Cue: Codable, Sendable, Equatable {
     public var start: Double
     public var end: Double
     public var lines: [String]
-    public init(start: Double, end: Double, lines: [String]) { self.start = start; self.end = end; self.lines = lines }
+    /// Set on diarized transcripts. SRT prefixes the first line with it; WebVTT uses a voice tag.
+    public var speaker: String?
+    public init(start: Double, end: Double, lines: [String], speaker: String? = nil) {
+        self.start = start; self.end = end; self.lines = lines; self.speaker = speaker
+    }
 }
 
 public struct CueOptions: Codable, Sendable, Equatable {
@@ -25,37 +29,46 @@ public enum Subtitles {
     }
 
     public static func makeCues(_ t: Transcript, _ o: CueOptions = .init()) -> [Cue] {
-        var words: [Word] = []
+        var words: [(word: Word, speaker: String?)] = []
         for s in t.segments {
             if s.words.isEmpty {
                 // Whisper words carry a leading space; give wordless segments one so they don't glue together.
                 let text = s.text.first?.isWhitespace == true ? s.text : " " + s.text
-                words.append(Word(start: s.start, end: s.end, text: text))
+                words.append((Word(start: s.start, end: s.end, text: text), s.speaker))
             } else {
-                words += s.words
+                words += s.words.map { ($0, s.speaker) }
             }
         }
 
-        var cues: [(start: Double, end: Double, text: String)] = []
-        var cur: (start: Double, end: Double, text: String)?
-        for w in words {
+        typealias Pending = (start: Double, end: Double, text: String, speaker: String?)
+        var cues: [Pending] = []
+        var cur: Pending?
+        for (w, speaker) in words {
             if let c = cur {
+                let budget = o.maxLineChars * o.maxLines - (speaker.map { $0.count + 2 } ?? 0)
                 let appended = clean(c.text + w.text)
                 let prevEnded = c.text.trimmingCharacters(in: .whitespaces).last.map { ".?!".contains($0) } ?? false
-                let split = appended.count > o.maxLineChars * o.maxLines
+                let split = appended.count > budget
                     || w.end - c.start > o.maxDuration
                     || w.start - c.end > o.maxGap
                     || (prevEnded && clean(c.text).count >= 20)
-                if split { cues.append(c); cur = (w.start, w.end, w.text) } else { cur = (c.start, w.end, c.text + w.text) }
+                    || speaker != c.speaker
+                if split { cues.append(c); cur = (w.start, w.end, w.text, speaker) } else { cur = (c.start, w.end, c.text + w.text, speaker) }
             } else {
-                cur = (w.start, w.end, w.text)
+                cur = (w.start, w.end, w.text, speaker)
             }
         }
         if let c = cur { cues.append(c) }
 
         var out = cues.compactMap { c -> Cue? in
             let text = clean(c.text)
-            return text.isEmpty ? nil : Cue(start: c.start, end: c.end, lines: wrap(text, o))
+            guard !text.isEmpty else { return nil }
+            guard let speaker = c.speaker else { return Cue(start: c.start, end: c.end, lines: wrap(text, o)) }
+            // Wrap with the SRT prefix in place so the prefixed first line still fits maxLineChars.
+            let prefix = "\(speaker): "
+            var lines = wrap(prefix + text, o)
+            lines[0] = String(lines[0].dropFirst(prefix.count))
+            return Cue(start: c.start, end: c.end, lines: lines.filter { !$0.isEmpty }, speaker: speaker)
         }
         for i in out.indices {
             out[i].end = max(out[i].end, out[i].start + o.minDuration)
@@ -89,12 +102,16 @@ public enum Subtitles {
 
     public static func srt(_ cues: [Cue]) -> String {
         cues.enumerated().map { i, c in
-            "\(i + 1)\n\(ts(c.start, ",")) --> \(ts(c.end, ","))\n\(c.lines.joined(separator: "\n"))\n\n"
+            let lines = c.speaker.map { s in [(c.lines.first.map { "\(s): \($0)" } ?? "\(s):")] + c.lines.dropFirst() } ?? c.lines
+            return "\(i + 1)\n\(ts(c.start, ",")) --> \(ts(c.end, ","))\n\(lines.joined(separator: "\n"))\n\n"
         }.joined()
     }
 
     public static func vtt(_ cues: [Cue]) -> String {
-        "WEBVTT\n\n" + cues.map { "\(ts($0.start, ".")) --> \(ts($0.end, "."))\n\($0.lines.joined(separator: "\n"))\n\n" }.joined()
+        "WEBVTT\n\n" + cues.map { c in
+            let voice = c.speaker.map { "<v Speaker \($0)>" } ?? ""
+            return "\(ts(c.start, ".")) --> \(ts(c.end, "."))\n\(voice)\(c.lines.joined(separator: "\n"))\n\n"
+        }.joined()
     }
 
     public static func txt(_ t: Transcript) -> String {
@@ -118,12 +135,26 @@ public enum Subtitles {
         var o: [String: Any] = [
             "task": task.rawValue, "duration": t.duration, "text": t.text,
             "segments": t.segments.enumerated().map { i, s in
-                ["id": i, "start": s.start, "end": s.end, "text": s.text] as [String: Any]
+                var seg: [String: Any] = ["id": i, "start": s.start, "end": s.end, "text": s.text]
+                if let speaker = s.speaker { seg["speaker"] = speaker }
+                return seg
             },
             "words": t.segments.flatMap(\.words).map { ["word": $0.text.trimmingCharacters(in: .whitespaces), "start": $0.start, "end": $0.end] as [String: Any] },
         ]
         if let l = t.language { o["language"] = l }
         return json(o)
+    }
+
+    /// OpenAI's `diarized_json` (TranscriptionDiarized). Segments without a speaker are attributed to "A".
+    public static func diarizedJSON(_ t: Transcript, task: TaskKind) -> String {
+        json([
+            "task": task.rawValue, "duration": t.duration, "text": t.text,
+            "segments": t.segments.enumerated().map { i, s in
+                ["id": "seg_\(i)", "type": "transcript.text.segment", "start": s.start, "end": s.end,
+                 "text": s.text.trimmingCharacters(in: .whitespaces), "speaker": s.speaker ?? "A"] as [String: Any]
+            },
+            "usage": ["type": "duration", "seconds": Int(t.duration.rounded(.up))] as [String: Any],
+        ])
     }
 
     public static func render(_ t: Transcript, as f: OutputFormat, task: TaskKind = .transcribe,
@@ -133,6 +164,7 @@ public enum Subtitles {
         case .vtt: return (vtt(makeCues(t, cueOptions)), "text/vtt")
         case .json: return (openAIJSON(t), "application/json")
         case .verboseJSON: return (verboseJSON(t, task: task), "application/json")
+        case .diarizedJSON: return (diarizedJSON(t, task: task), "application/json")
         case .tsv: return (tsv(t), "text/plain; charset=utf-8")
         case .txt, .text: return (txt(t), "text/plain; charset=utf-8")
         }

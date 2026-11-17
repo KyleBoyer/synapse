@@ -41,6 +41,7 @@ extension JobStatus {
         case .queued: "Queued"
         case .preparingModel: "Preparing model (first run can take a few minutes)"
         case .decoding: "Extracting audio"
+        case .diarizing: "Labeling speakers"
         case .transcribing(let p): p.map { "Transcribing \(Int($0 * 100))%" } ?? "Transcribing"
         case .done: "Done"
         case .failed(let m): "Failed: \(m)"

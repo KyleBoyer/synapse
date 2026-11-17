@@ -5,10 +5,24 @@ public struct WatchFolder: Codable, Sendable, Equatable, Identifiable, Hashable 
     public var modelID: String?
     public var language: String?
     public var task: TaskKind
+    /// Label speakers in the subtitles written for this folder.
+    public var diarize: Bool
     public var id: String { path }
 
-    public init(path: String, modelID: String? = nil, language: String? = nil, task: TaskKind = .transcribe) {
-        self.path = path; self.modelID = modelID; self.language = language; self.task = task
+    public init(path: String, modelID: String? = nil, language: String? = nil, task: TaskKind = .transcribe, diarize: Bool = false) {
+        self.path = path; self.modelID = modelID; self.language = language; self.task = task; self.diarize = diarize
+    }
+
+    private enum CodingKeys: String, CodingKey { case path, modelID, language, task, diarize }
+
+    // Settings saved before `diarize` existed must still decode, or every watched folder would be lost.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        modelID = try c.decodeIfPresent(String.self, forKey: .modelID)
+        language = try c.decodeIfPresent(String.self, forKey: .language)
+        task = try c.decodeIfPresent(TaskKind.self, forKey: .task) ?? .transcribe
+        diarize = try c.decodeIfPresent(Bool.self, forKey: .diarize) ?? false
     }
 }
 

@@ -140,7 +140,7 @@ public actor FolderWatcher {
                 submittedAt[url.path] = .now
                 pending.remove(url.path)
                 await submit(JobRequest(input: .media(url), modelID: folder.modelID, language: folder.language,
-                                        task: folder.task, writeSidecarNextTo: url, origin: .watcher))
+                                        task: folder.task, writeSidecarNextTo: url, origin: .watcher, diarize: folder.diarize))
                 return
             }
             last = size

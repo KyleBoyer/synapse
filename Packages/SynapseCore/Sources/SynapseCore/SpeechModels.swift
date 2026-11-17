@@ -25,6 +25,10 @@ enum SpeechModels {
             let m = PocketTtsManager(directory: dir)
             try await m.initialize()
             await m.cleanup()
+        case "speaker-diarizer":
+            // Downloads and compiles the offline pipeline's Core ML models into `dir`; a second call reuses them.
+            let m = OfflineDiarizerManager()
+            try await m.prepareModels(directory: dir)
         case "kokoro-82m":
             let m = KokoroAneManager(directory: dir)
             try await m.initialize()

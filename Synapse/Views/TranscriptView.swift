@@ -17,6 +17,8 @@ struct TranscriptView: View {
                         if let l = transcript.language { Text(Languages.name(l)) }
                         Text(timecode(transcript.duration)).font(.mono(.caption))
                         Text("\(transcript.segments.count) segments")
+                        let speakers = Set(transcript.segments.compactMap(\.speaker))
+                        if !speakers.isEmpty { Text("\(speakers.count) speakers") }
                         if let m = job.modelID { Text(m).font(.mono(.caption)) }
                     }
                     .font(.caption).foregroundStyle(.secondary)
@@ -38,10 +40,16 @@ struct TranscriptView: View {
             .padding(16)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array(transcript.segments.enumerated()), id: \.offset) { _, seg in
+                    ForEach(Array(transcript.segments.enumerated()), id: \.offset) { i, seg in
                         HStack(alignment: .firstTextBaseline, spacing: 16) {
                             Text(timecode(seg.start)).font(.mono(.caption)).foregroundStyle(.secondary).frame(width: 82, alignment: .leading)
-                            Text(seg.text.trimmingCharacters(in: .whitespaces)).font(.subtitle).textSelection(.enabled)
+                            VStack(alignment: .leading, spacing: 4) {
+                                // The speaker label opens each run of segments by the same speaker, as Chat labels turns.
+                                if let s = seg.speaker, i == 0 || transcript.segments[i - 1].speaker != s {
+                                    Text("Speaker \(s)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                }
+                                Text(seg.text.trimmingCharacters(in: .whitespaces)).font(.subtitle).textSelection(.enabled)
+                            }
                         }
                     }
                 }

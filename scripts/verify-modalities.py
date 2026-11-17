@@ -78,8 +78,24 @@ def rerank():
           and res[0]["document"]["text"].startswith("Paris"), str([(x["index"], round(x["relevance_score"], 4)) for x in res]))
 
 
+def diarize():
+    from pathlib import Path
+    from openai import OpenAI
+    from openai.types.audio import TranscriptionDiarized
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    fixture = Path(__file__).resolve().parent.parent / "Packages/SynapseCore/Tests/SynapseCoreTests/Fixtures/two-speakers.m4a"
+    with open(fixture, "rb") as f:
+        r = client.audio.transcriptions.create(model="gpt-4o-transcribe-diarize", file=f, response_format="diarized_json",
+                                               chunking_strategy="auto")
+    TranscriptionDiarized.model_validate(r.model_dump())
+    speakers = [s.speaker for s in r.segments]
+    check("diarized_json validates, two speakers alternate", len(set(speakers)) >= 2 and speakers[0] != speakers[-1],
+          " ".join(speakers))
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank}
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

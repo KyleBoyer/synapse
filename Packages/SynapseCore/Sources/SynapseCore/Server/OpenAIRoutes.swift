@@ -7,6 +7,8 @@ struct TranscriptionForm: Decodable {
     var model: String?
     var language: String?
     var response_format: String?
+    /// Synapse extension; `response_format=diarized_json` or `model=gpt-4o-transcribe-diarize` also turn it on.
+    var diarize: String?
 }
 
 /// Writes the upload to a per-request temp dir, runs `body`, then deletes the dir.
@@ -22,10 +24,10 @@ func withUpload<T>(_ file: File, _ body: (URL) async throws -> T) async throws -
 
 /// Runs a synchronous API job. Resolve errors are surfaced as 400 before queuing.
 func runSync(queue: JobQueue, store: ModelStore, settings: SettingsBox, input: AudioInput,
-             model: String?, language: String?, task: TaskKind) async throws -> Transcript {
+             model: String?, language: String?, task: TaskKind, diarize: Bool = false) async throws -> Transcript {
     _ = try ModelResolver.resolve(requested: model, task: task, language: language,
                                   defaultID: settings.current.defaultModelID, downloaded: await store.downloaded)
-    let snap = await queue.run(JobRequest(input: input, modelID: model, language: language, task: task, origin: .api))
+    let snap = await queue.run(JobRequest(input: input, modelID: model, language: language, task: task, origin: .api, diarize: diarize))
     switch snap.status {
     case .done: if let t = snap.transcript { return t }; throw HTTPError(.internalServerError, message: "No transcript produced")
     case .failed(let m): throw HTTPError(.internalServerError, message: m)
@@ -62,9 +64,11 @@ func addOpenAIRoutes(to g: RouterGroup<SynapseContext>, queue: JobQueue, store: 
             guard let format = OutputFormat(rawValue: nonEmpty(form.response_format) ?? "json") else {
                 throw HTTPError(.badRequest, message: "Unsupported response_format '\(form.response_format ?? "")'.")
             }
+            let diarize = format == .diarizedJSON || form.model == "gpt-4o-transcribe-diarize"
+                || ["true", "1"].contains(form.diarize?.lowercased() ?? "")
             let t = try await withUpload(form.file) {
                 try await runSync(queue: queue, store: store, settings: settings, input: .media($0),
-                                  model: nonEmpty(form.model), language: nonEmpty(form.language), task: task)
+                                  model: nonEmpty(form.model), language: nonEmpty(form.language), task: task, diarize: diarize)
             }
             let out = Subtitles.render(t, as: format, task: task, cueOptions: settings.current.cue)
             return text(out.body, contentType: out.contentType)

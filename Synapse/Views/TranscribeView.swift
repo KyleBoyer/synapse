@@ -7,6 +7,7 @@ struct TranscribeView: View {
     @State private var language: String?
     @State private var task: TaskKind = .transcribe
     @State private var saveSidecar = false
+    @State private var diarize = false
     @State private var dropTargeted = false
     @State private var selection: UUID?
     @State private var opened: JobSnapshot?
@@ -38,6 +39,9 @@ struct TranscribeView: View {
                            options: [(.transcribe, "Transcribe"), (.translate, "Translate to English")])
                 Toggle("Save .srt next to file", systemImage: "doc.badge.plus", isOn: $saveSidecar)
                     .help("Save .srt next to each file")
+                Toggle("Label speakers", systemImage: "person.2", isOn: $diarize)
+                    .disabled(!state.diarizerReady)
+                    .help(state.diarizerReady ? "Label who speaks when" : "Download Speaker diarization in Models to label speakers")
             }
             ToolbarSpacer(.fixed)
             ToolbarItemGroup {
@@ -47,6 +51,22 @@ struct TranscribeView: View {
             }
         }
         .sheet(item: $opened) { TranscriptView(job: $0) }
+        #if DEBUG
+        // `-autoTranscribe <path> [-autoDiarize YES]` submits one file after launch and opens its transcript when done,
+        // so the result can be captured without typing.
+        .task(id: state.diarizerReady) {
+            guard let path = UserDefaults.standard.string(forKey: "autoTranscribe"), state.jobs.isEmpty else { return }
+            let wantDiarize = UserDefaults.standard.bool(forKey: "autoDiarize")
+            if wantDiarize && !state.diarizerReady { return }
+            state.submit(files: [URL(fileURLWithPath: path)], modelID: nil, language: nil, task: .transcribe, saveSidecar: false,
+                         diarize: wantDiarize)
+        }
+        .onChange(of: state.jobs.last?.status) {
+            guard UserDefaults.standard.string(forKey: "autoTranscribe") != nil, let job = state.jobs.last,
+                  job.status == .done, opened == nil else { return }
+            opened = job
+        }
+        #endif
     }
 
     /// The job the readout follows: the selected one, else the one running, else the latest.
@@ -98,6 +118,8 @@ struct TranscribeView: View {
             readings.append(Reading(label: "Speed", value: Metric.realtimeSpeed.format(duration / took) + "× realtime"))
         }
         if let lang = job.transcript?.language { readings.append(Reading(label: "Language", value: Languages.name(lang))) }
+        let speakers = Set(job.transcript?.segments.compactMap(\.speaker) ?? [])
+        if !speakers.isEmpty { readings.append(Reading(label: "Speakers", value: "\(speakers.count)")) }
         if let spec, let r = state.resident(spec.id) { readings.append(Reading(label: "Resident", value: gigabytes(r.bytes))) }
         return VStack(spacing: 12) {
             BurnIn(name: spec?.displayName ?? "Default model", modelID: spec?.id ?? state.settings.defaultModelID,
@@ -136,7 +158,8 @@ struct TranscribeView: View {
     }
 
     private func submit(_ urls: [URL]) {
-        state.submit(files: urls, modelID: modelID, language: language, task: task, saveSidecar: saveSidecar)
+        state.submit(files: urls, modelID: modelID, language: language, task: task, saveSidecar: saveSidecar,
+                     diarize: diarize && state.diarizerReady)
     }
 }
 

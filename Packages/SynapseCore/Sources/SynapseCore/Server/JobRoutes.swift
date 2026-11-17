@@ -7,6 +7,7 @@ struct CreateJob: Decodable {
     var language: String?
     var task: TaskKind?
     var force: Bool?
+    var diarize: Bool?
 }
 
 struct JobDTO: Encodable {
@@ -46,7 +47,7 @@ func addJobRoutes(to g: RouterGroup<SynapseContext>, queue: JobQueue, settings: 
         let url = URL(fileURLWithPath: body.path)
         let id = await queue.submit(JobRequest(input: .media(url), modelID: nonEmpty(body.model), language: nonEmpty(body.language),
                                                task: body.task ?? .transcribe, writeSidecarNextTo: url,
-                                               force: body.force ?? false, origin: .api))
+                                               force: body.force ?? false, origin: .api, diarize: body.diarize ?? false))
         let status = await queue.snapshot(id)?.status.apiName ?? "queued"
         return json(["id": id.uuidString, "status": status], status: .accepted)
     }

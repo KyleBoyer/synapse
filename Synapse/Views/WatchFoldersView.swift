@@ -34,6 +34,10 @@ struct WatchFoldersView: View {
                                 Text("Transcribe").tag(TaskKind.transcribe)
                                 Text("Translate").tag(TaskKind.translate)
                             }
+                            Toggle("Label speakers", isOn: $folder.diarize).toggleStyle(.switch)
+                                .disabled(!state.diarizerReady)
+                                .help(state.diarizerReady ? "Label who speaks when in this folder's subtitles"
+                                                          : "Download Speaker diarization in Models to label speakers")
                         }
                     }
                     .padding(.vertical, 4)

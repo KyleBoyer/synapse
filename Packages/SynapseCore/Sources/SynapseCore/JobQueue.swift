@@ -1,19 +1,27 @@
 import Foundation
 
 public enum JobError: Error, LocalizedError {
-    case cancelled
-    public var errorDescription: String? { "Job was cancelled" }
+    case cancelled, diarizerMissing
+    public var errorDescription: String? {
+        switch self {
+        case .cancelled: return "Job was cancelled"
+        case .diarizerMissing: return "Download Speaker diarization in Models to label speakers."
+        }
+    }
 }
 
 /// The single funnel for all transcription work (GUI, API, watcher).
 /// Runs one job at a time; engines are loaded and evicted by the shared ModelManager.
 public actor JobQueue {
     public typealias EngineFactory = @Sendable (ModelSpec, URL) async throws -> any TranscriptionEngine
+    public typealias DiarizerFactory = @Sendable (URL) async throws -> any SpeakerDiarizing
+    static let diarizerID = "speaker-diarizer"
 
     private let store: ModelStore
     private let decoder: AudioDecoder
     private let settings: SettingsBox
     private let engineFactory: EngineFactory
+    private let diarizerFactory: DiarizerFactory
     private let onChange: @Sendable (JobSnapshot) -> Void
 
     private var jobs: [UUID: JobSnapshot] = [:]
@@ -27,9 +35,10 @@ public actor JobQueue {
     public init(store: ModelStore, decoder: AudioDecoder, settings: SettingsBox,
                 models: ModelManager = ModelManager(),
                 engineFactory: @escaping EngineFactory = JobQueue.realEngine,
+                diarizerFactory: @escaping DiarizerFactory = { try await FluidDiarizer(folder: $0) },
                 onChange: @escaping @Sendable (JobSnapshot) -> Void = { _ in }) {
         self.store = store; self.decoder = decoder; self.settings = settings
-        self.models = models; self.engineFactory = engineFactory; self.onChange = onChange
+        self.models = models; self.engineFactory = engineFactory; self.diarizerFactory = diarizerFactory; self.onChange = onChange
     }
 
     public static let realEngine: EngineFactory = { spec, folder in
@@ -143,10 +152,15 @@ public actor JobQueue {
             try Task.checkCancellation()
             update(id) { $0.status = .transcribing(nil) }
 
-            let transcript = try await engine.transcribe(wav: wav, language: r.language, task: r.task) { p in
+            var transcript = try await engine.transcribe(wav: wav, language: r.language, task: r.task) { p in
                 Task { await self.progress(id, p) }
             }
             try Task.checkCancellation()
+            if r.diarize {
+                update(id) { $0.status = .diarizing }
+                transcript = SpeakerAssigner.assign(transcript, turns: try await diarize(wav))
+                try Task.checkCancellation()
+            }
 
             var output: URL?
             if let media = r.writeSidecarNextTo {
@@ -163,6 +177,18 @@ public actor JobQueue {
         } catch {
             complete(id, Task.isCancelled ? .cancelled : .failed(error.localizedDescription))
         }
+    }
+
+    private func diarize(_ wav: URL) async throws -> [SpeakerTurn] {
+        guard let folder = await store.folder(for: Self.diarizerID), let spec = Catalog.spec(Self.diarizerID) else {
+            throw JobError.diarizerMissing
+        }
+        let factory = diarizerFactory
+        let lease = try await models.lease(Self.diarizerID, as: (any SpeakerDiarizing).self, estimatedBytes: spec.estimatedBytes) {
+            (try await factory(folder), unload: {})
+        }
+        defer { lease.release() }
+        return try await lease.value.diarize(wav: wav)
     }
 
     private func engineLease(for spec: ModelSpec, folder: URL) async throws -> ModelLease<any TranscriptionEngine> {

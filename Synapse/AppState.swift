@@ -85,7 +85,8 @@ final class AppState {
         if snap.status == .done, jobElapsed[snap.id] == nil, let start = jobStarted[snap.id] {
             let elapsed = Date().timeIntervalSince(start)
             jobElapsed[snap.id] = elapsed
-            if let model = snap.modelID, let t = snap.transcript, t.duration > 0 {
+            // Diarized runs include speaker labeling, so they are not a transcription speed measurement.
+            if let model = snap.modelID, let t = snap.transcript, t.duration > 0, !snap.request.diarize {
                 metrics.record(model, .realtimeSpeed, t.duration / elapsed)
             }
         }
@@ -93,12 +94,12 @@ final class AppState {
         if jobs.count > 300 { jobs.removeFirst(jobs.count - 300) }
     }
 
-    func submit(files: [URL], modelID: String?, language: String?, task: TaskKind, saveSidecar: Bool) {
+    func submit(files: [URL], modelID: String?, language: String?, task: TaskKind, saveSidecar: Bool, diarize: Bool = false) {
         let media = files.flatMap(Self.expand)
         Task {
             for url in media {
                 await queue.submit(JobRequest(input: .media(url), modelID: modelID, language: language, task: task,
-                                              writeSidecarNextTo: saveSidecar ? url : nil, force: true, origin: .gui))
+                                              writeSidecarNextTo: saveSidecar ? url : nil, force: true, origin: .gui, diarize: diarize))
             }
         }
     }
@@ -126,6 +127,7 @@ final class AppState {
     var downloadedTTSSpecs: [ModelSpec] { readySpecs.filter(\.isTTS) }
     var downloadedEmbeddingSpecs: [ModelSpec] { readySpecs.filter(\.isEmbedding) }
     var downloadedRerankerSpecs: [ModelSpec] { readySpecs.filter(\.isReranker) }
+    var diarizerReady: Bool { if case .ready = modelStates["speaker-diarizer"] { return true }; return false }
     var downloadedRealtimeBase: Bool { ["parakeet-eou-120m", "silero-vad", "pocket-tts"].allSatisfy { if case .ready = modelStates[$0] { return true }; return false } }
     var downloadedDuplexSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .duplex } }
     var downloadedChatSpecs: [ModelSpec] { readySpecs.filter { $0.isChat } }

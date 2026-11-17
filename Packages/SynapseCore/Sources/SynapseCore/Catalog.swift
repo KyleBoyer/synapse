@@ -57,6 +57,7 @@ public enum Catalog {
         realtime("parakeet-eou-120m", "Parakeet EOU 120M (streaming, English)", .speech, "parakeet-eou-160ms", 220, ramGB: nil),
         realtime("silero-vad", "Silero VAD", .speech, "silero-vad", 2, ramGB: nil),
         realtime("pocket-tts", "PocketTTS (streaming voice)", .speech, "pocket-tts", 523, ramGB: nil),
+        realtime("speaker-diarizer", "Speaker diarization (who spoke when)", .speech, "speaker-diarizer", 21, ramGB: nil),
         realtime("kokoro-82m", "Kokoro 82M (voices)", .speech, "kokoro", 350, ramGB: nil),
         realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),
         realtime("personaplex-7b", "PersonaPlex 7B (full duplex, non-commercial)", .duplex, "personaplex-4bit", 5821, ramGB: 12),
@@ -92,7 +93,9 @@ public enum ResolveError: Error, Equatable, LocalizedError {
 public enum ModelResolver {
     public static func resolve(requested: String?, task: TaskKind, language: String?, defaultID: String,
                                downloaded: Set<String>) throws -> ModelSpec {
-        let id = (requested == nil || requested == "whisper-1") ? defaultID : requested!
+        // OpenAI clients hard-code their own transcription model names; they mean "the default local model".
+        let aliases: Set<String> = ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe-diarize"]
+        let id = (requested == nil || aliases.contains(requested!)) ? defaultID : requested!
         guard var spec = Catalog.spec(id) else { throw ResolveError.unknownModel(id) }
         guard !spec.isChat, !spec.isEmbedding, !spec.isReranker, !spec.isVideoGen, !spec.isAudioGen else { throw ResolveError.wrongKind(id) }
         if (task == .translate && !spec.canTranslate) || !spec.supports(language: language) {
