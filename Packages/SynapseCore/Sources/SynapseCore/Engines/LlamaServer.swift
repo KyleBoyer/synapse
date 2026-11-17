@@ -37,7 +37,7 @@ public final class LlamaServer: @unchecked Sendable {
         }
         let port = try MLXVLMServer.freePort()
         var args = ["-m", folder.appending(path: weights).path, "--host", "127.0.0.1", "--port", String(port),
-                    "--fit", "on", "--jinja", "--offline", "--no-webui", "-np", "1"]
+                    "--fit", "on", "--jinja", "--offline", "--no-ui", "-np", "1"]
         if let projector = files.first(where: { $0.lowercased().contains("mmproj") }) {
             args += ["--mmproj", folder.appending(path: projector).path]
         }

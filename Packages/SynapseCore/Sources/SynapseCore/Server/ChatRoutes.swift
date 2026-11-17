@@ -347,7 +347,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                 switch e {
                 case .delta(let s): text += s
                 case .done(let f, let u): finish = f; usage = u
-                case .toolCall: break
+                case .toolCall, .progress: break
                 }
             }
             return json(ChatCompletionWire(id: id, created: created, model: spec.id, choices: [
@@ -365,7 +365,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                 switch event {
                 case .delta(let s):
                     try await write(nil, chunk(.init(content: s)))
-                case .toolCall:
+                case .toolCall, .progress:
                     break
                 case .done(let finish, let usage):
                     try await write(nil, chunk(.init(), finish: finish))
@@ -435,7 +435,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                     text += s
                     try await event("response.output_text.delta", ["item_id": msgID, "output_index": 0, "content_index": 0,
                                                                   "delta": s, "logprobs": [String]()])
-                case .toolCall:
+                case .toolCall, .progress:
                     break
                 case .done(let finish, let usage):
                     let final = response(status: "completed", text: text, usage: usage, finish: finish)

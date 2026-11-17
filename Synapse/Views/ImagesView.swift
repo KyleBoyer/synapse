@@ -83,6 +83,14 @@ struct ImagesView: View {
             if !ids.contains(modelID) { modelID = ids.first ?? "" }
         }
         .onChange(of: running) { state.setActive(.images, running) }
+        #if DEBUG
+        // `-autoImagePrompt "..."` (with `-imageModel <id>`) generates once after launch, for captures.
+        .task(id: modelID) {
+            guard let p = UserDefaults.standard.string(forKey: "autoImagePrompt"), !p.isEmpty, history.isEmpty, !running, !modelID.isEmpty else { return }
+            if let m = UserDefaults.standard.string(forKey: "imageModel"), m != modelID, specs.contains(where: { $0.id == m }) { modelID = m; return }
+            prompt = p; generate()
+        }
+        #endif
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { r in
             if case .success(let urls) = r { addReferences(urls) }
         }
@@ -148,7 +156,19 @@ struct ImagesView: View {
                         } else {
                             RoundedRectangle(cornerRadius: 14).fill(.quaternary).aspectRatio(aspect, contentMode: .fit)
                         }
-                        if preparing { Text("Loading model…").font(.subtitle).foregroundStyle(Color.live) }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        Group {
+                            if preparing {
+                                LiveProgress(label: "Loading model")
+                            } else if let p = progress, p.totalSteps > 0 {
+                                LiveProgress(label: "Step \(p.step) / \(p.totalSteps)", fraction: Double(p.step) / Double(p.totalSteps))
+                            } else {
+                                LiveProgress(label: "Starting")
+                            }
+                        }
+                        .padding(12).frame(width: 300, alignment: .leading)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 12)).padding(12)
                     }
                     .frame(maxHeight: 520).clipShape(.rect(cornerRadius: 14))
                 }

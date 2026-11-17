@@ -23,6 +23,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
     // convention it follows (OpenAI SDKs expect base_url to end in /v1; Anthropic's SDK adds /v1 itself).
     // `/k/<key>` carries the API key in the path for clients that cannot send headers (Bazarr). `v1/v1` covers a
     // host/v1 base URL pasted into a client that appends /v1 itself.
+    let conversations = LMStudioConversations()
     for prefix in ["v1", "", "v1/v1", "k/:key/v1", "k/:key", "k/:key/v1/v1"] {
         let group = prefix.isEmpty ? router.group() : router.group(RouterPath(prefix))
         group.add(middleware: APIKeyMiddleware(settings: settings))
@@ -32,6 +33,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addJobRoutes(to: group, queue: queue, settings: settings)
         addChatRoutes(to: group, chat: chat, images: images, speech: speech, settings: settings)
         addAnthropicRoutes(to: group, chat: chat)
+        addLMStudioRoutes(to: group, chat: chat, conversations: conversations)
         addImageRoutes(to: group, images: images, files: imageFiles, chat: chat, settings: settings)
         addSpeechRoutes(to: group, speech: speech)
         addEmbeddingRoutes(to: group, embeddings: embeddings)

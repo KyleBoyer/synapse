@@ -357,3 +357,20 @@ struct WorkAreaGlass: NSViewRepresentable {
         v.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(tint)
     }
 }
+
+/// A live status line with its bar: determinate when the engine reports a fraction, indeterminate otherwise.
+struct LiveProgress: View {
+    let label: String
+    var fraction: Double?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.callout).foregroundStyle(Color.live).monospacedDigit()
+            Group {
+                if let fraction { ProgressView(value: min(max(fraction, 0), 1)) } else { ProgressView() }
+            }
+            .progressViewStyle(.linear).tint(Color.live).frame(maxWidth: 280)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}

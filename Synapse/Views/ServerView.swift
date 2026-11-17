@@ -105,6 +105,7 @@ struct ServerView: View {
     static let routes: [(String, String)] = [
         ("POST /v1/responses", "OpenAI Responses: chat, vision, image tool"),
         ("POST /v1/messages", "Anthropic Messages"),
+        ("POST /api/v1/chat", "LM Studio chat: load and prompt progress events"),
         ("POST /v1/chat/completions", "OpenAI Chat Completions"),
         ("POST /v1/completions", "OpenAI legacy text completion"),
         ("POST /v1/audio/transcriptions", "OpenAI transcription, speaker labels"),

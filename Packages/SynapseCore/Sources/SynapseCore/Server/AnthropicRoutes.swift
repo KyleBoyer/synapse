@@ -294,6 +294,7 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
                     if stopSequence != nil { usage.output_tokens = chunks }
                 case .toolCall(let name, let arguments):
                     asm.toolUse(name: name, arguments: arguments)
+                case .progress: break
                 case .done(let finish, let u):
                     text(splitter?.finish() ?? ("", ""), final: true)
                     usage = AnthropicUsage(input_tokens: u.promptTokens, output_tokens: u.completionTokens)

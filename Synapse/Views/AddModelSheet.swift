@@ -116,6 +116,10 @@ struct AddModelSheet: View {
             defer { checking = false }
             do {
                 report = try await HFModelInspector.inspect(text, token: state.settings.hfToken ?? HFDownloader.cliToken())
+                #if DEBUG
+                // `-addModelConfirm YES` with `-addModel` adds and downloads without a click, for captures.
+                if UserDefaults.standard.bool(forKey: "addModelConfirm"), !alreadyListed { add(download: true) }
+                #endif
             } catch { self.error = error.localizedDescription }
         }
     }

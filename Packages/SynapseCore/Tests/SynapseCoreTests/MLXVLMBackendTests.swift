@@ -52,9 +52,40 @@ final class MLXVLMBackendTests: XCTestCase {
             // The lease and GPU gate are released when the stream ends.
             for _ in 0..<50 where !finished.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(10)) }
             XCTAssertTrue(finished.withLock { $0 })
-            XCTAssertEqual(events, [.delta("The "), .delta("fox."),
+            XCTAssertEqual(events, [.progress(.promptStarted), .progress(.promptDone), .delta("The "), .delta("fox."),
                                     .done(finishReason: "length", usage: ChatUsage(promptTokens: 12, completionTokens: 2))])
         }
+    }
+
+    /// llama.cpp with return_progress: prompt_progress objects (cached tokens excluded) become fractions before the answer.
+    func testLlamaPromptProgressBecomesFractions() async throws {
+        let router = Router()
+        router.post("v1/chat/completions") { _, _ -> Response in
+            let lines = [#"{"choices":[{"index":0,"delta":{"role":"assistant","content":null}}],"prompt_progress":{"total":3000,"cache":1000,"processed":1000,"time_ms":0}}"#,
+                         #"{"choices":[{"index":0,"delta":{"role":"assistant","content":null}}],"prompt_progress":{"total":3000,"cache":1000,"processed":2000,"time_ms":900}}"#,
+                         #"{"choices":[{"index":0,"delta":{"role":"assistant","content":null}}],"prompt_progress":{"total":3000,"cache":1000,"processed":3000,"time_ms":1800}}"#,
+                         #"{"choices":[{"index":0,"delta":{"content":"Paris"}}]}"#,
+                         #"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#]
+            let text = lines.map { "data: \($0)\n\n" }.joined() + "data: [DONE]\n\n"
+            return Response(status: .ok, headers: [.contentType: "text/event-stream"], body: .init(byteBuffer: ByteBuffer(string: text)))
+        }
+        try await Application(router: router).test(.live) { client in
+            let port = try XCTUnwrap(client.port)
+            var events: [ChatEvent] = []
+            for try await e in MLXVLMChat.stream(base: URL(string: "http://localhost:\(port)")!, body: Data("{}".utf8), onFinish: {}) {
+                events.append(e)
+            }
+            XCTAssertEqual(events, [.progress(.promptStarted), .progress(.prompt(fraction: 0)), .progress(.prompt(fraction: 0.5)),
+                                    .progress(.prompt(fraction: 1)), .progress(.promptDone), .delta("Paris"),
+                                    .done(finishReason: "stop", usage: ChatUsage(promptTokens: 0, completionTokens: 0))])
+        }
+    }
+
+    func testLlamaRequestsAskForPromptProgress() throws {
+        let body = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: ChatOptions(), model: "m", promptProgress: true)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["return_progress"] as? Bool, true)
+        let plain = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: ChatOptions(), model: "m")
+        XCTAssertNil((try JSONSerialization.jsonObject(with: plain) as? [String: Any])?["return_progress"])
     }
 
     /// mlx-vlm reports failures mid-stream as a data line; they must reach the client, not end as an empty answer.

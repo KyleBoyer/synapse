@@ -94,7 +94,7 @@ struct Datasheet: View {
         if spec.isReranker { return [] }
         if spec.isVideoGen { return [.videoTime] }
         if spec.isAudioGen { return [.soundSpeed] }
-        if spec.isChat { return [.firstToken, .decodeRate, .prefillRate, .firstAudio] }
+        if spec.isChat { return [.loadTime, .firstToken, .decodeRate, .prefillRate, .firstAudio] }
         if spec.isTranscription { return [.realtimeSpeed] }
         if spec.isImage { return [.secondsPerStep, .imageTime] }
         return [.firstAudio]

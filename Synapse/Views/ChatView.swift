@@ -8,14 +8,29 @@ struct ChatView: View {
     @Environment(AppState.self) private var state
     /// A conversation line plus when it started, relative to the conversation's first message.
     struct Line { var message: ChatMessage; var at: Double }
-    /// The run being measured: send time, first token, tokens so far, final usage.
+    /// The run being measured: what it is doing now, when each phase began, tokens so far, final usage.
     struct Run {
+        enum Phase: Equatable { case waiting, loading, prompt(fraction: Double?), generating }
         var sent = Date()
+        var phase = Phase.waiting
+        var phaseStart = Date()
+        var loadSeconds: Double?
+        var promptStart: Date?
         var firstToken: Date?
         var chunks = 0
         var ended: Date?
         var usage: ChatUsage?
-        var firstTokenSeconds: Double? { firstToken.map { $0.timeIntervalSince(sent) } }
+        var firstTokenSeconds: Double? { firstToken.map { $0.timeIntervalSince(promptStart ?? sent) } }
+
+        mutating func apply(_ p: ChatProgress) {
+            switch p {
+            case .loadStarted: phase = .loading; phaseStart = Date()
+            case .loaded(let s): loadSeconds = s; phase = .waiting
+            case .promptStarted: phase = .prompt(fraction: nil); phaseStart = Date(); promptStart = phaseStart
+            case .prompt(let f): phase = .prompt(fraction: f)
+            case .promptDone: break   // the first delta switches to generating
+            }
+        }
         var decodeRate: Double? {
             guard let f = firstToken else { return nil }
             let tokens = Double((usage?.completionTokens ?? chunks) - 1)
@@ -105,6 +120,8 @@ struct ChatView: View {
         return BurnIn(
             name: spec.displayName, modelID: spec.id,
             readings: [
+                reading("Load", r?.loadSeconds.map { String(format: "%.2f s", $0) }
+                            ?? (r?.promptStart != nil ? "already loaded" : nil), .loadTime, live: r?.phase == .loading),
                 reading("First token", r?.firstTokenSeconds.map { String(format: "%.2f s", $0) }, .firstToken),
                 reading("Decode", r?.decodeRate.map { Metric.decodeRate.format($0) + " tok/s" }, .decodeRate, live: generating),
                 reading("Prompt", r?.usage.map { u in
@@ -163,8 +180,8 @@ struct ChatView: View {
                     } else {
                         MarkdownView(text: l.message.text)
                     }
-                } else if current {
-                    Text("Waiting for first token…").font(.callout).foregroundStyle(Color.live)
+                } else if current, let run {
+                    PhaseStatus(run: run, typicalLoad: spec.flatMap { state.metrics.stats($0.id, .loadTime)?.typ })
                 }
             }
         }
@@ -268,17 +285,20 @@ struct ChatView: View {
                     switch ev {
                     case .delta(let s):
                         if run?.firstToken == nil {
-                            run?.firstToken = Date()
+                            run?.firstToken = Date(); run?.phase = .generating
                             if let start = started { lines[lines.count - 1].at = Date().timeIntervalSince(start) }
                         }
                         run?.chunks += 1
                         lines[lines.count - 1].message.text += s
                     case .done(_, let usage):
                         run?.ended = Date(); run?.usage = usage
-                    default: break
+                    case .progress(let p):
+                        run?.apply(p)
+                    case .toolCall: break
                     }
                 }
                 if let r = run {
+                    r.loadSeconds.map { metrics.record(spec.id, .loadTime, $0) }
                     r.firstTokenSeconds.map { metrics.record(spec.id, .firstToken, $0) }
                     r.decodeRate.map { metrics.record(spec.id, .decodeRate, $0) }
                     r.promptRate.map { metrics.record(spec.id, .prefillRate, $0) }
@@ -363,6 +383,37 @@ private struct VideoThumb: View {
             gen.appliesPreferredTrackTransform = true
             gen.maximumSize = CGSize(width: 480, height: 480)
             if let cg = try? await gen.image(at: .zero).image { frame = NSImage(cgImage: cg, size: .zero) }
+        }
+    }
+}
+
+/// What a reply is doing before its first token. Loading has no fraction from any engine, so its bar is this model's
+/// typical load time when one was measured (labelled "about"); prompt processing is exact where the engine reports
+/// it (llama.cpp) and indeterminate otherwise.
+private struct PhaseStatus: View {
+    let run: ChatView.Run
+    let typicalLoad: Double?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { ctx in
+            let elapsed = ctx.date.timeIntervalSince(run.phaseStart)
+            let (label, fraction) = describe(elapsed)
+            LiveProgress(label: label, fraction: fraction)
+        }
+    }
+
+    private func describe(_ elapsed: Double) -> (String, Double?) {
+        let t = String(format: "%.1f s", elapsed)
+        switch run.phase {
+        case .loading:
+            guard let typ = typicalLoad, typ > 0.5 else { return ("Loading model · \(t)", nil) }
+            return ("Loading model · \(t) of about \(String(format: "%.0f s", typ.rounded(.up)))", min(elapsed / typ, 0.95))
+        case .prompt(let f?):
+            return ("Reading prompt · \(Int((f * 100).rounded()))%", f)
+        case .prompt(nil):
+            return ("Reading prompt · \(t)", nil)
+        case .waiting, .generating:
+            return ("Waiting for the model…", nil)
         }
     }
 }

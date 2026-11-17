@@ -69,6 +69,19 @@ public enum ChatEvent: Sendable, Equatable {
     case toolCall(name: String, arguments: String)
     /// finishReason is OpenAI's: "stop" or "length".
     case done(finishReason: String, usage: ChatUsage)
+    /// Load and prompt processing, before the first delta.
+    case progress(ChatProgress)
+}
+
+/// What a chat request does before its first token (LM Studio's model_load and prompt_processing stream events).
+/// Loading is reported only when the model was not resident. A prompt fraction comes only from engines that count
+/// processed tokens (llama.cpp); in-process MLX and mlx-vlm report start and end.
+public enum ChatProgress: Sendable, Equatable {
+    case loadStarted
+    case loaded(seconds: Double)
+    case promptStarted
+    case prompt(fraction: Double)
+    case promptDone
 }
 
 public struct ChatToolCall: Sendable, Equatable {
@@ -123,22 +136,54 @@ public actor ChatService {
         try ModelResolver.resolveChat(requested: requested, downloaded: await store.downloaded)
     }
 
-    /// Streams deltas then a final `.done`. Cancelling the consuming task stops generation.
+    /// Streams progress (load, prompt), deltas, then a final `.done`. Cancelling the consuming task stops generation.
+    /// Bad input and missing models throw here, before the stream; loading happens inside it, so its progress shows.
     public func stream(model spec: ModelSpec, messages: [ChatMessage], options: ChatOptions) async throws
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         guard !messages.isEmpty else { throw ChatError.emptyConversation }
-        if spec.engine == .mlxvlm { return try await streamMLXVLM(spec, messages, options) }
-        if spec.engine == .gguf { return try await streamLlama(spec, messages, options) }
-        let lease = try await containerLease(for: spec)
-        let container = lease.value
-        let input = try Self.userInput(messages, options)
-        let toolSpecs = input.tools
-        let maxTokens = options.maxTokens ?? Self.defaultMaxTokens
-        let params = GenerateParameters(maxTokens: maxTokens, temperature: options.temperature ?? 0.7,
-                                        topP: options.topP ?? 0.8)
-        return try await run(container: container, lease: lease, params: params, tools: toolSpecs,
-                             stripThinking: !options.enableThinking) { try await container.prepare(input: input) }
+        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        if spec.engine == .mlxvlm { return Self.timeline { try await self.streamMLXVLM(spec, folder, messages, options, $0) } }
+        if spec.engine == .gguf { return Self.timeline { try await self.streamLlama(spec, folder, messages, options, $0) } }
+        _ = try Self.userInput(messages, options)
+        return Self.timeline { progress in
+            let lease = try await self.containerLease(for: spec, progress: progress)
+            let container = lease.value
+            let input = try Self.userInput(messages, options)
+            let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
+                                            temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
+            return try await self.run(container: container, lease: lease, params: params, tools: input.tools,
+                                      stripThinking: !options.enableThinking, progress: progress) {
+                try await container.prepare(input: input)
+            }
+        }
+    }
+
+    typealias Progress = @Sendable (ChatProgress) -> Void
+
+    /// Runs `open` inside the returned stream, so the consumer sees its load and prompt progress before any token.
+    private static func timeline(_ open: @escaping @Sendable (@escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>)
+        -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        AsyncThrowingStream { c in
+            let task = Task {
+                do {
+                    for try await e in try await open({ c.yield(.progress($0)) }) { c.yield(e) }
+                    c.finish()
+                } catch { c.finish(throwing: error) }
+            }
+            c.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Wraps a model load so it reports `.loadStarted` and `.loaded`; it runs only when the model is not resident.
+    private static func timed<T: Sendable>(_ progress: @escaping Progress, _ load: () async throws -> T) async rethrows -> T {
+        progress(.loadStarted)
+        let start = ContinuousClock.now
+        let value = try await load()
+        let d = ContinuousClock.now - start
+        progress(.loaded(seconds: Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18))
+        return value
     }
 
     /// A model that answers in its own voice (`OmniVoices.canSpeak`); the lease lasts as long as the returned value.
@@ -148,14 +193,15 @@ public actor ChatService {
 
     /// Omni models run in their own mlx-vlm server; the lease keeps it alive and eviction stops it. Tool calls are not
     /// passed through: mlx-vlm parses them per model and only Qwen3.5's format is verified here.
-    private func streamMLXVLM(_ spec: ModelSpec, _ messages: [ChatMessage], _ options: ChatOptions) async throws
-        -> AsyncThrowingStream<ChatEvent, Error>
+    private func streamMLXVLM(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
+                              _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
-        try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
         let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedBytes) {
-            let server = try await MLXVLMServer.launch(folder: folder)
-            return (server, unload: { server.terminate() })
+            try await Self.timed(progress) {
+                try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
+                let server = try await MLXVLMServer.launch(folder: folder)
+                return (server, unload: { server.terminate() })
+            }
         }
         let body: Data
         do { body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath) } catch { lease.release(); throw error }
@@ -165,17 +211,20 @@ public actor ChatService {
     }
 
     /// GGUF models run in their own llama.cpp server (same OpenAI stream as mlx-vlm); eviction stops it.
-    private func streamLlama(_ spec: ModelSpec, _ messages: [ChatMessage], _ options: ChatOptions) async throws
-        -> AsyncThrowingStream<ChatEvent, Error>
+    private func streamLlama(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
+                             _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
         let files = spec.files ?? []
         let lease = try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedBytes) {
-            let server = try await LlamaServer.launch(folder: folder, files: files)
-            return (server, unload: { server.terminate() })
+            try await Self.timed(progress) {
+                let server = try await LlamaServer.launch(folder: folder, files: files)
+                return (server, unload: { server.terminate() })
+            }
         }
         let body: Data
-        do { body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath) } catch { lease.release(); throw error }
+        do {
+            body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath, promptProgress: true)
+        } catch { lease.release(); throw error }
         await GPUGate.shared.acquire()
         let gate = GateRelease()
         return MLXVLMChat.stream(base: lease.value.base, body: body) { gate(); lease.release() }
@@ -189,26 +238,33 @@ public actor ChatService {
         guard spec.engine != .mlxvlm, spec.engine != .gguf else {
             throw EngineError.unsupported("Raw completions are not available for mlx-vlm or GGUF models; use chat.")
         }
-        let lease = try await containerLease(for: spec)
-        let container = lease.value
-        let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
-                                        temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
-        return try await run(container: container, lease: lease, params: params, tools: nil, stripThinking: false) {
-            let tokens = await container.perform { ctx in ctx.tokenizer.encode(text: prompt) }
-            return LMInput(tokens: MLXArray(tokens.map(Int32.init)))
+        guard await store.folder(for: spec.id) != nil else { throw ResolveError.notDownloaded(spec.id) }
+        return Self.timeline { progress in
+            let lease = try await self.containerLease(for: spec, progress: progress)
+            let container = lease.value
+            let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
+                                            temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
+            return try await self.run(container: container, lease: lease, params: params, tools: nil, stripThinking: false,
+                                      progress: progress) {
+                let tokens = await container.perform { ctx in ctx.tokenizer.encode(text: prompt) }
+                return LMInput(tokens: MLXArray(tokens.map(Int32.init)))
+            }
         }
     }
 
     /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.
     private func run(container: ModelContainer, lease: ModelLease<ModelContainer>, params: GenerateParameters,
-                     tools: [[String: any Sendable]]?, stripThinking: Bool,
+                     tools: [[String: any Sendable]]?, stripThinking: Bool, progress: Progress,
                      input makeInput: () async throws -> sending LMInput) async throws -> AsyncThrowingStream<ChatEvent, Error> {
         await GPUGate.shared.acquire()
         let releaseGate = GateRelease()
         let generation: AsyncStream<Generation>
         do {
+            // mlx-swift-lm prefills inside generate(), before it returns the token stream.
+            progress(.promptStarted)
             let lmInput = try await makeInput()
             generation = try await container.generate(input: lmInput, parameters: params, tools: tools)
+            progress(.promptDone)
         } catch {
             releaseGate()
             lease.release()
@@ -258,6 +314,7 @@ public actor ChatService {
             case .delta(let s): text += s
             case .done(let f, let u): finish = f; usage = u
             case .toolCall(let name, let arguments): calls.append(ChatToolCall(name: name, arguments: arguments))
+            case .progress: break
             }
         }
         return ChatResult(modelID: spec.id, text: text, toolCalls: calls, finishReason: finish, usage: usage)
@@ -269,7 +326,7 @@ public actor ChatService {
         guard spec.engine != .mlxvlm, spec.engine != .gguf else {
             throw EngineError.unsupported("Token counting is not available for mlx-vlm or GGUF models.")
         }
-        let lease = try await containerLease(for: spec)
+        let lease = try await containerLease(for: spec, progress: { _ in })
         defer { lease.release() }
         let container = lease.value
         return try await GPUGate.shared.run {
@@ -298,9 +355,9 @@ public actor ChatService {
                               additionalContext: ["enable_thinking": options.enableThinking])
     }
 
-    private func containerLease(for spec: ModelSpec) async throws -> ModelLease<ModelContainer> {
+    private func containerLease(for spec: ModelSpec, progress: @escaping Progress) async throws -> ModelLease<ModelContainer> {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
-        return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedBytes) {
+        return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedBytes) { try await Self.timed(progress) {
             // Vision-language architectures load through MLXVLM; text-only ones (Llama, Mistral, ... added from
             // Hugging Face) are only in MLXLLM's registry.
             let config = (try? Data(contentsOf: folder.appending(path: "config.json")))
@@ -312,7 +369,7 @@ public actor ChatService {
                 ? try await VLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
                 : try await LLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
             return (container, unload: {})
-        }
+        } }
     }
 }
 

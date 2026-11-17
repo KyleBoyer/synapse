@@ -238,7 +238,44 @@ def chat_audio():
 
 
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio}
+def lmstudio():
+    """LM Studio's /api/v1/chat: named stream events (load and prompt progress, message deltas, chat.end with stats)
+    and a second turn through previous_response_id. LM Studio's SDK speaks websockets, so this is raw HTTP."""
+    import json, urllib.request
+
+    def post(body):
+        req = urllib.request.Request(f"{HOST}/api/v1/chat", json.dumps(body).encode(),
+                                     {"Content-Type": "application/json", "Authorization": f"Bearer {KEY}"})
+        return urllib.request.urlopen(req, timeout=600)
+
+    events, name = [], None
+    for raw in post({"model": "qwen3.5-0.8b", "input": "What is the capital of France? One word.", "stream": True, "temperature": 0}):
+        line = raw.decode().rstrip("\n")
+        if line.startswith("event: "):
+            name = line[7:]
+        elif line.startswith("data: "):
+            events.append((name, json.loads(line[6:])))
+    check("lmstudio: every event's data carries its name as type", all(n == d.get("type") for n, d in events))
+    events = [d for _, d in events]
+    types = [e["type"] for e in events]
+    check("lmstudio: stream starts with chat.start and ends with chat.end", types[:1] == ["chat.start"] and types[-1:] == ["chat.end"], str(types))
+    check("lmstudio: prompt processing brackets the message",
+          "prompt_processing.start" in types and types.index("prompt_processing.end") < types.index("message.start"), str(types))
+    if "model_load.start" in types:
+        check("lmstudio: model_load.end reports the load time", any(e["type"] == "model_load.end" and e.get("load_time_seconds", 0) > 0 for e in events))
+    text = "".join(e["content"] for e in events if e["type"] == "message.delta")
+    check("lmstudio: message deltas answer", "paris" in text.lower(), text)
+    result = events[-1]["result"]
+    check("lmstudio: chat.end result has output, stats and response_id",
+          result["output"][-1] == {"type": "message", "content": text} and {"input_tokens", "total_output_tokens", "tokens_per_second",
+                                                                             "time_to_first_token_seconds"} <= result["stats"].keys()
+          and result.get("response_id", "").startswith("resp_"), json.dumps(result)[:200])
+    follow = json.load(post({"model": "qwen3.5-0.8b", "input": "And of Italy? One word.", "previous_response_id": result["response_id"], "temperature": 0}))
+    answer = follow["output"][-1]["content"]
+    check("lmstudio: previous_response_id continues the conversation", "rome" in answer.lower() and follow["stats"]["input_tokens"] > result["stats"]["input_tokens"], answer)
+
+
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

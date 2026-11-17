@@ -170,8 +170,14 @@ struct VideoView: View {
                 case .queued, .in_progress:
                     ZStack {
                         RoundedRectangle(cornerRadius: 14).fill(.quaternary)
-                        Text(j.status == .queued ? "Queued" : "\(j.progress)%")
-                            .font(.mono(.title3)).foregroundStyle(Color.live)
+                        // Each clip runs in a fresh process, so progress stays 0 until the model is loaded.
+                        if j.status == .queued {
+                            LiveProgress(label: "Queued")
+                        } else if j.progress == 0 {
+                            LiveProgress(label: "Loading model")
+                        } else {
+                            LiveProgress(label: "Generating · \(j.progress)%", fraction: Double(j.progress) / 100)
+                        }
                     }
                 }
             }

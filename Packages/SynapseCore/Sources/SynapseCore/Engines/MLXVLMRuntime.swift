@@ -108,7 +108,8 @@ public final class MLXVLMServer: @unchecked Sendable {
 
 /// Chat over an mlx-vlm server: builds the OpenAI request and maps its SSE stream to `ChatEvent`s.
 enum MLXVLMChat {
-    static func body(_ messages: [ChatMessage], options: ChatOptions, model: String) throws -> Data {
+    /// `promptProgress` asks llama.cpp for `prompt_progress` objects while it reads the prompt (mlx-vlm has none).
+    static func body(_ messages: [ChatMessage], options: ChatOptions, model: String, promptProgress: Bool = false) throws -> Data {
         let wire: [[String: Any]] = try messages.map { m in
             var parts: [[String: Any]] = []
             if !m.text.isEmpty { parts.append(["type": "text", "text": m.text]) }
@@ -126,6 +127,7 @@ enum MLXVLMChat {
                                 "max_tokens": options.maxTokens ?? ChatService.defaultMaxTokens]
         if let t = options.temperature { o["temperature"] = t }
         if let p = options.topP { o["top_p"] = p }
+        if promptProgress { o["return_progress"] = true }
         return try JSONSerialization.data(withJSONObject: o)
     }
 
@@ -150,6 +152,7 @@ enum MLXVLMChat {
                     req.httpMethod = "POST"
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     req.httpBody = body
+                    c.yield(.progress(.promptStarted))
                     let (bytes, resp) = try await URLSession.shared.bytes(for: req)
                     guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                         var text = ""
@@ -157,6 +160,7 @@ enum MLXVLMChat {
                         throw EngineError.unsupported("mlx-vlm returned \((resp as? HTTPURLResponse)?.statusCode ?? 0): \(text.prefix(400))")
                     }
                     var finish = "stop", usage = ChatUsage(promptTokens: 0, completionTokens: 0)
+                    var reading = true
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data:") else { continue }
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
@@ -167,14 +171,21 @@ enum MLXVLMChat {
                             let message = (e as? String) ?? ((e as? [String: Any])?["message"] as? String) ?? "\(e)"
                             throw EngineError.unsupported("mlx-vlm failed: \(message)")
                         }
+                        if reading, let pp = o["prompt_progress"] as? [String: Any], let total = pp["total"] as? Int,
+                           let done = pp["processed"] as? Int {
+                            let cache = pp["cache"] as? Int ?? 0
+                            if total > cache { c.yield(.progress(.prompt(fraction: Double(done - cache) / Double(total - cache)))) }
+                            continue
+                        }
                         if let u = o["usage"] as? [String: Any], let p = u["prompt_tokens"] as? Int {
                             usage = ChatUsage(promptTokens: p, completionTokens: u["completion_tokens"] as? Int ?? 0)
                         }
                         guard let choice = (o["choices"] as? [[String: Any]])?.first else { continue }
-                        if let d = (choice["delta"] as? [String: Any])?["content"] as? String, !d.isEmpty, !isSpecialToken(d) {
-                            c.yield(.delta(d))
-                        }
-                        if let f = choice["finish_reason"] as? String { finish = f }
+                        let content = (choice["delta"] as? [String: Any])?["content"] as? String
+                        let f = choice["finish_reason"] as? String
+                        if reading, (content?.isEmpty == false) || f != nil { reading = false; c.yield(.progress(.promptDone)) }
+                        if let d = content, !d.isEmpty, !isSpecialToken(d) { c.yield(.delta(d)) }
+                        if let f { finish = f }
                     }
                     c.yield(.done(finishReason: finish, usage: usage))
                     c.finish()
