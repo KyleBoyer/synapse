@@ -7,16 +7,15 @@ import NIOCore
 import XCTest
 @testable import SynapseCore
 
-/// Speaks a 440 Hz tone, or 880 Hz in a cloned voice, so tests can tell which path ran; cloning records the clip length.
-private struct CloningTTS: RealtimeTTS, VoiceCloning {
+/// Speaks a 440 Hz tone, or 880 Hz from a reference clip, so tests can tell which path ran.
+private struct CloningTTS: ReferenceVoiceTTS {
     var sampleRate: Int { 24000 }
     func tone(_ hz: Float) -> AsyncThrowingStream<[Float], Error> {
         AsyncThrowingStream { c in c.yield((0..<4800).map { 0.4 * sin(2 * .pi * hz * Float($0) / 24000) }); c.finish() }
     }
     func synthesize(_ text: String, voice: String?, speed: Double) -> AsyncThrowingStream<[Float], Error> { tone(440) }
-    func synthesize(_ text: String, voiceData: PocketTtsVoiceData) -> AsyncThrowingStream<[Float], Error> { tone(880) }
-    func clone(wav: URL) async throws -> PocketTtsVoiceData {
-        PocketTtsVoiceData(audioPrompt: [Float](repeating: 0.5, count: 2 * 1024), promptLength: 2)
+    func synthesize(_ text: String, reference: VoiceReference, speed: Double) -> AsyncThrowingStream<[Float], Error> {
+        FileManager.default.fileExists(atPath: reference.sample.path) ? tone(880) : tone(100)
     }
 }
 
@@ -43,12 +42,13 @@ private func clip(seconds: Double) -> Data {
 
 final class VoiceAPITests: XCTestCase, @unchecked Sendable {
     private func makeApp() throws -> Application<RouterResponder<SynapseContext>> {
-        let store = try TestSupport.store(downloaded: ["pocket-tts", "kokoro-82m"])
+        let store = try TestSupport.store(downloaded: ["pocket-tts", "kokoro-82m", "qwen3-tts-1.7b"])
         let box = SettingsBox(Settings())
         let ffmpeg = try TestSupport.ffmpeg()
         let queue = JobQueue(store: store, decoder: AudioDecoder(ffmpegURL: ffmpeg), settings: box, engineFactory: { _, _ in FakeEngine() })
         let speech = SpeechService(store: store, encoder: AudioEncoder(ffmpegURL: ffmpeg), decoder: AudioDecoder(ffmpegURL: ffmpeg),
-                                   tts: { spec in spec.id == "pocket-tts" ? CloningTTS() as any RealtimeTTS : FakeKokoro() })
+                                   transcribe: { _ in "a heard transcript" },
+                                   tts: { spec in spec.id == "kokoro-82m" ? FakeKokoro() as any RealtimeTTS : CloningTTS() })
         return Application(router: buildRouter(queue: queue, store: store, settings: box, speech: speech))
     }
 
@@ -87,6 +87,11 @@ final class VoiceAPITests: XCTestCase, @unchecked Sendable {
             try await c.execute(uri: "/v1/audio/voices", method: .get) {
                 XCTAssertEqual((try object($0.body)["data"] as? [[String: Any]])?.first?["id"] as? String, voice)
             }
+            // Qwen3-TTS has no stock voice, and speaks cloned ones (this one was transcribed when it was made).
+            let qwenStock = try await speak(c, #"{"model":"qwen3-tts-1.7b","input":"hi","voice":"alba"}"#)
+            XCTAssertEqual(qwenStock.status, .badRequest)
+            let qwenClone = try await speak(c, #"{"model":"qwen3-tts-1.7b","input":"hi","voice":{"id":"\#(voice)"},"response_format":"pcm"}"#)
+            XCTAssertEqual(qwenClone.status, .ok)
 
             // The cloned voice speaks through the clone path (880 Hz); a stock voice does not.
             func pitch(_ r: TestResponse) -> Int {
@@ -120,22 +125,18 @@ final class VoiceAPITests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(SpeechService.voice(nil))
     }
 
-    func testVoiceCreationIsRefusedWithoutConsentOrWithAShortSample() async throws {
+    func testVoicesNeedNoConsentButRefuseShortSamplesAndPromptVoices() async throws {
         try await makeApp().test(.router) { c in
             let (noConsent, t1) = multipart(["name": "X"], file: ("audio_sample", clip(seconds: 3)))
             try await c.execute(uri: "/v1/audio/voices", method: .post, headers: [.contentType: t1], body: noConsent) {
-                XCTAssertEqual($0.status, .badRequest)
+                XCTAssertEqual($0.status, .ok, String(buffer: $0.body))
             }
-            let (unknown, t2) = multipart(["name": "X", "consent": "cons_nope"], file: ("audio_sample", clip(seconds: 3)))
-            try await c.execute(uri: "/v1/audio/voices", method: .post, headers: [.contentType: t2], body: unknown) {
-                XCTAssertEqual($0.status, .badRequest)
-                XCTAssertTrue(String(buffer: $0.body).contains("Unknown consent"))
+            let (anyConsent, t2) = multipart(["name": "Y", "consent": "cons_whatever", "transcript": "Given text."],
+                                             file: ("audio_sample", clip(seconds: 3)))
+            try await c.execute(uri: "/v1/audio/voices", method: .post, headers: [.contentType: t2], body: anyConsent) {
+                XCTAssertEqual($0.status, .ok, String(buffer: $0.body))
             }
-            let (cb, ct) = multipart(["name": "X", "language": "en-US"], file: ("recording", clip(seconds: 2)))
-            let consent = try await c.execute(uri: "/v1/audio/voice_consents", method: .post, headers: [.contentType: ct], body: cb) {
-                try XCTUnwrap(try object($0.body)["id"] as? String)
-            }
-            let (short, t3) = multipart(["name": "X", "consent": consent], file: ("audio_sample", clip(seconds: 0.5)))
+            let (short, t3) = multipart(["name": "X"], file: ("audio_sample", clip(seconds: 0.5)))
             try await c.execute(uri: "/v1/audio/voices", method: .post, headers: [.contentType: t3], body: short) {
                 XCTAssertEqual($0.status, .badRequest)
                 XCTAssertTrue(String(buffer: $0.body).contains("too short"), String(buffer: $0.body))
@@ -145,6 +146,23 @@ final class VoiceAPITests: XCTestCase, @unchecked Sendable {
                 XCTAssertEqual($0.status, .badRequest)
             }
         }
+    }
+
+    func testVoicesKeepTheClipAndATranscript() async throws {
+        let store = try TestSupport.store(downloaded: [])
+        let ffmpeg = try TestSupport.ffmpeg()
+        let speech = SpeechService(store: store, encoder: AudioEncoder(ffmpegURL: ffmpeg), decoder: AudioDecoder(ffmpegURL: ffmpeg),
+                                   transcribe: { _ in "  heard it  " }, tts: { _ in CloningTTS() })
+        let src = try TestSupport.tempDir().appending(path: "long.wav")
+        try clip(seconds: 14).write(to: src)
+        let heard = try await speech.createVoice(name: "Long", sample: src)
+        XCTAssertEqual(heard.seconds, 10, accuracy: 0.01, "only the first 10 seconds are kept")
+        XCTAssertEqual(heard.transcript, "heard it")
+        let given = try await speech.createVoice(name: "Given", sample: src, transcript: "What it says.")
+        XCTAssertEqual(given.transcript, "What it says.")
+        let found = await speech.voices.reference(heard.id)
+        let ref = try XCTUnwrap(found)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ref.sample.path))
     }
 }
 

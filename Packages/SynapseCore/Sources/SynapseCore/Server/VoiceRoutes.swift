@@ -1,8 +1,9 @@
 import Foundation
 import Hummingbird
 
-// OpenAI custom voices: POST /v1/audio/voice_consents, then POST /v1/audio/voices with the consent id, then
-// `voice: {"id": "voice_…"}` on /v1/audio/speech. Voices are cloned by PocketTTS.
+// OpenAI custom voices: POST /v1/audio/voices, then `voice: {"id": "voice_…"}` on /v1/audio/speech. OpenAI requires
+// a consent recording first; Synapse keeps the consent routes for clients that send one, but no voice needs it.
+// Any model that clones (PocketTTS, Chatterbox Turbo, VoxCPM2, Qwen3-TTS) speaks any voice.
 
 private struct ConsentForm: Decodable {
     var name: String?
@@ -15,6 +16,8 @@ private struct VoiceForm: Decodable {
     var audio_sample: File?
     var consent: String?
     var type: String?
+    /// Synapse's addition: what the sample says, instead of transcribing it.
+    var transcript: String?
 }
 
 private struct RenameBody: Decodable { var name: String? }
@@ -89,10 +92,10 @@ func addVoiceRoutes(to g: RouterGroup<SynapseContext>, speech: SpeechService) {
         if let type = form.type, type != "audio_sample" {
             throw bad("Only audio_sample voices are supported; Synapse cannot design a voice from a text prompt.")
         }
-        let name = try required(form.name, "name"), consent = try required(form.consent, "consent")
+        let name = try required(form.name, "name")
         let sample = try upload(form.audio_sample, "audio_sample")
         do {
-            let voice = try await withUpload(sample) { try await speech.createVoice(name: name, sample: $0, consentID: consent) }
+            let voice = try await withUpload(sample) { try await speech.createVoice(name: name, sample: $0, transcript: form.transcript) }
             return json(voice.wire)
         } catch let e as SpeechError { throw bad(e.localizedDescription) }
           catch let e as DecodeError { throw bad("Could not read audio_sample: \(e.localizedDescription)") }

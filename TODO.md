@@ -13,8 +13,11 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [x] App: Audio → Speak → Clone Voice… (choose or drop a clip, name it, confirm permission); cloned voices join the Voice menu and a Custom voices panel with delete. Verified in the app: a 7.3 s clip cloned, then spoke with first audio in 0.38 s at 2.6× realtime.
 - [x] Verify: VoiceCloneE2ETests (speaker similarity and transcription) and the SDK run above.
 - [x] Docs: README routes and example. Notices unchanged (FluidAudio was already listed).
+- [x] More models: voices are model-independent now (the clip and its transcript are kept; PocketTTS derives its conditioning on first use). Added Qwen3-TTS 1.7B, VoxCPM2 and Chatterbox Turbo through an mlx-audio sidecar. Verified through Synapse with one cloned voice: similarity Qwen3-TTS 0.85, VoxCPM2 0.80, Chatterbox Turbo 0.63, PocketTTS 0.54; each heard back word for word. Tried and left out: LuxTTS (0.61, slower than realtime) and StyleTTS2 (crashed in FluidAudio's synthesizer).
+- [x] Consent dropped: voices need no consent (the consent routes stay for OpenAI clients that call them); the app's permission box is gone.
 - [ ] Record a sample with the microphone in the clone sheet (today it takes a file)
-- [ ] Check that the consent recording and the sample are the same speaker (OpenAI does; Synapse stores consent without checking)
+- [ ] Stream the mlx-audio models sentence by sentence (today audio arrives per generated segment)
+- [ ] Live voice calls with the mlx-audio models (Live uses PocketTTS)
 
 ## Image (+text) embeddings
 

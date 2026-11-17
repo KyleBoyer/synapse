@@ -70,7 +70,7 @@ final class AppState {
         chat = ChatService(store: store, models: models)
         images = ImageService(store: store, models: models, engineFactory: ImageEngines.real)
         realtime = .real(store: store, models: models, chat: chat)
-        speech = SpeechService(store: store, models: models)
+        speech = SpeechService(store: store, models: models, transcribe: SpeechService.transcriber(queue))
         embeddings = EmbeddingService(store: store, models: models)
         videos = VideoService(store: store, models: models)
         sound = SoundService(store: store, models: models)

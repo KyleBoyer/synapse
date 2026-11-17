@@ -9,7 +9,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
                          sound: SoundService? = nil) -> Router<SynapseContext> {
     let chat = chat ?? ChatService(store: store)
     let images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
-    let speech = speech ?? SpeechService(store: store, models: ModelManager())
+    let speech = speech ?? SpeechService(store: store, models: ModelManager(), transcribe: SpeechService.transcriber(queue))
     let embeddings = embeddings ?? EmbeddingService(store: store, models: ModelManager())
     let videos = videos ?? VideoService(store: store, models: ModelManager())
     let sound = sound ?? SoundService(store: store, models: ModelManager())

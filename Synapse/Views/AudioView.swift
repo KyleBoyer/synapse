@@ -237,7 +237,7 @@ struct AudioView: View {
                             VStack(spacing: 12) {
                                 if mode == .speak {
                                     readout(spec)
-                                    if spec.id == "pocket-tts" { voicesPanel }
+                                    if SpeechService.support(spec.id).clones { voicesPanel }
                                 } else { composeReadout(spec); composePanel }
                             }
                             .padding(16).frame(maxWidth: .infinity)
@@ -289,12 +289,18 @@ struct AudioView: View {
             if !ids.contains(soundModelID) { soundModelID = ids.first ?? "" }
         }
         .onChange(of: running) { state.setActive(.audio, running) }
+        // Keep the voice valid for the chosen model (a cloned voice survives a switch between cloning models).
+        .onChange(of: voiceOptions.map(\.0), initial: true) { _, ids in
+            if !ids.contains(voice) { voice = ids.first ?? voice }
+        }
         #if DEBUG
         // `-autoSpeak "..."` speaks once after launch, and `-autoCompose "..."` generates one sound, so the readout
         // can be captured without typing.
         .task(id: spec?.id) {
             // `-cloneSample <path>` opens the clone sheet with that clip (see CloneVoiceSheet).
-            if UserDefaults.standard.string(forKey: "cloneSample") != nil, spec?.id == "pocket-tts" { cloning = true; return }
+            if UserDefaults.standard.string(forKey: "cloneSample") != nil, spec.map({ SpeechService.support($0.id).clones }) == true {
+                cloning = true; return
+            }
             if let t = UserDefaults.standard.string(forKey: "autoSpeak"), !t.isEmpty, model.clips.isEmpty, mode == .speak, let spec {
                 model.speak(text: t, spec: spec, voice: voice, state: state)
             }
@@ -355,6 +361,15 @@ struct AudioView: View {
 
     private func voiceName(_ id: String) -> String { customVoices.first { $0.id == id }?.name ?? id }
 
+    /// The voices the chosen model speaks: its stock voices, then cloned voices if it clones. Empty for a model that
+    /// speaks only cloned voices (Qwen3-TTS) until one is made.
+    private var voiceOptions: [(String, String)] {
+        guard let spec, mode == .speak else { return [] }
+        let s = SpeechService.support(spec.id)
+        let stock = s.stock == ["default"] ? [("default", "Default voice")] : s.stock.map { ($0, $0) }
+        return stock + (s.clones ? customVoices.map { ($0.id, $0.name) } : [])
+    }
+
     /// Voices cloned from a clip; each id is what API clients send as `voice`.
     private var voicesPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -413,8 +428,13 @@ struct AudioView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
                 if clips.isEmpty && !running {
-                    Text(speak ? "Type something below and press Return." : "Describe a sound or a piece of music and press Return.")
-                        .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
+                    if speak, voiceOptions.isEmpty, let spec {
+                        Text("\(spec.displayName) speaks only in cloned voices. Clone one with Clone Voice… to start.")
+                            .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
+                    } else {
+                        Text(speak ? "Type something below and press Return." : "Describe a sound or a piece of music and press Return.")
+                            .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
+                    }
                 }
                 ForEach(clips) { clip in
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -439,8 +459,10 @@ struct AudioView: View {
 
     private func submit() {
         guard let spec, !running, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        // Only PocketTTS has named and cloned voices; Kokoro speaks in its own.
-        if mode == .speak { model.speak(text: text, spec: spec, voice: spec.id == "pocket-tts" ? voice : "default", state: state) } else {
+        if mode == .speak {
+            guard voiceOptions.contains(where: { $0.0 == voice }) else { return }
+            model.speak(text: text, spec: spec, voice: voice, state: state)
+        } else {
             composer.generate(prompt: text, spec: spec, seconds: length, seed: randomSeed ? nil : UInt64(seed), state: state)
         }
         text = ""
@@ -451,16 +473,15 @@ struct AudioView: View {
             TextField(mode == .speak ? "Text to speak" : "Describe the sound", text: $text, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
                 .onSubmit(submit).composerKeys()
-            if mode == .speak, spec?.id == "pocket-tts" {
-                ChoiceMenu(title: "Voice", selection: $voice,
-                           options: SpeechService.pocketVoices.map { ($0, $0) } + customVoices.map { ($0.id, $0.name) })
+            if mode == .speak, voiceOptions.count > 1 {
+                ChoiceMenu(title: "Voice", selection: $voice, options: voiceOptions)
             }
             if running {
                 Button("Stop", systemImage: "stop.fill") { if mode == .speak { model.stop() } else { composer.stop() } }.buttonStyle(.glass)
             } else {
                 Button(mode == .speak ? "Speak" : "Generate", systemImage: mode == .speak ? "speaker.wave.2.fill" : "music.note", action: submit)
                 .buttonStyle(.glassProminent)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil)
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spec == nil || (mode == .speak && voiceOptions.isEmpty))
             }
         }
         .padding(.horizontal, 6).padding(.vertical, 4)

@@ -89,6 +89,11 @@ public enum Catalog {
         hf("qwen3-omni-30b", "Qwen3-Omni 30B-A3B (omni)", .mlxvlm, "mlx-community/Qwen3-Omni-30B-A3B-Instruct-bf16", 70530, ramGB: 16),
         realtime("speaker-diarizer", "Speaker diarization (who spoke when)", .speech, "speaker-diarizer", 21, ramGB: nil),
         realtime("kokoro-82m", "Kokoro 82M (voices)", .speech, "kokoro", 350, ramGB: nil),
+        // Voice cloning through mlx-audio, ranked by speaker similarity to the reference in VoiceCloneE2ETests' setup:
+        // Qwen3-TTS 0.83, VoxCPM2 0.76, Chatterbox Turbo 0.65 (PocketTTS 0.59).
+        hf("qwen3-tts-1.7b", "Qwen3-TTS 1.7B (clones voices)", .mlxspeech, "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit", 2968, ramGB: 8),
+        hf("voxcpm2", "VoxCPM2 (clones voices)", .mlxspeech, "mlx-community/VoxCPM2-8bit", 3078, ramGB: 8),
+        hf("chatterbox-turbo", "Chatterbox Turbo (clones voices, English)", .mlxspeech, "mlx-community/chatterbox-turbo-4bit", 398, ramGB: 2),
         realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),
         realtime("personaplex-7b", "PersonaPlex 7B (full duplex, non-commercial)", .duplex, "personaplex-4bit", 5821, ramGB: 12),
         realtime("hibiki-zero-3b", "Hibiki Zero 3B (speech translation to English, non-commercial)", .duplex, "hibiki-zero-8bit", 4130, ramGB: 10),

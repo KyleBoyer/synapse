@@ -1,15 +1,23 @@
 import Foundation
-@preconcurrency import FluidAudio
 
 /// A voice cloned from a short clip. `id` is what clients send as `voice` (OpenAI's custom voices use `voice_…`).
+/// The clip itself is kept, so every model that clones (PocketTTS, Qwen3-TTS, VoxCPM2, Chatterbox) can speak it.
 public struct CustomVoice: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public var name: String
     public let createdAt: Int
-    /// The consent recording that authorized it (required on the API; the app records the user's confirmation instead).
-    public let consentID: String?
-    /// Seconds of the sample the voice was taken from (PocketTTS reads at most 10).
+    /// Seconds of reference audio kept (the first 10 of the sample).
     public let seconds: Double
+    /// What the clip says; transcribed when the voice is made. Qwen3-TTS needs it.
+    public let transcript: String?
+}
+
+/// What a cloning engine reads: the 24 kHz mono clip, its transcript, and the voice's folder for derived data
+/// (PocketTTS caches its conditioning there).
+struct VoiceReference: Sendable {
+    let sample: URL
+    let transcript: String?
+    let folder: URL
 }
 
 /// A recording of the speaker agreeing to have their voice cloned (OpenAI's voice consents).
@@ -20,8 +28,9 @@ public struct VoiceConsent: Codable, Sendable, Equatable, Identifiable {
     public let createdAt: Int
 }
 
-/// Custom voices and consent recordings on disk under `<models>/voices/`: `<voice id>/voice.json` with the PocketTTS
-/// conditioning in `voice.bin`, and `consents/<consent id>/consent.json` beside the recording.
+/// Custom voices and consent recordings on disk under `<models>/voices/`: `<voice id>/voice.json` beside the clip
+/// (`sample.wav`), and `consents/<consent id>/consent.json` beside the recording. Consent is kept for API clients
+/// that send it; nothing requires it.
 public actor VoiceLibrary {
     let root: URL
     private var consentsRoot: URL { root.appending(path: "consents", directoryHint: .isDirectory) }
@@ -40,19 +49,21 @@ public actor VoiceLibrary {
 
     public func voice(_ id: String) -> CustomVoice? { voices().first { $0.id == id } }
 
-    func add(name: String, consentID: String?, seconds: Double, data: PocketTtsVoiceData) throws -> CustomVoice {
+    /// `sample`: 24 kHz mono WAV, already cut to what is kept.
+    func add(name: String, sample: URL, seconds: Double, transcript: String?) throws -> CustomVoice {
         let v = CustomVoice(id: Self.newID("voice_"), name: name, createdAt: Int(Date().timeIntervalSince1970),
-                            consentID: consentID, seconds: seconds)
+                            seconds: seconds, transcript: transcript)
         let dir = root.appending(path: v.id, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try PocketTtsVoiceCloner.saveVoice(data, to: dir.appending(path: "voice.bin"))
+        try FileManager.default.copyItem(at: sample, to: dir.appending(path: "sample.wav"))
         try JSONEncoder().encode(v).write(to: dir.appending(path: "voice.json"))
         return v
     }
 
-    func voiceData(_ id: String) throws -> PocketTtsVoiceData? {
-        guard voice(id) != nil else { return nil }
-        return try PocketTtsVoiceCloner.loadVoice(from: root.appending(path: id).appending(path: "voice.bin"))
+    func reference(_ id: String) -> VoiceReference? {
+        guard let v = voice(id) else { return nil }
+        let dir = root.appending(path: id, directoryHint: .isDirectory)
+        return VoiceReference(sample: dir.appending(path: "sample.wav"), transcript: v.transcript, folder: dir)
     }
 
     public func deleteVoice(_ id: String) -> Bool {
@@ -68,7 +79,7 @@ public actor VoiceLibrary {
 
     public func consent(_ id: String) -> VoiceConsent? { consents().first { $0.id == id } }
 
-    /// Keeps the recording beside its metadata. Synapse stores consent; it does not check what the recording says.
+    /// Keeps the recording beside its metadata, for OpenAI clients that create consents; voices do not need one.
     public func addConsent(name: String, language: String, recording: URL) throws -> VoiceConsent {
         let c = VoiceConsent(id: Self.newID("cons_"), name: name, language: language, createdAt: Int(Date().timeIntervalSince1970))
         let dir = consentsRoot.appending(path: c.id, directoryHint: .isDirectory)
@@ -97,16 +108,13 @@ public actor VoiceLibrary {
     }
 }
 
-/// A TTS engine that can take a voice from a clip (PocketTTS, through its Mimi encoder).
-protocol VoiceCloning: Sendable {
-    /// `wav`: 24 kHz mono; PocketTTS reads the first 10 seconds and needs at least 1.
-    func clone(wav: URL) async throws -> PocketTtsVoiceData
-    func synthesize(_ text: String, voiceData: PocketTtsVoiceData) -> AsyncThrowingStream<[Float], Error>
+/// A TTS engine that speaks in the voice of a reference clip.
+protocol ReferenceVoiceTTS: RealtimeTTS {
+    func synthesize(_ text: String, reference: VoiceReference, speed: Double) -> AsyncThrowingStream<[Float], Error>
 }
 
-extension ModelLease: VoiceCloning where T: VoiceCloning {
-    func clone(wav: URL) async throws -> PocketTtsVoiceData { try await value.clone(wav: wav) }
-    func synthesize(_ text: String, voiceData: PocketTtsVoiceData) -> AsyncThrowingStream<[Float], Error> {
-        value.synthesize(text, voiceData: voiceData)
+extension ModelLease: ReferenceVoiceTTS where T: ReferenceVoiceTTS {
+    func synthesize(_ text: String, reference: VoiceReference, speed: Double) -> AsyncThrowingStream<[Float], Error> {
+        value.synthesize(text, reference: reference, speed: speed)
     }
 }

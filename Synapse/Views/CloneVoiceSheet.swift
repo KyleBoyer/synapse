@@ -13,19 +13,18 @@ struct CloneVoiceSheet: View {
     @State private var sample: URL?
     @State private var seconds: Double?
     @State private var name = ""
-    @State private var permitted = false
     @State private var cloning = false
     @State private var error: String?
 
     private var ready: Bool {
-        sample != nil && permitted && !cloning && !name.trimmingCharacters(in: .whitespaces).isEmpty
+        sample != nil && !cloning && !name.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Clone a Voice").font(.title2.weight(.semibold))
-                Text("Use 5 to 10 seconds of one person speaking clearly, with no music or other voices.")
+                Text("Use 5 to 10 seconds of one person speaking clearly, with no music or other voices. The clip is transcribed, and every model that clones can speak the voice.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 12) {
@@ -47,8 +46,6 @@ struct CloneVoiceSheet: View {
                 PanelRow("Name") {
                     TextField("Voice name", text: $name).textFieldStyle(.roundedBorder).frame(width: 220)
                 }
-                Toggle("This is my voice, or I have the speaker's permission to clone it.", isOn: $permitted)
-                    .toggleStyle(.checkbox)
             }
             .padding(14)
             .glassEffect(.regular, in: .rect(cornerRadius: 18))
@@ -80,7 +77,6 @@ struct CloneVoiceSheet: View {
             guard let path = UserDefaults.standard.string(forKey: "cloneSample"), sample == nil else { return }
             pick(URL(fileURLWithPath: path))
             if UserDefaults.standard.bool(forKey: "cloneConfirm") {
-                permitted = true
                 try? await Task.sleep(for: .seconds(1))
                 clone()
             }
@@ -111,7 +107,7 @@ struct CloneVoiceSheet: View {
         Task {
             defer { cloning = false }
             do {
-                let voice = try await speech.createVoice(name: name, sample: sample, consentID: nil)
+                let voice = try await speech.createVoice(name: name, sample: sample)
                 onCloned(voice)
                 dismiss()
             } catch { self.error = error.localizedDescription }

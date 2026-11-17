@@ -18,6 +18,8 @@ public enum EngineKind: String, Codable, Sendable {
     case mlxvlm
     /// GGUF chat models served by a bundled llama.cpp server; `ModelSpec.files` names the weights (and projector).
     case gguf
+    /// Text-to-speech models that clone voices, run by a managed mlx-audio sidecar; `variant` is the Hugging Face repo id.
+    case mlxspeech
 }
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {

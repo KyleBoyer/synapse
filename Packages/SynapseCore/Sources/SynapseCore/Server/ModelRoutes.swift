@@ -30,6 +30,7 @@ struct ModelFacts: Sendable {
         case .audiogen: return "sound"
         case .duplex: return "speech-to-speech"
         case .speech: return spec.isTTS ? "speech" : spec.id == "speaker-diarizer" ? "diarization" : "realtime"
+        case .mlxspeech: return "speech"
         }
     }
 

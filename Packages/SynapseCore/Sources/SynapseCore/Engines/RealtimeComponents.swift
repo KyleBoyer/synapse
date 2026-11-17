@@ -197,14 +197,21 @@ public actor PocketStreamingTTS: RealtimeTTS {
     }
 }
 
-extension PocketStreamingTTS: VoiceCloning {
-    func clone(wav: URL) async throws -> PocketTtsVoiceData { try await manager.cloneVoice(from: wav) }
-
-    nonisolated func synthesize(_ text: String, voiceData: PocketTtsVoiceData) -> AsyncThrowingStream<[Float], Error> {
+extension PocketStreamingTTS: ReferenceVoiceTTS {
+    /// PocketTTS conditions on Mimi-encoded audio, so each cloned voice is encoded once and cached beside its clip.
+    nonisolated func synthesize(_ text: String, reference: VoiceReference, speed: Double) -> AsyncThrowingStream<[Float], Error> {
         AsyncThrowingStream { c in
             let task = Task {
                 do {
-                    for try await f in try await manager.synthesizeStreaming(text: text, voiceData: voiceData) { c.yield(f.samples) }
+                    let cache = reference.folder.appending(path: "pocket-tts.bin")
+                    let data: PocketTtsVoiceData
+                    if FileManager.default.fileExists(atPath: cache.path) {
+                        data = try PocketTtsVoiceCloner.loadVoice(from: cache)
+                    } else {
+                        data = try await manager.cloneVoice(from: reference.sample)
+                        try? PocketTtsVoiceCloner.saveVoice(data, to: cache)
+                    }
+                    for try await f in try await manager.synthesizeStreaming(text: text, voiceData: data) { c.yield(f.samples) }
                     c.finish()
                 } catch { c.finish(throwing: error) }
             }
@@ -213,10 +220,20 @@ extension PocketStreamingTTS: VoiceCloning {
     }
 }
 
-/// PocketTTS that also speaks cloned voices: a `voice_…` id uses that voice's conditioning from the library, so every
-/// caller of the shared TTS (speech API, realtime sessions, Live) gets custom voices without knowing about them.
-struct ClonedVoices: RealtimeTTS, VoiceCloning {
-    let base: ModelLease<PocketStreamingTTS>
+extension MLXAudioSpeech: RealtimeTTS, ReferenceVoiceTTS {
+    /// Without a reference, the model's own voice (Qwen3-TTS Base has none; SpeechService refuses that first).
+    func synthesize(_ text: String, voice: String?, speed: Double) -> AsyncThrowingStream<[Float], Error> {
+        synthesize(text, reference: nil, speed: speed)
+    }
+    func synthesize(_ text: String, reference: VoiceReference, speed: Double) -> AsyncThrowingStream<[Float], Error> {
+        synthesize(text, reference: Optional(reference), speed: speed)
+    }
+}
+
+/// A cloning TTS that also takes cloned voices by id: `voice_…` is looked up in the library and spoken from its clip,
+/// so every caller of the shared TTS (speech API, realtime sessions, Live) gets custom voices without knowing about them.
+struct ClonedVoices: RealtimeTTS, ReferenceVoiceTTS {
+    let base: any ReferenceVoiceTTS
     let library: VoiceLibrary
     var sampleRate: Int { base.sampleRate }
 
@@ -225,8 +242,8 @@ struct ClonedVoices: RealtimeTTS, VoiceCloning {
         return AsyncThrowingStream { c in
             let task = Task {
                 do {
-                    guard let data = try await library.voiceData(voice) else { throw SpeechError.voice("Unknown voice '\(voice)'.") }
-                    for try await frame in base.synthesize(text, voiceData: data) { c.yield(frame) }
+                    guard let ref = await library.reference(voice) else { throw SpeechError.voice("Unknown voice '\(voice)'.") }
+                    for try await frame in base.synthesize(text, reference: ref, speed: speed) { c.yield(frame) }
                     c.finish()
                 } catch { c.finish(throwing: error) }
             }
@@ -234,9 +251,8 @@ struct ClonedVoices: RealtimeTTS, VoiceCloning {
         }
     }
 
-    func clone(wav: URL) async throws -> PocketTtsVoiceData { try await base.clone(wav: wav) }
-    func synthesize(_ text: String, voiceData: PocketTtsVoiceData) -> AsyncThrowingStream<[Float], Error> {
-        base.synthesize(text, voiceData: voiceData)
+    func synthesize(_ text: String, reference: VoiceReference, speed: Double) -> AsyncThrowingStream<[Float], Error> {
+        base.synthesize(text, reference: reference, speed: speed)
     }
 }
 
@@ -299,12 +315,22 @@ extension RealtimeServices {
                 return (KokoroTTS(manager: m), unload: { await m.cleanup() })
             }
         }
+        let library = VoiceLibrary(root: store.root.appending(path: "voices", directoryHint: .isDirectory))
+        if let spec = Catalog.spec(ttsID), spec.engine == .mlxspeech {
+            // Generation peaks well above the weights on disk (Qwen3-TTS: 3 GB of weights, 6.7 GB peak).
+            let peak = spec.recommendedRAMGB.map { $0 << 30 } ?? spec.estimatedBytes
+            let lease = try await models.lease("speech:\(ttsID)", as: MLXAudioSpeech.self, estimatedBytes: peak) {
+                let s = try await MLXAudioSpeech.launch(folder: dir, modelID: ttsID)
+                return (s, unload: { s.terminate() })
+            }
+            return ClonedVoices(base: lease, library: library)
+        }
         let lease = try await models.lease("speech:pocket-tts", as: PocketStreamingTTS.self, estimatedBytes: bytes) {
             let m = PocketTtsManager(directory: dir)
             try await m.initialize()
             return (PocketStreamingTTS(manager: m), unload: { await m.cleanup() })
         }
-        return ClonedVoices(base: lease, library: VoiceLibrary(root: store.root.appending(path: "voices", directoryHint: .isDirectory)))
+        return ClonedVoices(base: lease, library: library)
     }
 
     /// Real components, all loaded through the ModelManager. VAD and ASR hold per-stream state, so each session
