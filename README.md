@@ -22,6 +22,7 @@ If you enable "Allow LAN" in the Server tab, the server binds to `0.0.0.0` and m
 brew install xcodegen
 xcodebuild -downloadComponent MetalToolchain   # MLX compiles Metal shaders
 scripts/build-ffmpeg.sh      # builds vendor/ffmpeg/bin/ffmpeg (LGPL, ~minutes)
+scripts/build-llama.sh       # builds vendor/llama.cpp/bin/llama-server (MIT, ~1 minute)
 xcodegen generate
 open Synapse.xcodeproj
 ```
@@ -152,7 +153,7 @@ c.videos.download_content(v.id).write_to_file("fox.mp4")
 
 ### Any model from Hugging Face
 
-**Models → +** takes a Hugging Face repo (`org/name`) or its link. Synapse reads the repo's files and `config.json` and tells you how it would run it before anything downloads: chat and vision models whose architecture the Swift MLX libraries know run in-process (text-only architectures such as Llama included); other architectures run through mlx-vlm; embedding models run in Embed. GGUF-only repos, diffusers pipelines and speech or image generators are refused with the reason. Added models appear under "Added from Hugging Face", download like catalog models, and are called by their repo id (`"model": "mlx-community/Llama-3.2-1B-Instruct-4bit"`).
+**Models → +** takes a Hugging Face repo (`org/name`) or its link. Synapse reads the repo's files and `config.json` and tells you how it would run it before anything downloads: chat and vision models whose architecture the Swift MLX libraries know run in-process (text-only architectures such as Llama included); other architectures run through mlx-vlm; embedding models run in Embed. GGUF repos run through a bundled llama.cpp server: Synapse lists the quantizations, picks Q4_K_M (or the largest that fits this Mac), downloads only that file plus any vision projector, and lets you pick another in the sheet. Diffusers pipelines and speech or image generators are refused with the reason. Added models appear under "Added from Hugging Face", download like catalog models, and are called by their repo id (`"model": "mlx-community/Llama-3.2-1B-Instruct-4bit"`).
 
 ### Python runtimes
 
@@ -189,6 +190,7 @@ Add folders in the Watch Folders tab. For each new media file, Synapse writes a 
 - Video input reads MP4 and MOV only (AVFoundation); MKV and WebM are refused.
 - Of the omni models, only `lfm3-omni-2b` and `minicpm-o-4.5` speak themselves. Other chat models answer voice calls and Chat Completions audio requests through speech synthesis (PocketTTS or Kokoro), whose voices do not follow OpenAI's voice names.
 - Video jobs do not survive a restart.
+- Qwen3-Omni's audio understanding is unreliable with mlx-vlm 0.8.0: the same recording is transcribed or the answer derails, depending on small differences in length. Its video input is refused (mlx-vlm returns only control tokens). Images work.
 
 ## Releases (maintainers)
 

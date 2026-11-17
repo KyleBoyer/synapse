@@ -44,6 +44,11 @@ The bundled `ffmpeg` statically links LAME 3.100 (MP3 encoder), licensed under t
 - Source: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
 - Build recipe: `scripts/build-ffmpeg.sh` in this repository. It verifies the tarball's SHA-256 and builds LAME with `--disable-shared --enable-static --disable-frontend` before building ffmpeg.
 
+## llama.cpp
+
+- **llama.cpp** (`llama-server`, release b12477), MIT License. https://github.com/ggml-org/llama.cpp
+- Bundled as a static binary built by `scripts/build-llama.sh` in this repository: the release tarball (SHA-256 verified), Metal with embedded shaders, no OpenSSL or curl. It runs GGUF models added from Hugging Face.
+
 ## Python tools installed on first use
 
 Synapse does not ship these. It installs them with uv into `<models folder>/runtimes/` the first time a model needs them.

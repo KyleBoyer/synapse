@@ -89,7 +89,7 @@ public final class MLXVLMServer: @unchecked Sendable {
     }
 
     /// A port the kernel just handed out on loopback.
-    private static func freePort() throws -> Int {
+    static func freePort() throws -> Int {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw EngineError.unsupported("Could not open a socket to find a free port.") }
         defer { close(fd) }

@@ -32,14 +32,41 @@ final class CustomModelE2ETests: XCTestCase {
         XCTAssertTrue(answer.lowercased().contains("paris"), answer)
     }
 
+    /// A GGUF model end to end: inspect, download only the chosen quantization, chat through llama.cpp.
+    func testGGUFModelDownloadsAndChats() async throws {
+        guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let report = try await HFModelInspector.inspect("https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF", token: nil)
+        print("[gguf] \(report.model.files ?? []) \(report.model.approxMB) MB; \(report.ggufChoices.count) quantizations")
+        let root = try TestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: root); Catalog.setCustom([]) }
+        try JSONEncoder().encode([String: String]()).write(to: root.appending(path: "manifest.json"))
+        Catalog.setCustom([report.model])
+        let store = ModelStore(root: root)
+        let folder = try await store.download(report.model.id, token: nil) { _ in }
+        let ggufFiles = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".gguf") }
+        XCTAssertEqual(ggufFiles, ["Llama-3.2-1B-Instruct-Q4_K_M.gguf"], "only the chosen quantization is downloaded")
+        let models = ModelManager()
+        let chat = ChatService(store: store, models: models)
+        let spec = try XCTUnwrap(Catalog.spec(report.model.id))
+        var answer = ""
+        let start = Date()
+        for try await e in try await chat.stream(model: spec, messages: [ChatMessage(role: .user, text: "What is the capital of France? Answer with one word.")],
+                                                 options: ChatOptions(maxTokens: 10, temperature: 0)) {
+            if case .delta(let d) = e { answer += d }
+        }
+        print(String(format: "[gguf] %.1f s: %@", Date().timeIntervalSince(start), answer))
+        XCTAssertTrue(answer.lowercased().contains("paris"), answer)
+        try await Task.sleep(for: .milliseconds(200))
+        await models.unloadAllIdle()
+    }
+
     func testRealReposAreClassified() async throws {
         guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
         let omni = try await HFModelInspector.inspect("LiquidAI/LFM3-Omni-2B", token: nil)
         XCTAssertEqual(omni.model.engine, .mlxvlm)
-        do {
-            _ = try await HFModelInspector.inspect("bartowski/Llama-3.2-1B-Instruct-GGUF", token: nil)
-            XCTFail("GGUF should be refused")
-        } catch { XCTAssertTrue(error.localizedDescription.contains("GGUF"), error.localizedDescription) }
+        let gguf = try await HFModelInspector.inspect("bartowski/Llama-3.2-1B-Instruct-GGUF", token: nil)
+        XCTAssertEqual(gguf.model.engine, .gguf)
+        XCTAssertEqual(gguf.model.files?.first, "Llama-3.2-1B-Instruct-Q4_K_M.gguf")
         do {
             _ = try await HFModelInspector.inspect("no-such-org-zz/no-such-model-zz", token: nil)
             XCTFail("missing repo should be refused")

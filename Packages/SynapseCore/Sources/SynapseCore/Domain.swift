@@ -16,6 +16,8 @@ public enum EngineKind: String, Codable, Sendable {
     case videogen, audiogen
     /// Chat models served by a managed mlx-vlm server (omni models with audio/video input).
     case mlxvlm
+    /// GGUF chat models served by a bundled llama.cpp server; `ModelSpec.files` names the weights (and projector).
+    case gguf
 }
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
@@ -32,17 +34,19 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public let canEditImages: Bool
     /// Physical memory below which the model is expected to page heavily (shown as a warning).
     public let recommendedRAMGB: Int?
+    /// The files to fetch when a repo holds alternatives (GGUF quantizations): weights first, then any vision projector.
+    public let files: [String]?
 
     public init(id: String, engine: EngineKind, displayName: String, variant: String, approxMB: Int,
                 languages: Set<String>?, canTranslate: Bool, canDetectLanguage: Bool,
-                canEditImages: Bool = false, recommendedRAMGB: Int? = nil) {
+                canEditImages: Bool = false, recommendedRAMGB: Int? = nil, files: [String]? = nil) {
         self.id = id; self.engine = engine; self.displayName = displayName; self.variant = variant
         self.approxMB = approxMB; self.languages = languages
         self.canTranslate = canTranslate; self.canDetectLanguage = canDetectLanguage
-        self.canEditImages = canEditImages; self.recommendedRAMGB = recommendedRAMGB
+        self.canEditImages = canEditImages; self.recommendedRAMGB = recommendedRAMGB; self.files = files
     }
 
-    public var isChat: Bool { engine == .mlx || engine == .mlxvlm }
+    public var isChat: Bool { engine == .mlx || engine == .mlxvlm || engine == .gguf }
     public var isEmbedding: Bool { engine == .embedding }
     public var isReranker: Bool { engine == .reranker }
     public var isVideoGen: Bool { engine == .videogen }

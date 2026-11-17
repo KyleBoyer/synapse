@@ -47,9 +47,8 @@ final class HFModelInspectorTests: XCTestCase {
         XCTAssertTrue(big.notes.contains { $0.contains("Not quantized") })
 
         for (info, config, phrase) in [
-            (files([("model.gguf", 10)]), ["model_type": "llama"], "GGUF"),
             (files([("model_index.json", 1), ("unet/model.safetensors", 1)]), nil, "diffusers"),
-            (files([("pytorch_model.bin", 1)]), ["model_type": "llama"], "no safetensors"),
+            (files([("pytorch_model.bin", 1)]), ["model_type": "llama"], "no safetensors or GGUF"),
             (files([("model.safetensors", 1)]), nil, "model_type"),
         ] as [([String: Any], [String: Any]?, String)] {
             do { _ = try await classify(info, config); XCTFail("expected refusal: \(phrase)") } catch {
@@ -60,6 +59,28 @@ final class HFModelInspectorTests: XCTestCase {
         do { _ = try await classify(tts, ["model_type": "x"]); XCTFail("expected refusal") } catch {
             XCTAssertTrue(error.localizedDescription.contains("text-to-speech"))
         }
+    }
+
+    func testGGUFReposOfferQuantizationsAndPickAFittingDefault() async throws {
+        let gb: Int64 = 1_000_000_000
+        let info = files([("Model-Q8_0.gguf", 8 * gb), ("Model-Q4_K_M.gguf", 4 * gb), ("Model-IQ2_XXS.gguf", 2 * gb),
+                          ("Q6_K/Model-Q6_K-00001-of-00002.gguf", 3 * gb), ("Q6_K/Model-Q6_K-00002-of-00002.gguf", 3 * gb),
+                          ("mmproj-Model-Q8_0.gguf", gb / 2), ("mmproj-Model-f16.gguf", gb), ("README.md", 1)])
+        let r = try await classify(info, nil)
+        XCTAssertEqual(r.model.engine, .gguf)
+        XCTAssertEqual(r.ggufChoices.map(\.label), ["IQ2_XXS", "Q4_K_M", "Q6_K", "Q8_0"])
+        XCTAssertEqual(r.ggufChoices.first { $0.label == "Q6_K" }?.files.count, 2, "split parts form one choice")
+        XCTAssertEqual(r.model.files, ["Model-Q4_K_M.gguf", "mmproj-Model-f16.gguf"], "Q4_K_M, plus the f16 projector")
+        XCTAssertEqual(r.model.approxMB, 5000)
+        let q8 = r.choosing(try XCTUnwrap(r.ggufChoices.last))
+        XCTAssertEqual(q8.model.files, ["Model-Q8_0.gguf", "mmproj-Model-f16.gguf"])
+        XCTAssertEqual(q8.model.approxMB, 9000)
+        XCTAssertEqual(q8.model.spec.files, q8.model.files)
+        // On a small Mac, Q4_K_M (4 GB) is too big and the largest that fits is picked.
+        let small = try HFModelInspector.gguf(repo: "org/m", files: [("a-Q4_K_M.gguf", 4 * gb), ("a-Q2_K.gguf", 2 * gb)],
+                                              gated: false, physicalMemory: 6 << 30)
+        XCTAssertEqual(small.model.files, ["a-Q2_K.gguf"])
+        XCTAssertNil(small.projector)
     }
 
     func testCustomModelsJoinTheCatalogButNeverShadowBuiltIns() {

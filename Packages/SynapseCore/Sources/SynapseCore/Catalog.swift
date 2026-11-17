@@ -84,7 +84,9 @@ public enum Catalog {
         // Hears, sees and speaks: mlx-vlm's generate_audio gives it a voice (Live, Voice call). LFM Open License v1.0.
         hf("lfm3-omni-2b", "LFM3 Omni 2B (speaks)", .mlxvlm, "LiquidAI/LFM3-Omni-2B", 4500, ramGB: 8),
         hf("minicpm-o-4.5", "MiniCPM-o 4.5 (omni)", .mlxvlm, "openbmb/MiniCPM-o-4_5", 20000, ramGB: 32),
-        hf("qwen3-omni-30b", "Qwen3-Omni 30B-A3B (omni)", .mlxvlm, "mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit", 21800, ramGB: 48),
+        // bf16, prepared after download (ModelPrep): the published 4/5/8-bit MLX copies were quantized by mlx-vlm 0.3.10
+        // and give empty answers to audio; quantizing the bf16 with the current mlx-vlm hears correctly.
+        hf("qwen3-omni-30b", "Qwen3-Omni 30B-A3B (omni)", .mlxvlm, "mlx-community/Qwen3-Omni-30B-A3B-Instruct-bf16", 70530, ramGB: 16),
         realtime("speaker-diarizer", "Speaker diarization (who spoke when)", .speech, "speaker-diarizer", 21, ramGB: nil),
         realtime("kokoro-82m", "Kokoro 82M (voices)", .speech, "kokoro", 350, ramGB: nil),
         realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),

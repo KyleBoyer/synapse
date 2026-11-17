@@ -109,6 +109,7 @@ public actor ModelStore {
     private static func partialFolder(_ spec: ModelSpec, root: URL) -> URL {
         switch spec.engine {
         case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .videogen, .audiogen, .mlxvlm: return mlxFolder(spec, root: root)
+        case .gguf: return root.appending(path: "gguf/\(spec.variant)", directoryHint: .isDirectory)
         case .speech: return SpeechModels.folder(spec, root: root)
         case .duplex: return DuplexModels.folder(spec, root: root)
         case .parakeet: return parakeetFolder(spec, root: root)
@@ -129,6 +130,11 @@ public actor ModelStore {
             return try await SpeechModels.download(spec, root: root, progress: progress)
         case .duplex:
             return try await DuplexModels.download(spec, root: root, token: token, progress: progress)
+        case .gguf:
+            // A GGUF repo holds many quantizations; only the chosen file (and any vision projector) is fetched.
+            guard let files = spec.files, !files.isEmpty else { throw ResolveError.wrongKind(spec.id) }
+            return try await HFDownloader.download(repo: spec.variant, to: partialFolder(spec, root: root), only: files,
+                                                   token: token, progress: progress)
         case .videogen:
             return try await VideoEngines.download(spec, to: mlxFolder(spec, root: root), root: root, token: token, progress: progress)
         case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .audiogen, .mlxvlm:
@@ -142,6 +148,13 @@ public actor ModelStore {
                 _ = try await HFDownloader.download(repo: Flux2ImageEngine.small9BEncoderRepo,
                                                     to: root.appending(path: "mlx/\(Flux2ImageEngine.small9BEncoderRepo)"),
                                                     token: token) { _ in }
+                return dir
+            }
+            if ModelPrep.step(for: spec) != nil {
+                // shortcut: the prep step (minutes of CPU work) shows as the last 5% of the download.
+                let dir = try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), exclude: exclude,
+                                                          token: token) { progress($0 * 0.95) }
+                try await ModelPrep.prepareIfNeeded(spec, folder: dir)
                 return dir
             }
             return try await HFDownloader.download(repo: spec.variant, to: mlxFolder(spec, root: root), exclude: exclude,

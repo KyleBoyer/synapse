@@ -109,7 +109,8 @@ public actor ChatService {
     /// A model takes video when its snapshot ships a video preprocessor (Qwen3.5 does). mlx-vlm omni models take
     /// video, except Gemma 3n, which reads images and audio only.
     public func supportsVideo(_ spec: ModelSpec) async -> Bool {
-        if spec.engine == .mlxvlm { return spec.id != "gemma-3n-e2b" }
+        // Gemma 3n reads no video; Qwen3-Omni's video path in mlx-vlm 0.8.0 returns only control tokens.
+        if spec.engine == .mlxvlm { return !["gemma-3n-e2b", "qwen3-omni-30b"].contains(spec.id) }
         guard let folder = await store.folder(for: spec.id) else { return false }
         return FileManager.default.fileExists(atPath: folder.appending(path: "video_preprocessor_config.json").path)
     }
@@ -128,6 +129,7 @@ public actor ChatService {
     {
         guard !messages.isEmpty else { throw ChatError.emptyConversation }
         if spec.engine == .mlxvlm { return try await streamMLXVLM(spec, messages, options) }
+        if spec.engine == .gguf { return try await streamLlama(spec, messages, options) }
         let lease = try await containerLease(for: spec)
         let container = lease.value
         let input = try Self.userInput(messages, options)
@@ -150,8 +152,26 @@ public actor ChatService {
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
         let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedBytes) {
             let server = try await MLXVLMServer.launch(folder: folder)
+            return (server, unload: { server.terminate() })
+        }
+        let body: Data
+        do { body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath) } catch { lease.release(); throw error }
+        await GPUGate.shared.acquire()
+        let gate = GateRelease()
+        return MLXVLMChat.stream(base: lease.value.base, body: body) { gate(); lease.release() }
+    }
+
+    /// GGUF models run in their own llama.cpp server (same OpenAI stream as mlx-vlm); eviction stops it.
+    private func streamLlama(_ spec: ModelSpec, _ messages: [ChatMessage], _ options: ChatOptions) async throws
+        -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        let files = spec.files ?? []
+        let lease = try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedBytes) {
+            let server = try await LlamaServer.launch(folder: folder, files: files)
             return (server, unload: { server.terminate() })
         }
         let body: Data
@@ -166,7 +186,9 @@ public actor ChatService {
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         guard !prompt.isEmpty else { throw ChatError.emptyConversation }
-        guard spec.engine != .mlxvlm else { throw EngineError.unsupported("Raw completions are not available for mlx-vlm models; use chat.") }
+        guard spec.engine != .mlxvlm, spec.engine != .gguf else {
+            throw EngineError.unsupported("Raw completions are not available for mlx-vlm or GGUF models; use chat.")
+        }
         let lease = try await containerLease(for: spec)
         let container = lease.value
         let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
@@ -244,7 +266,9 @@ public actor ChatService {
     /// Prompt tokens for `messages` after the chat template (and image tokens), without generating.
     public func countTokens(model spec: ModelSpec, messages: [ChatMessage], options: ChatOptions) async throws -> Int {
         guard !messages.isEmpty else { throw ChatError.emptyConversation }
-        guard spec.engine != .mlxvlm else { throw EngineError.unsupported("Token counting is not available for mlx-vlm models.") }
+        guard spec.engine != .mlxvlm, spec.engine != .gguf else {
+            throw EngineError.unsupported("Token counting is not available for mlx-vlm or GGUF models.")
+        }
         let lease = try await containerLease(for: spec)
         defer { lease.release() }
         let container = lease.value

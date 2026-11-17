@@ -43,8 +43,8 @@ enum TestSupport {
         Bundle.module.url(forResource: "Fixtures", withExtension: nil)!.appending(path: name)
     }
 
-    static func tempDir() throws -> URL {
-        let d = FileManager.default.temporaryDirectory.appending(path: "synapse-test-\(UUID().uuidString)")
+    static func tempDir(in parent: URL = FileManager.default.temporaryDirectory) throws -> URL {
+        let d = parent.appending(path: "synapse-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }

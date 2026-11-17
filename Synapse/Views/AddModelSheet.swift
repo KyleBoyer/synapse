@@ -23,7 +23,7 @@ struct AddModelSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Add from Hugging Face").font(.title2.weight(.semibold))
-                Text("Chat, vision, omni and embedding models in safetensors or MLX format.")
+                Text("Chat, vision, omni and embedding models in safetensors, MLX or GGUF format.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
@@ -73,6 +73,14 @@ struct AddModelSheet: View {
                 Text(m.repo).font(.mono(.caption)).foregroundStyle(.secondary).textSelection(.enabled)
             }
             PanelRow("Kind") { Text(kind(m.engine)) }
+            if !r.ggufChoices.isEmpty {
+                PanelRow("Quantization") {
+                    ChoiceMenu(title: "Quantization", selection: Binding(
+                        get: { r.ggufChoices.first { $0.files.first == m.files?.first }?.id ?? "" },
+                        set: { id in if let c = r.ggufChoices.first(where: { $0.id == id }) { report = r.choosing(c) } }),
+                               options: r.ggufChoices.map { ($0.id, "\($0.label) · \(sizeText(CustomModel(repo: "", engine: .gguf, displayName: "", approxMB: $0.mb, ramGB: nil).spec))") })
+                }
+            }
             PanelRow("Download") { Text(sizeText(m.spec)).font(.mono()) }
             PanelRow("Memory") { Text(m.ramGB.map { "about \($0) GB" } ?? "–").font(.mono()) }
             ForEach(r.notes, id: \.self) { note in
@@ -95,6 +103,7 @@ struct AddModelSheet: View {
         switch engine {
         case .mlx: "Chat · runs in Synapse"
         case .mlxvlm: "Chat · runs through mlx-vlm"
+        case .gguf: "Chat · runs through llama.cpp"
         case .embedding: "Embeddings"
         default: "\(engine)"
         }
