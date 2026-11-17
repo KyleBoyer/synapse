@@ -78,6 +78,8 @@ struct Datasheet: View {
 
     private var metrics: [Metric] {
         if spec.isTTS { return [.ttsFirstAudio, .ttsSpeed] }
+        if spec.isEmbedding { return [.embedRate] }
+        if spec.isReranker { return [] }
         if spec.isChat { return [.firstToken, .decodeRate, .prefillRate, .firstAudio] }
         if spec.isTranscription { return [.realtimeSpeed] }
         if spec.isImage { return [.secondsPerStep, .imageTime] }
@@ -85,6 +87,7 @@ struct Datasheet: View {
     }
     private var tryPane: Pane? {
         if spec.isTTS { return .audio }
+        if spec.isEmbedding || spec.isReranker { return .embed }
         if spec.isChat { return .chat }
         if spec.isTranscription { return .transcribe }
         if spec.isImage { return .images }
@@ -93,6 +96,8 @@ struct Datasheet: View {
     }
     private var api: [String] {
         if spec.isTTS { return ["POST /v1/audio/speech", "GET /v1/realtime?model=\(spec.id)"] }
+        if spec.isEmbedding { return ["POST /v1/embeddings"] }
+        if spec.isReranker { return ["POST /v1/rerank"] }
         if spec.isChat { return ["POST /v1/chat/completions", "POST /v1/responses", "POST /v1/messages"] }
         if spec.isTranscription { return ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /asr"] }
         if spec.isImage { return ["POST /v1/images/generations"] + (spec.canEditImages ? ["POST /v1/images/edits"] : []) }
@@ -103,7 +108,7 @@ struct Datasheet: View {
         VStack(alignment: .leading, spacing: 24) {
             header
             Divider()
-            characteristics
+            if !metrics.isEmpty { characteristics }
             VStack(alignment: .leading, spacing: 8) {
                 Text("API").font(.headline)
                 ForEach(api, id: \.self) { Text($0).font(.mono(.callout)).textSelection(.enabled) }

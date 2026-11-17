@@ -4,7 +4,7 @@ import Observation
 /// A measured characteristic of a model. Each case carries its datasheet row: label, unit, test conditions,
 /// and how to print it, so every pane and the Models datasheet read from one table.
 enum Metric: String, Codable, CaseIterable, Identifiable {
-    case firstToken, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed
+    case firstToken, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed, embedRate
     var id: String { rawValue }
 
     var label: String {
@@ -18,13 +18,14 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
         case .firstAudio: "First audio"
         case .ttsFirstAudio: "Time to first audio"
         case .ttsSpeed: "Speech speed"
+        case .embedRate: "Embedding rate"
         }
     }
 
     var unit: String {
         switch self {
         case .firstToken, .secondsPerStep, .imageTime, .firstAudio, .ttsFirstAudio: "s"
-        case .decodeRate, .prefillRate: "tok/s"
+        case .decodeRate, .prefillRate, .embedRate: "tok/s"
         case .realtimeSpeed, .ttsSpeed: "× realtime"
         }
     }
@@ -40,14 +41,15 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
         case .firstAudio: "end of speech to first reply audio"
         case .ttsFirstAudio: "from request to first audio chunk"
         case .ttsSpeed: "audio length ÷ synthesis time"
+        case .embedRate: "prompt tokens ÷ wall time, model already loaded"
         }
     }
 
-    var higherIsBetter: Bool { self == .decodeRate || self == .prefillRate || self == .realtimeSpeed || self == .ttsSpeed }
+    var higherIsBetter: Bool { self == .decodeRate || self == .prefillRate || self == .realtimeSpeed || self == .ttsSpeed || self == .embedRate }
 
     func format(_ v: Double) -> String {
         switch self {
-        case .decodeRate, .prefillRate, .realtimeSpeed, .ttsSpeed: v >= 100 ? String(format: "%.0f", v) : String(format: "%.1f", v)
+        case .decodeRate, .prefillRate, .realtimeSpeed, .ttsSpeed, .embedRate: v >= 100 ? String(format: "%.0f", v) : String(format: "%.1f", v)
         default: v >= 10 ? String(format: "%.1f", v) : String(format: "%.2f", v)
         }
     }

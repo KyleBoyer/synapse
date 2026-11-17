@@ -61,6 +61,9 @@ public enum Catalog {
         realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),
         realtime("personaplex-7b", "PersonaPlex 7B (full duplex, non-commercial)", .duplex, "personaplex-4bit", 5821, ramGB: 12),
         realtime("hibiki-zero-3b", "Hibiki Zero 3B (speech translation to English, non-commercial)", .duplex, "hibiki-zero-8bit", 4130, ramGB: 10),
+        hf("qwen3-embedding-0.6b", "Qwen3 Embedding 0.6B", .embedding, "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ", 335),
+        hf("embeddinggemma-300m", "EmbeddingGemma 300M (Gemma terms)", .embedding, "mlx-community/embeddinggemma-300m-4bit", 200),
+        hf("qwen3-reranker-0.6b", "Qwen3 Reranker 0.6B", .reranker, "mlx-community/Qwen3-Reranker-0.6B-4bit", 335),
         ModelSpec(id: "parakeet-v2", engine: .parakeet, displayName: "Parakeet v2 (English)", variant: "v2", approxMB: 600,
                   languages: ["en"], canTranslate: false, canDetectLanguage: false),
     ]

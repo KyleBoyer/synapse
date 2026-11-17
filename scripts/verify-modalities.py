@@ -44,8 +44,42 @@ def speech():
     check("wav transcribes back to 'fox'", "fox" in text.lower(), text)
 
 
+def embeddings():
+    from openai import OpenAI
+    from openai.types import CreateEmbeddingResponse
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    texts = ["What is the capital of France?", "Paris is the capital of France.", "Bananas are yellow."]
+    # The SDK requests base64 by default and decodes it; this exercises that path.
+    r = client.embeddings.create(model="text-embedding-3-small", input=texts)
+    CreateEmbeddingResponse.model_validate(r.model_dump())
+    v = [d.embedding for d in r.data]
+    cos = lambda a, b: sum(x * y for x, y in zip(a, b))
+    norm = max(abs(sum(x * x for x in e) ** 0.5 - 1) for e in v)
+    check("embeddings schema, unit norm", len(v) == 3 and norm < 1e-2, f"model {r.model}, dim {len(v[0])}, max |norm-1| {norm:.4f}")
+    check("embeddings rank Paris above bananas", cos(v[0], v[1]) > cos(v[0], v[2]) + 0.1,
+          f"{cos(v[0], v[1]):.3f} vs {cos(v[0], v[2]):.3f}")
+    r = client.embeddings.create(model="text-embedding-3-small", input="hello", dimensions=256, encoding_format="float")
+    check("embeddings dimensions=256", len(r.data[0].embedding) == 256)
+
+
+def rerank():
+    import json
+    import urllib.request
+
+    body = {"query": "What is the capital of France?", "top_n": 2, "return_documents": True,
+            "documents": ["Bananas are yellow.", "Paris is the capital of France.", "The sky is blue."]}
+    req = urllib.request.Request(f"{HOST}/v1/rerank", data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {KEY}"})
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        r = json.load(resp)
+    res = r.get("results", [])
+    check("rerank puts Paris first, top_n respected", len(res) == 2 and res[0]["index"] == 1
+          and res[0]["document"]["text"].startswith("Paris"), str([(x["index"], round(x["relevance_score"], 4)) for x in res]))
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech}
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:
