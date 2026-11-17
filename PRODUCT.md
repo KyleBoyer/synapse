@@ -33,19 +33,22 @@ Everything runs on the Mac, in one native app that is also the server: the same 
 
 ## Capabilities and Constraints
 
-- Panes today: Transcribe, Chat, Images, Live, Models, Memory, Watch Folders, Server, plus Settings and a menu bar extra.
-- Metrics the engines already expose or can expose: download progress, job progress, image step progress and previews, realtime first-audio latency, resident model bytes, memory budget, over-budget state. Tokens per second and similar speed figures are wanted but not all computed yet.
+- Panes today: Transcribe, Chat, Images, Video, Audio (Speak and Compose), Embed, Live, Models, Memory, Watch Folders, Server, plus Settings and a menu bar extra.
+- Modalities: transcription with speaker labels, chat with image, video and (omni models) audio input, image generation, video generation, text to speech, sound and music generation, embeddings and reranking, realtime speech with camera frames, full-duplex speech.
+- Some engines are Python tools (mlx-video, mlx-audio, mlx-vlm) installed on first use under the models folder; their models run as separate processes, one per clip or one server per omni model.
+- The dev Mac has 16 GB. LTX-2.3 video (about 96 GB), MiniCPM-o and Qwen3-Omni are verified only with mocks or not at all until they run on a 128 GB Mac Studio.
+- Measured per run, from model-ready: time to first token, decode and prompt rates, transcription speed, denoising step and image time, first audio, speech speed, embedding rate, video time and sound generation speed (the last two include model load, since each clip runs in a fresh process). Also shown: download and job progress, image previews, resident model bytes, the memory budget and over-budget state.
 - One loaded engine per kind; a memory budget unloads idle models; a process-wide GPU gate serializes inference.
 - Model ids are user-facing (they are what API clients send), so they stay visible next to display names.
 
 ## Brand Commitments
 
-- Name: Synapse. App icon: white waveform bars on an indigo-to-violet-to-magenta rounded square (Synapse/Assets.xcassets).
+- Name: Synapse. App icon: a small neural network of nodes on a violet rounded square, drawn by scripts/make-icon.swift (Synapse/Assets.xcassets).
 - Owner pinned: modern macOS 26 Liquid Glass; replace the stock white/grey Form look, default buttons, dropdowns and checkboxes with something distinctive and polished.
 
 ## Evidence on Hand
 
-- Real models downloaded on the dev Mac: qwen3.5-0.8b, whisper-tiny, parakeet-v3, flux2-klein-4b, z-image-turbo, qwen-image-2.1-q4, realtime speech models, three duplex models.
+- Real models downloaded on the dev Mac: qwen3.5-0.8b, whisper-tiny, parakeet-v3, flux2-klein-4b, z-image-turbo, qwen-image-2.1-q4, realtime speech models, three duplex models, qwen3-embedding-0.6b, qwen3-reranker-0.6b, speaker-diarizer, gemma-3n-e2b.
 - Measured numbers exist only from test runs (for example Z-Image paged through vOOM: 70 s at 512x512, 4.27 GB peak). No benchmarks, users, or testimonials to cite; never invent them.
 
 ## Product Principles

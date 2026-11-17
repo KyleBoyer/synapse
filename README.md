@@ -40,11 +40,11 @@ Default address is `http://127.0.0.1:9000`. The port and LAN access are set in t
 |---|---|---|
 | `GET /health` | none | `{"status":"ok","version":"0.1.0"}` |
 | `GET /v1/models` | none | list of downloaded models, with the fields of both OpenAI and Anthropic model objects |
-| `POST /v1/audio/transcriptions` | multipart: `file`, `model`, `language`, `response_format` (default `json`); `prompt`, `temperature`, `timestamp_granularities[]` are ignored | transcript in the requested format |
+| `POST /v1/audio/transcriptions` | multipart: `file`, `model`, `language`, `response_format` (default `json`; also `diarized_json`), `diarize` (`true` labels speakers); `prompt`, `temperature`, `timestamp_granularities[]` are ignored. `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` mean the default model; `gpt-4o-transcribe-diarize` also labels speakers | transcript in the requested format; with speakers, SRT lines start with `A: `, WebVTT uses `<v Speaker A>` |
 | `POST /v1/audio/translations` | same, translates to English | same |
 | `POST /asr` | query: `task`, `language`, `output` (txt, vtt, srt, tsv, json; default `txt`), `encode` (default `true`); multipart: `audio_file`. `word_timestamps`, `vad_filter`, `initial_prompt`, `video_file` are ignored | rendered format as `text/plain` with `Content-Disposition` and `Asr-Engine: synapse` |
 | `POST /detect-language` | query: `encode`; multipart: `audio_file` | `{"detected_language":"english","language_code":"en","confidence":0.97}`; `und` if no multilingual Whisper model is downloaded |
-| `POST /v1/jobs` | JSON `{"path","model"?,"language"?,"task"?,"force"?}` | `202 {"id","status":"queued"}`; 403 if the path is outside the library roots or watched folders; 404 if missing |
+| `POST /v1/jobs` | JSON `{"path","model"?,"language"?,"task"?,"force"?,"diarize"?}` | `202 {"id","status":"queued"}`; 403 if the path is outside the library roots or watched folders; 404 if missing |
 | `GET /v1/jobs` | none | `{"data":[job...]}` |
 | `GET /v1/jobs/:id` | none | `{"id","status","progress","source","output","model","error","created_at"}` |
 | `DELETE /v1/jobs/:id` | none | 200 after cancelling |
@@ -68,9 +68,9 @@ Give a client only the host (for example `http://192.168.1.20:9000`) and the API
 
 | Route | Notes |
 |---|---|
-| `POST /v1/chat/completions` | `messages` with string content or parts (`text`, `image_url` with a `data:` or `http(s)` URL); `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stop`, `stream`, `stream_options.include_usage`. |
+| `POST /v1/chat/completions` | `messages` with string content or parts (`text`, `image_url` with a `data:` or `http(s)` URL, `video_url` with an MP4/MOV `data:` or `http(s)` URL, `input_audio` with base64 `data` and a `format` for omni models); `max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `stop`, `stream`, `stream_options.include_usage`. |
 | `POST /v1/completions` | OpenAI legacy completions: one `prompt` string continued as raw text (no chat template); `max_tokens` (default 256), `temperature`, `top_p`, `stop`, `echo`, `stream`, `stream_options.include_usage`. |
-| `POST /v1/responses` | `input` as a string or message items with `input_text` / `input_image` parts; `instructions`, `max_output_tokens`, `temperature`, `top_p`, `stream` (typed SSE events through `response.completed`). |
+| `POST /v1/responses` | `input` as a string or message items with `input_text` / `input_image` / `input_video` / `input_audio` parts; `instructions`, `max_output_tokens`, `temperature`, `top_p`, `stream` (typed SSE events through `response.completed`). |
 | `POST /v1/messages` | Anthropic Messages: `system`, `messages` with `text`, `image` (base64 or url), `tool_use` and `tool_result` blocks; `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tools`, `tool_choice`, `thinking`, `stream` (named SSE events `message_start` through `message_stop`). `claude-*` model ids map to the default chat model. |
 | `POST /v1/messages/count_tokens` | same body as `/v1/messages` | `{"input_tokens": n}` |
 
@@ -110,9 +110,51 @@ print(m.content[0].text)
 | `POST /v1/images/edits` | multipart `image` + `prompt` (FLUX.2 klein). |
 | `POST /v1/responses` with `tools: [{"type": "image_generation"}]` | the chat model writes the prompt and the image model draws it. |
 
+### Video in chat
+
+Qwen3.5 models and the omni models (except Gemma 3n) read video. Send a `video_url` part (Chat Completions) or `input_video` part (Responses) holding an MP4 or MOV as a `data:` URL or an `http(s)` URL, up to 200 MB. Synapse samples 8 frames. File paths and `file://` URLs are refused. A model without video input returns 400.
+
+### Speech, sound and embeddings
+
+| Route | Notes |
+|---|---|
+| `POST /v1/audio/speech` | OpenAI speech: `input` (up to 4096 characters), `voice`, `response_format` (`mp3` default, `opus`, `aac`, `flac`, `wav`, `pcm`), `speed`, `stream_format` (`audio` or `sse`). `tts-1`, `tts-1-hd` and `gpt-4o-mini-tts` mean the first downloaded of PocketTTS and Kokoro. PocketTTS ignores `speed`; OpenAI voice names use the default voice. |
+| `POST /v1/audio/generations` | Synapse's own: `prompt`, `seconds` (1 to 120, default 8), `seed`, `response_format` (`wav` default keeps stereo; other formats are mono). Models: `stable-audio-3-small-sfx`, `stable-audio-3-small-music`. |
+| `POST /v1/embeddings` | OpenAI embeddings: `input` (text or a list of texts, up to 256), `encoding_format` (`float` or `base64`, the SDK default), `dimensions`. `text-embedding-3-small`, `-3-large` and `ada-002` mean the default model. Token-array input returns 400; in LangChain set `check_embedding_ctx_length=False`. |
+| `POST /v1/rerank` | Cohere and Jina shape: `query`, `documents` (strings or `{"text"}`), `top_n`, `return_documents`. Model: `qwen3-reranker-0.6b`. |
+
+```python
+c.audio.speech.create(model="tts-1", voice="alloy", input="Hello from Synapse.").write_to_file("hello.mp3")
+v = c.embeddings.create(model="text-embedding-3-small", input=["Paris is the capital of France."]).data[0].embedding
+```
+
+```bash
+curl -s localhost:9000/v1/audio/generations -H 'Content-Type: application/json' \
+  -d '{"prompt":"rain on a tin roof","seconds":5}' -o rain.wav
+```
+
+### Video generation
+
+OpenAI Videos API: `POST /v1/videos` (`prompt`, `seconds` `4`/`8`/`12`, `size` from 256 to 1920 per side, `input_reference` start image, `seed`), `GET /v1/videos/{id}`, `GET /v1/videos`, `GET /v1/videos/{id}/content` (`variant=video` or `thumbnail`), `DELETE /v1/videos/{id}`. `sora-2` and `sora-2-pro` mean the downloaded video model. Clips render one at a time and are kept for a day. Each side is generated at the nearest smaller multiple of 64 (1280x720 renders at 1280x704). The model, LTX-2.3 Distilled, needs about 96 GB of memory and disk.
+
+```python
+v = c.videos.create(model="sora-2", prompt="A red fox walking through snow", seconds="4", size="1280x720")
+while v.status in ("queued", "in_progress"):
+    time.sleep(5); v = c.videos.retrieve(v.id)
+c.videos.download_content(v.id).write_to_file("fox.mp4")
+```
+
+### Omni models
+
+`gemma-3n-e2b` (audio and image), `minicpm-o-4.5` and `qwen3-omni-30b` (audio, image and video) run in a managed mlx-vlm server and answer on every chat route. Send audio as an `input_audio` part; non-WAV audio is converted to 16 kHz WAV first. Small omni models follow the prompt closely: "Transcribe the audio." works better than "What does the speaker say?".
+
+### Python runtimes
+
+Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-vlm) run through Python tools that Synapse installs on first use under `<models folder>/runtimes/`. The first use needs a network connection and takes a few minutes. Video generation also needs `git` (Xcode Command Line Tools). Stable Audio models are gated on Hugging Face: accept the license on the model page and set a token in **Settings**.
+
 ### Realtime and duplex speech
 
-`GET /v1/realtime?model=<id>` (WebSocket, OpenAI Realtime events). Add `&intent=transcription` for live transcription only. The duplex models talk back in one model: `personaplex-7b` and `voicechat-11b` for voice calls, `hibiki-zero-3b` for live French-to-English speech translation. The app's **Live** pane uses the same sessions with the microphone.
+`GET /v1/realtime?model=<id>` (WebSocket, OpenAI Realtime events). Add `&intent=transcription` for live transcription only. `conversation.item.create` accepts `input_image` parts (base64 `data:image` URLs): a vision chat model sees the frame with the user's next turn, and the latest two frames are kept. The **Live** pane's Voice call sends a camera frame this way each time you start talking. The duplex models talk back in one model: `personaplex-7b` and `voicechat-11b` for voice calls, `hibiki-zero-3b` for live French-to-English speech translation. The app's **Live** pane uses the same sessions with the microphone.
 
 ### vOOM (models larger than memory)
 
@@ -137,6 +179,10 @@ Add folders in the Watch Folders tab. For each new media file, Synapse writes a 
 - The first use of a model compiles it for Core ML, which can take several minutes for large models. The job shows "preparing model" during this time.
 - Only the first audio track of a file is transcribed.
 - Parakeet does not translate or detect language and covers 25 European languages. Synapse falls back to Whisper for other requests.
+- Speaker labels come from a separate diarization model and can split one speaker in two, or merge similar voices, on short clips.
+- Video input reads MP4 and MOV only (AVFoundation); MKV and WebM are refused.
+- Omni models do not speak: their speech output is not available through mlx-vlm's server. Voice calls use the cascade (speech recognition, chat model, speech synthesis).
+- Video jobs do not survive a restart.
 
 ## Releases (maintainers)
 

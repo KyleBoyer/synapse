@@ -8,6 +8,7 @@ Synapse bundles or depends on the following software and models.
 - **FluidAudio**, Apache License 2.0. https://github.com/FluidInference/FluidAudio
 - **Hummingbird**, Apache License 2.0. https://github.com/hummingbird-project/hummingbird
 - **MultipartKit**, MIT License. https://github.com/vapor/multipart-kit
+- **MLX Swift** and **MLX Swift LM** (MLXLLM, MLXVLM, MLXEmbedders, MLXRerankers), MIT License. https://github.com/ml-explore/mlx-swift and https://github.com/ml-explore/mlx-swift-lm
 
 The multipart request decoder and `File` part type in `Server/Context.swift` are adapted from the hummingbird-examples `multipart-form` sample (Apache License 2.0). https://github.com/hummingbird-project/hummingbird-examples
 
@@ -43,9 +44,24 @@ The bundled `ffmpeg` statically links LAME 3.100 (MP3 encoder), licensed under t
 - Source: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
 - Build recipe: `scripts/build-ffmpeg.sh` in this repository. It verifies the tarball's SHA-256 and builds LAME with `--disable-shared --enable-static --disable-frontend` before building ffmpeg.
 
+## Python tools installed on first use
+
+Synapse does not ship these. It installs them with uv into `<models folder>/runtimes/` the first time a model needs them.
+
+- **mlx-video** (pinned to commit 87db56a5), MIT License. https://github.com/Blaizzy/mlx-video
+- **mlx-audio** 0.6.6, MIT License. https://github.com/Blaizzy/mlx-audio
+- **mlx-vlm** 0.8.0, MIT License. https://github.com/Blaizzy/mlx-vlm
+
 ## Model weights
 
 Models are downloaded by the user at runtime and are not part of the app bundle.
 
 - **OpenAI Whisper** model weights (as converted to Core ML by Argmax), MIT License. https://github.com/openai/whisper
 - **NVIDIA Parakeet TDT** model weights (v2 and v3, as converted to Core ML by FluidInference), Creative Commons Attribution 4.0 International (CC-BY-4.0). Attribution: NVIDIA, Parakeet TDT. https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3 and https://creativecommons.org/licenses/by/4.0/
+- **Qwen3 Embedding 0.6B** and **Qwen3 Reranker 0.6B** (MLX conversions by mlx-community), Apache License 2.0. https://huggingface.co/Qwen
+- **EmbeddingGemma 300M** and **Gemma 3n E2B** (MLX conversions by mlx-community), Gemma Terms of Use. https://ai.google.dev/gemma/terms
+- **Speaker diarization** models (Core ML conversions by FluidInference), scoped CC-BY-4.0; see the repository's NOTICE. https://huggingface.co/FluidInference/speaker-diarization-coreml/blob/main/NOTICE.md
+- **LTX-2.3** and the LTX-2 Gemma text encoder (MLX conversions by prince-canuma), LTX-2 Community License Agreement. https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2
+- **Stable Audio 3 Small** (SFX and Music, MLX conversions by mlx-community), Stability AI Community License; the bundled T5Gemma encoder is under the Gemma Terms of Use. https://huggingface.co/stabilityai
+- **MiniCPM-o 4.5**, Apache License 2.0. https://huggingface.co/openbmb/MiniCPM-o-4_5
+- **Qwen3-Omni 30B-A3B** (MLX conversion by mlx-community), Apache License 2.0. https://huggingface.co/Qwen
