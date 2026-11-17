@@ -105,8 +105,10 @@ public actor ChatService {
         self.store = store; self.models = models
     }
 
-    /// A model takes video when its snapshot ships a video preprocessor (Qwen3.5 does).
+    /// A model takes video when its snapshot ships a video preprocessor (Qwen3.5 does). mlx-vlm omni models take
+    /// video, except Gemma 3n, which reads images and audio only.
     public func supportsVideo(_ spec: ModelSpec) async -> Bool {
+        if spec.engine == .mlxvlm { return spec.id != "gemma-3n-e2b" }
         guard let folder = await store.folder(for: spec.id) else { return false }
         return FileManager.default.fileExists(atPath: folder.appending(path: "video_preprocessor_config.json").path)
     }
@@ -124,6 +126,7 @@ public actor ChatService {
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         guard !messages.isEmpty else { throw ChatError.emptyConversation }
+        if spec.engine == .mlxvlm { return try await streamMLXVLM(spec, messages, options) }
         let lease = try await containerLease(for: spec)
         let container = lease.value
         let input = try Self.userInput(messages, options)
@@ -135,11 +138,29 @@ public actor ChatService {
                              stripThinking: !options.enableThinking) { try await container.prepare(input: input) }
     }
 
+    /// Omni models run in their own mlx-vlm server; the lease keeps it alive and eviction stops it. Tool calls are not
+    /// passed through: mlx-vlm parses them per model and only Qwen3.5's format is verified here.
+    private func streamMLXVLM(_ spec: ModelSpec, _ messages: [ChatMessage], _ options: ChatOptions) async throws
+        -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedBytes) {
+            let server = try await MLXVLMServer.launch(folder: folder)
+            return (server, unload: { server.terminate() })
+        }
+        let body: Data
+        do { body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath) } catch { lease.release(); throw error }
+        await GPUGate.shared.acquire()
+        let gate = GateRelease()
+        return MLXVLMChat.stream(base: lease.value.base, body: body) { gate(); lease.release() }
+    }
+
     /// Raw text continuation (legacy OpenAI Completions): the prompt is tokenized as-is, with no chat template.
     public func streamText(model spec: ModelSpec, prompt: String, options: ChatOptions) async throws
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         guard !prompt.isEmpty else { throw ChatError.emptyConversation }
+        guard spec.engine != .mlxvlm else { throw EngineError.unsupported("Raw completions are not available for mlx-vlm models; use chat.") }
         let lease = try await containerLease(for: spec)
         let container = lease.value
         let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
@@ -217,6 +238,7 @@ public actor ChatService {
     /// Prompt tokens for `messages` after the chat template (and image tokens), without generating.
     public func countTokens(model spec: ModelSpec, messages: [ChatMessage], options: ChatOptions) async throws -> Int {
         guard !messages.isEmpty else { throw ChatError.emptyConversation }
+        guard spec.engine != .mlxvlm else { throw EngineError.unsupported("Token counting is not available for mlx-vlm models.") }
         let lease = try await containerLease(for: spec)
         defer { lease.release() }
         let container = lease.value

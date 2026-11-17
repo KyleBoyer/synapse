@@ -72,6 +72,7 @@ enum ContentPart: Equatable {
     case text(String)
     case image(String)   // data: URL or http(s) URL
     case video(String)   // data: URL or http(s) URL
+    case audio(data: String, format: String)   // OpenAI input_audio: base64 and a format name
 }
 
 enum ChatParse {
@@ -96,6 +97,9 @@ enum ChatParse {
                 let url = item["video_url"]?.string ?? item["video_url"]?["url"]?.string
                 guard let url else { throw bad("Video part is missing video_url.") }
                 return .video(url)
+            case "input_audio":
+                guard let data = item["input_audio"]?["data"]?.string else { throw bad("input_audio part is missing input_audio.data.") }
+                return .audio(data: data, format: item["input_audio"]?["format"]?.string ?? "wav")
             case let t:
                 throw bad("Unsupported content part type '\(t ?? "nil")'.")
             }
@@ -165,14 +169,16 @@ enum ImageFetcher {
             var text: [String] = []
             var images: [Data] = []
             var videos: [URL] = []
+            var audios: [URL] = []
             for p in parts {
                 switch p {
                 case .text(let t): text.append(t)
                 case .image(let u): images.append(try await load(u))
                 case .video(let u): videos.append(try await MediaFiles.loadVideo(u))
+                case .audio(let data, let format): audios.append(try await MediaFiles.loadAudio(base64: data, format: format))
                 }
             }
-            out.append(ChatMessage(role: role, text: text.joined(separator: "\n"), images: images, videos: videos))
+            out.append(ChatMessage(role: role, text: text.joined(separator: "\n"), images: images, videos: videos, audios: audios))
         }
         return out
     }

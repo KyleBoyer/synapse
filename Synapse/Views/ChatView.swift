@@ -34,6 +34,7 @@ struct ChatView: View {
     @State private var input = ""
     @State private var pending: [Data] = []
     @State private var pendingVideos: [URL] = []
+    @State private var pendingAudios: [URL] = []
     @State private var generating = false
     @State private var task: Task<Void, Never>?
     @State private var error: String?
@@ -64,7 +65,7 @@ struct ChatView: View {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                 }
                 Button("New Chat", systemImage: "square.and.pencil") {
-                    stop(); lines = []; started = nil; pending = []; pendingVideos = []; error = nil; run = nil
+                    stop(); lines = []; started = nil; pending = []; pendingVideos = []; pendingAudios = []; error = nil; run = nil
                 }
                     .help("New Chat")
             }
@@ -85,6 +86,10 @@ struct ChatView: View {
     }
 
     private func pickModel() {
+        #if DEBUG
+        // `-chatModel <id>` picks the model for captures.
+        if modelID.isEmpty, let m = UserDefaults.standard.string(forKey: "chatModel"), specs.contains(where: { $0.id == m }) { modelID = m }
+        #endif
         if !specs.contains(where: { $0.id == modelID }) { modelID = specs.first?.id ?? "" }
     }
 
@@ -144,6 +149,7 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(user ? "You" : (spec?.displayName ?? "Model")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 ForEach(l.message.videos, id: \.self) { VideoThumb(url: $0, height: 160) }
+                ForEach(l.message.audios, id: \.self) { AudioChip(url: $0) }
                 ForEach(Array(l.message.images.enumerated()), id: \.offset) { _, d in
                     if let img = NSImage(data: d) {
                         Image(nsImage: img).resizable().scaledToFit().frame(maxHeight: 160).clipShape(.rect(cornerRadius: 10))
@@ -164,9 +170,16 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !pending.isEmpty || !pendingVideos.isEmpty {
+            if !pending.isEmpty || !pendingVideos.isEmpty || !pendingAudios.isEmpty {
                 ScrollView(.horizontal) {
                     HStack {
+                        ForEach(pendingAudios, id: \.self) { url in
+                            ZStack(alignment: .topTrailing) {
+                                AudioChip(url: url).padding(.top, 6).padding(.trailing, 6)
+                                Button("Remove attachment", systemImage: "xmark.circle.fill") { pendingAudios.removeAll { $0 == url } }
+                                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+                            }
+                        }
                         ForEach(pendingVideos, id: \.self) { url in
                             ZStack(alignment: .topTrailing) {
                                 VideoThumb(url: url, height: 56)
@@ -187,8 +200,8 @@ struct ChatView: View {
                 }
             }
             HStack(alignment: .bottom, spacing: 10) {
-                Button("Attach Image or Video", systemImage: "photo") { attach() }
-                    .labelStyle(.iconOnly).buttonStyle(.borderless).help("Attach Image or Video")
+                Button("Attach Image, Video or Audio", systemImage: "photo") { attach() }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless).help("Attach Image, Video or Audio")
                 TextField("Message \(spec?.displayName ?? "")", text: $input, axis: .vertical)
                     .lineLimit(1...6).textFieldStyle(.plain).font(.title3)
                     .onSubmit(send).disabled(generating)
@@ -199,7 +212,7 @@ struct ChatView: View {
                 } else {
                     Button("Send", systemImage: "arrow.up", action: send)
                         .labelStyle(.iconOnly).buttonStyle(.glassProminent).help("Send")
-                        .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pending.isEmpty && pendingVideos.isEmpty)
+                        .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pending.isEmpty && pendingVideos.isEmpty && pendingAudios.isEmpty)
                 }
             }
         }
@@ -213,13 +226,14 @@ struct ChatView: View {
         for url in urls {
             guard let t = UTType(filenameExtension: url.pathExtension) else { continue }
             if t.conforms(to: .movie) { pendingVideos.append(url) }
+            else if t.conforms(to: .audio) { pendingAudios.append(url) }
             else if t.conforms(to: .image), let d = try? Data(contentsOf: url) { pending.append(d) }
         }
     }
 
     private func attach() {
         let p = NSOpenPanel()
-        p.allowedContentTypes = [.image, .movie]
+        p.allowedContentTypes = [.image, .movie, .audio]
         p.allowsMultipleSelection = true
         if p.runModal() == .OK { add(p.urls) }
     }
@@ -228,22 +242,26 @@ struct ChatView: View {
 
     private func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !generating, !text.isEmpty || !pending.isEmpty || !pendingVideos.isEmpty, let spec else { return }
+        guard !generating, !text.isEmpty || !pending.isEmpty || !pendingVideos.isEmpty || !pendingAudios.isEmpty, let spec else { return }
         let now = Date()
         if started == nil { started = now }
         let offset = now.timeIntervalSince(started ?? now)
-        lines.append(Line(message: ChatMessage(role: .user, text: text, images: pending, videos: pendingVideos), at: offset))
+        lines.append(Line(message: ChatMessage(role: .user, text: text, images: pending, videos: pendingVideos, audios: pendingAudios), at: offset))
         let history = lines.map(\.message)
         lines.append(Line(message: ChatMessage(role: .assistant, text: ""), at: offset))
-        input = ""; pending = []; pendingVideos = []; error = nil; generating = true
+        input = ""; pending = []; pendingVideos = []; pendingAudios = []; error = nil; generating = true
         run = Run(sent: now)
         Task { try? await Task.sleep(for: .seconds(1)); await state.refreshResidents() }
         let chat = state.chat, metrics = state.metrics
         task = Task {
             do {
                 if history.contains(where: { !$0.videos.isEmpty }), await !chat.supportsVideo(spec) {
-                    throw VideoUnsupported(model: spec.displayName)
+                    throw MediaUnsupported(model: spec.displayName, kind: "video", hint: "Qwen3.5 and the omni models do.")
                 }
+                if history.contains(where: { !$0.audios.isEmpty }), await !chat.supportsAudio(spec) {
+                    throw MediaUnsupported(model: spec.displayName, kind: "audio", hint: "Omni models such as Gemma 3n do.")
+                }
+                let history = try await Self.withWAVAudio(history)
                 for try await ev in try await chat.stream(model: spec, messages: history, options: ChatOptions()) {
                     switch ev {
                     case .delta(let s):
@@ -272,9 +290,48 @@ struct ChatView: View {
     }
 }
 
-private struct VideoUnsupported: LocalizedError {
-    let model: String
-    var errorDescription: String? { "\(model) does not accept video. Qwen3.5 models do." }
+extension ChatView {
+    /// Omni models get WAV only (as the API path does): other attachments are decoded with the bundled ffmpeg.
+    static func withWAVAudio(_ messages: [ChatMessage]) async throws -> [ChatMessage] {
+        guard messages.contains(where: { $0.audios.contains { $0.pathExtension.lowercased() != "wav" } }) else { return messages }
+        guard let decoder = AudioDecoder.bundled() else { return messages }
+        let dir = FileManager.default.temporaryDirectory.appending(path: "Synapse-chat-audio", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var out = messages
+        for i in out.indices {
+            for j in out[i].audios.indices where out[i].audios[j].pathExtension.lowercased() != "wav" {
+                // decodeToWAV always names its output audio.wav, so each clip gets its own folder.
+                let own = dir.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+                try FileManager.default.createDirectory(at: own, withIntermediateDirectories: true)
+                out[i].audios[j] = try await decoder.decodeToWAV(.media(out[i].audios[j]), into: own)
+            }
+        }
+        return out
+    }
+}
+
+private struct MediaUnsupported: LocalizedError {
+    let model: String, kind: String, hint: String
+    var errorDescription: String? { "\(model) does not accept \(kind). \(hint)" }
+}
+
+/// An attached audio clip: file name and length.
+private struct AudioChip: View {
+    let url: URL
+    @State private var seconds: Double?
+
+    var body: some View {
+        Label {
+            HStack(spacing: 6) {
+                Text(url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                if let seconds { Text(String(format: "%d:%02d", Int(seconds) / 60, Int(seconds.rounded()) % 60)).font(.mono(.caption)).foregroundStyle(.secondary) }
+            }
+        } icon: { Image(systemName: "waveform") }
+        .font(.callout)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.quaternary.opacity(0.6), in: .capsule)
+        .task(id: url) { seconds = try? await AVURLAsset(url: url).load(.duration).seconds }
+    }
 }
 
 /// A video's first frame with a play badge and its length.

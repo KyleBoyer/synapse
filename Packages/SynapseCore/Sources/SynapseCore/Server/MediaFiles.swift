@@ -41,17 +41,27 @@ enum MediaFiles {
         return file
     }
 
-    /// OpenAI `input_audio` carries base64 data plus a format name (wav, mp3, ...).
-    static func loadAudio(base64: String, format: String) throws -> URL {
+    /// OpenAI `input_audio` carries base64 data plus a format name (wav, mp3, ...). Anything but WAV is decoded to
+    /// 16 kHz WAV with the bundled ffmpeg, so the model's audio loader only ever sees WAV.
+    static func loadAudio(base64: String, format: String, decoder: AudioDecoder? = AudioDecoder.bundled()) async throws -> URL {
         guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
             throw HTTPError(.badRequest, message: "input_audio.data must be base64.")
         }
         guard data.count <= maxAudioBytes else { throw HTTPError(.badRequest, message: "Audio is larger than 25 MB.") }
-        let ext = format.lowercased().filter(\.isLetter)
+        let ext = format.lowercased().filter { $0.isLetter || $0.isNumber }
         guard ["wav", "mp3", "m4a", "flac", "ogg", "aac"].contains(ext) else {
             throw HTTPError(.badRequest, message: "Unsupported input_audio.format '\(format)'; use wav or mp3.")
         }
-        return try write(data, ext: ext)
+        let file = try write(data, ext: ext)
+        guard ext != "wav" else { return file }
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard let decoder else { throw HTTPError(.badRequest, message: "Only wav audio is accepted here.") }
+        // decodeToWAV always names its output audio.wav, so each clip gets its own folder.
+        let own = dir.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: own, withIntermediateDirectories: true)
+        do { return try await decoder.decodeToWAV(.media(file), into: own) } catch {
+            throw HTTPError(.badRequest, message: "Could not decode the \(ext) audio.")
+        }
     }
 
     /// data:<mime>;base64,<...> or an http(s) URL; returns the bytes and their media type.

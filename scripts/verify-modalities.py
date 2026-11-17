@@ -156,8 +156,34 @@ def sound():
           f"{ctype}, {len(body)} bytes")
 
 
+def omni():
+    """Audio understanding through Gemma 3n (mlx-vlm backend): an OpenAI input_audio part."""
+    import base64, subprocess, tempfile, os
+    from pathlib import Path
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    fixture = Path(__file__).resolve().parent.parent / "Packages/SynapseCore/Tests/SynapseCoreTests/Fixtures/en.m4a"
+    wav = os.path.join(tempfile.mkdtemp(), "en.wav")
+    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(fixture), wav], check=True)
+    data = base64.b64encode(open(wav, "rb").read()).decode()
+    r = client.chat.completions.create(
+        model="gemma-3n-e2b", temperature=0, max_tokens=40,
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": "What does the speaker say? Answer with the exact words."},
+            {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}}]}])
+    answer = r.choices[0].message.content or ""
+    check("input_audio understood by gemma-3n-e2b", "fox" in answer.lower(), answer.strip()[:80])
+    try:
+        client.chat.completions.create(model="qwen3.5-0.8b", messages=[{"role": "user", "content": [
+            {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}}]}])
+        check("audio refused for a model without audio input", False, "accepted")
+    except Exception as e:
+        check("audio refused for a model without audio input", getattr(e, "status_code", None) == 400, str(e)[:80])
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound}
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

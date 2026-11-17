@@ -63,6 +63,10 @@ public enum Catalog {
         // on the model page and set a token in Settings. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),
         hf("stable-audio-3-small-music", "Stable Audio 3 Music", .audiogen, "mlx-community/stable-audio-3-small-music", 3490, ramGB: 8),
+        // Omni models through a managed mlx-vlm server (audio, image and video in; Gemma 3n has no video).
+        hf("gemma-3n-e2b", "Gemma 3n E2B (omni, Gemma terms)", .mlxvlm, "mlx-community/gemma-3n-E2B-it-4bit", 4295, ramGB: 8),
+        hf("minicpm-o-4.5", "MiniCPM-o 4.5 (omni)", .mlxvlm, "openbmb/MiniCPM-o-4_5", 20000, ramGB: 32),
+        hf("qwen3-omni-30b", "Qwen3-Omni 30B-A3B (omni)", .mlxvlm, "mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit", 21800, ramGB: 48),
         realtime("speaker-diarizer", "Speaker diarization (who spoke when)", .speech, "speaker-diarizer", 21, ramGB: nil),
         realtime("kokoro-82m", "Kokoro 82M (voices)", .speech, "kokoro", 350, ramGB: nil),
         realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),
