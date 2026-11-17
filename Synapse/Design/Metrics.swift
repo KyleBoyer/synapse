@@ -4,7 +4,7 @@ import Observation
 /// A measured characteristic of a model. Each case carries its datasheet row: label, unit, test conditions,
 /// and how to print it, so every pane and the Models datasheet read from one table.
 enum Metric: String, Codable, CaseIterable, Identifiable {
-    case firstToken, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed, embedRate
+    case firstToken, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed, embedRate, videoTime
     var id: String { rawValue }
 
     var label: String {
@@ -19,12 +19,13 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
         case .ttsFirstAudio: "Time to first audio"
         case .ttsSpeed: "Speech speed"
         case .embedRate: "Embedding rate"
+        case .videoTime: "Video time"
         }
     }
 
     var unit: String {
         switch self {
-        case .firstToken, .secondsPerStep, .imageTime, .firstAudio, .ttsFirstAudio: "s"
+        case .firstToken, .secondsPerStep, .imageTime, .firstAudio, .ttsFirstAudio, .videoTime: "s"
         case .decodeRate, .prefillRate, .embedRate: "tok/s"
         case .realtimeSpeed, .ttsSpeed: "× realtime"
         }
@@ -42,6 +43,7 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
         case .ttsFirstAudio: "from request to first audio chunk"
         case .ttsSpeed: "audio length ÷ synthesis time"
         case .embedRate: "prompt tokens ÷ wall time, model already loaded"
+        case .videoTime: "one clip, model load included (each clip runs in a fresh process)"
         }
     }
 

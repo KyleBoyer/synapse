@@ -110,6 +110,18 @@ public actor ModelManager {
         }
     }
 
+    /// Memory for work done in another process (a Python generator): idle models are evicted to make room, the
+    /// bytes count as resident while `body` runs, and the entry goes away when it ends, since the process has exited.
+    public func reserve<R: Sendable>(_ id: String, estimatedBytes: Int,
+                                     during body: @Sendable () async throws -> R) async throws -> R {
+        await makeRoom(for: estimatedBytes, excluding: id)
+        let entry = Entry(value: true, bytes: estimatedBytes, unload: {})
+        entry.leases = 1
+        entries[id] = entry
+        defer { if entries[id] === entry { entries[id] = nil; recomputeOvercommit() } }
+        return try await body()
+    }
+
     /// Scoped use: lease, run, release.
     public func use<T: Sendable, R: Sendable>(_ id: String, as type: T.Type = T.self, estimatedBytes: Int,
                                               load: @escaping @Sendable () async throws -> (T, unload: @Sendable () async -> Void),

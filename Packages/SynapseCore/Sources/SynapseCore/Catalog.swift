@@ -57,6 +57,8 @@ public enum Catalog {
         realtime("parakeet-eou-120m", "Parakeet EOU 120M (streaming, English)", .speech, "parakeet-eou-160ms", 220, ramGB: nil),
         realtime("silero-vad", "Silero VAD", .speech, "silero-vad", 2, ramGB: nil),
         realtime("pocket-tts", "PocketTTS (streaming voice)", .speech, "pocket-tts", 523, ramGB: nil),
+        // About 47 GB of LTX-2.3 plus 49 GB for the Gemma 3 12B text encoder borrowed from LTX-2 (see VideoEngines.download).
+        hf("ltx-2.3-distilled", "LTX-2.3 Distilled (video, LTX license)", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 96),
         realtime("speaker-diarizer", "Speaker diarization (who spoke when)", .speech, "speaker-diarizer", 21, ramGB: nil),
         realtime("kokoro-82m", "Kokoro 82M (voices)", .speech, "kokoro", 350, ramGB: nil),
         realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),

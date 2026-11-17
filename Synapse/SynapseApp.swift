@@ -13,13 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case transcribe = "Transcribe", chat = "Chat", images = "Images", audio = "Audio", embed = "Embed", live = "Live", models = "Models", memory = "Memory", watch = "Watch Folders", server = "Server"
+    case transcribe = "Transcribe", chat = "Chat", images = "Images", video = "Video", audio = "Audio", embed = "Embed", live = "Live", models = "Models", memory = "Memory", watch = "Watch Folders", server = "Server"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .transcribe: "waveform"
         case .chat: "bubble.left.and.text.bubble.right"
         case .images: "photo.on.rectangle.angled"
+        case .video: "film"
         case .audio: "speaker.wave.2"
         case .embed: "point.3.connected.trianglepath.dotted"
         case .memory: "memorychip"
@@ -30,7 +31,7 @@ enum Pane: String, CaseIterable, Identifiable {
         }
     }
     /// Try: run a model and watch it. Run: what keeps it served.
-    static let tryPanes: [Pane] = [.transcribe, .chat, .images, .audio, .embed, .live]
+    static let tryPanes: [Pane] = [.transcribe, .chat, .images, .video, .audio, .embed, .live]
     static let runPanes: [Pane] = [.models, .memory, .watch, .server]
 }
 
@@ -76,6 +77,7 @@ struct MainView: View {
                 case .images: ImagesView()
                 case .audio: AudioView()
                 case .embed: EmbedView()
+                case .video: VideoView()
                 case .live: LiveView()
                 case .models: ModelsView(openPane: { pane = $0 })
                 case .memory: MemoryView()

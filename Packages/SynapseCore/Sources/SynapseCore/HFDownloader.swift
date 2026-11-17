@@ -5,8 +5,10 @@ import Foundation
 public enum HFDownloader {
     struct Entry: Decodable { let type: String; let path: String; let size: Int64? }
 
-    static func snapshotFiles(_ data: Data, exclude: [String] = []) throws -> [Entry] {
-        let files = try JSONDecoder().decode([Entry].self, from: data).filter { $0.type == "file" && wanted($0.path, exclude: exclude) }
+    static func snapshotFiles(_ data: Data, exclude: [String] = [], only: [String] = []) throws -> [Entry] {
+        let files = try JSONDecoder().decode([Entry].self, from: data).filter {
+            $0.type == "file" && wanted($0.path, exclude: exclude) && (only.isEmpty || only.contains(where: $0.path.hasPrefix))
+        }
         guard files.contains(where: { $0.path.hasSuffix(".safetensors") }) else {
             throw URLError(.cannotParseResponse, userInfo: [NSLocalizedDescriptionKey: "Model snapshot has no safetensors weights."])
         }
@@ -32,7 +34,8 @@ public enum HFDownloader {
 
     /// Downloads `repo` at `main` into `dir`. Files are written to `<name>.partial` then renamed,
     /// and existing complete files are skipped, so a retry resumes at file granularity.
-    public static func download(repo: String, to dir: URL, exclude: [String] = [], token: String? = nil,
+    /// `only`, when set, keeps just the paths under these prefixes (a few folders borrowed from another repo).
+    public static func download(repo: String, to dir: URL, exclude: [String] = [], only: [String] = [], token: String? = nil,
                                 session: URLSession = .shared,
                                 progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         let base = URL(string: "https://huggingface.co")!
@@ -40,7 +43,7 @@ public enum HFDownloader {
         listURL.append(queryItems: [URLQueryItem(name: "recursive", value: "true")])
         let (data, response) = try await session.data(for: authorized(listURL, token))
         try check(response, listURL)
-        let files = try snapshotFiles(data, exclude: exclude)
+        let files = try snapshotFiles(data, exclude: exclude, only: only)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let total = max(1, files.reduce(Int64(0)) { $0 + ($1.size ?? 0) })
         var done: Int64 = 0

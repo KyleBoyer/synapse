@@ -5,11 +5,12 @@ import NIOCore
 
 public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil,
                          images: ImageService? = nil, speech: SpeechService? = nil,
-                         embeddings: EmbeddingService? = nil) -> Router<SynapseContext> {
+                         embeddings: EmbeddingService? = nil, videos: VideoService? = nil) -> Router<SynapseContext> {
     let chat = chat ?? ChatService(store: store)
     let images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
     let speech = speech ?? SpeechService(store: store, models: ModelManager())
     let embeddings = embeddings ?? EmbeddingService(store: store, models: ModelManager())
+    let videos = videos ?? VideoService(store: store, models: ModelManager())
     let imageFiles = ImageFileCache()
     let router = Router(context: SynapseContext.self)
     router.add(middleware: ErrorBodyMiddleware())
@@ -32,6 +33,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addImageRoutes(to: group, images: images, files: imageFiles, chat: chat, settings: settings)
         addSpeechRoutes(to: group, speech: speech)
         addEmbeddingRoutes(to: group, embeddings: embeddings)
+        addVideoRoutes(to: group, videos: videos)
     }
     return router
 }
@@ -59,10 +61,12 @@ public actor ServerController {
     private let images: ImageService
     private let speech: SpeechService
     private let embeddings: EmbeddingService
+    private let videos: VideoService
     private let realtime: RealtimeServices
 
     public init(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil, images: ImageService? = nil,
-                realtime: RealtimeServices? = nil, speech: SpeechService? = nil, embeddings: EmbeddingService? = nil) {
+                realtime: RealtimeServices? = nil, speech: SpeechService? = nil, embeddings: EmbeddingService? = nil,
+                videos: VideoService? = nil) {
         self.queue = queue; self.store = store; self.box = settings
         let chat = chat ?? ChatService(store: store)
         self.chat = chat
@@ -70,6 +74,7 @@ public actor ServerController {
         self.images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
         self.speech = speech ?? SpeechService(store: store, models: ModelManager())
         self.embeddings = embeddings ?? EmbeddingService(store: store, models: ModelManager())
+        self.videos = videos ?? VideoService(store: store, models: ModelManager())
     }
 
     /// (Re)starts the server from `settings.current` (port / LAN binding). Honors `serverEnabled`.
@@ -80,7 +85,8 @@ public actor ServerController {
         let host = s.allowLAN ? "0.0.0.0" : "127.0.0.1"
         let port = s.port
         let app = Application(
-            router: buildRouter(queue: queue, store: store, settings: box, chat: chat, images: images, speech: speech, embeddings: embeddings),
+            router: buildRouter(queue: queue, store: store, settings: box, chat: chat, images: images, speech: speech, embeddings: embeddings,
+                                 videos: videos),
             server: .http1WebSocketUpgrade(webSocketRouter: buildRealtimeRouter(services: realtime, settings: box),
                                            configuration: realtimeWebSocketConfiguration),
             configuration: .init(address: .hostname(host, port: port)),

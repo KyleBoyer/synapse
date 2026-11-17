@@ -121,7 +121,7 @@ func mapImageError(_ e: Error) -> Error {
 }
 
 /// Splits multipart/form-data into text fields and file parts (repeated `image[]` keys stay in order).
-private func parseMultipart(_ req: Request, _ ctx: SynapseContext) async throws -> (fields: [String: String], files: [(name: String, data: Data)]) {
+func parseMultipart(_ req: Request, _ ctx: SynapseContext, fileFields: Set<String> = ["image", "image[]", "mask"]) async throws -> (fields: [String: String], files: [(name: String, data: Data)]) {
     guard let ct = req.headers[.contentType], let media = MediaType(from: ct), media.parameter?.name == "boundary",
           let boundary = media.parameter?.value else { throw HTTPError(.unsupportedMediaType) }
     let buffer = try await req.body.collect(upTo: ctx.maxUploadSize)
@@ -131,11 +131,11 @@ private func parseMultipart(_ req: Request, _ ctx: SynapseContext) async throws 
     parser.onHeader = { headers.replaceOrAdd(name: $0, value: $1) }
     parser.onBody = { body.writeBuffer(&$0) }
     parser.onPartComplete = { parts.append(MultipartPart(headers: headers, body: body)); headers = .init(); body = ByteBuffer() }
-    do { try parser.execute(buffer) } catch { throw badRequest("Invalid multipart body: \(error)") }
+    do { try parser.execute(buffer) } catch { throw HTTPError(.badRequest, message: "Invalid multipart body: \(error)") }
     var fields: [String: String] = [:], files: [(String, Data)] = []
     for p in parts {
         guard let name = p.name else { continue }
-        if ["image", "image[]", "mask"].contains(name) { files.append((name, Data(buffer: p.body))) }
+        if fileFields.contains(name) { files.append((name, Data(buffer: p.body))) }
         else { fields[name] = String(buffer: p.body) }
     }
     return (fields, files)

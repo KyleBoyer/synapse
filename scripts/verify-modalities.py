@@ -117,8 +117,35 @@ def video_input():
         check("file:// video URL refused", getattr(e, "status_code", None) == 400, str(e)[:80])
 
 
+def videos():
+    """Run the server with SYNAPSE_MOCK_VIDEO=1 on Macs without the RAM for LTX-2.3."""
+    import os, tempfile, time
+    from openai import OpenAI
+    from openai.types import Video
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    v = client.videos.create(model="sora-2", prompt="A red fox walking through snow", seconds="4", size="1280x720")
+    check("create returns a queued video", v.status in ("queued", "in_progress") and v.id.startswith("video_"), v.status)
+    for _ in range(600):
+        v = client.videos.retrieve(v.id)
+        if v.status in ("completed", "failed"):
+            break
+        time.sleep(1)
+    Video.model_validate(v.model_dump())
+    check("video completes", v.status == "completed" and v.progress == 100, f"{v.status} {v.progress} {v.error}")
+    path = os.path.join(tempfile.mkdtemp(), "out.mp4")
+    client.videos.download_content(v.id).write_to_file(path)
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        head = f.read(8)
+    check("download_content is an MP4", size > 1000 and head[4:8] == b"ftyp", f"{size} bytes")
+    check("list contains it", any(x.id == v.id for x in client.videos.list()))
+    d = client.videos.delete(v.id)
+    check("delete", d.deleted and d.id == v.id)
+
+
 # name -> function; milestones register their sections here.
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input}
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:
