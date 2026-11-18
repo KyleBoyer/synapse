@@ -51,9 +51,9 @@ public actor SpeechService {
                   tts: { spec in try await RealtimeServices.ttsLease(id: spec.id, store: store, models: models) })
     }
 
-    /// Transcription through a job queue, for `transcribe:`.
+    /// Transcription through a job queue's direct path (not listed in Transcribe), for `transcribe:`.
     public static func transcriber(_ queue: JobQueue) -> @Sendable (URL) async -> String? {
-        { url in await queue.run(JobRequest(input: .media(url), origin: .api)).transcript?.text }
+        { url in try? await queue.transcribeNow(.media(url), modelID: nil, language: nil).text }
     }
 
     /// A voice from a sample (any format ffmpeg reads; the first 10 seconds are kept, at least 1 is needed). The clip is

@@ -42,8 +42,10 @@ public struct RealtimeSpecialModel: Sendable {
 
 public struct RealtimeServices: Sendable {
     public var vad: @Sendable () async throws -> any RealtimeVAD
-    public var asr: @Sendable () async throws -> any RealtimeASR
-    public var tts: @Sendable () async throws -> any RealtimeTTS
+    /// A recognizer for a transcription model id (`audio.input.transcription.model`) and an optional language hint.
+    public var asr: @Sendable (_ model: String, _ language: String?) async throws -> any RealtimeASR
+    /// A speech model by id (`audio.output.model`, Synapse's addition); nil is the default (PocketTTS).
+    public var tts: @Sendable (_ model: String?) async throws -> any RealtimeTTS
     /// Resolves a chat model id (nil or unknown picks the smallest downloaded chat model).
     public var llm: @Sendable (String?) async throws -> any RealtimeLLM
     /// Loads the engine for a `.duplex` catalog id.
@@ -52,8 +54,8 @@ public struct RealtimeServices: Sendable {
     public var voice: @Sendable (ModelSpec) async throws -> any RealtimeVoiceLLM
 
     public init(vad: @escaping @Sendable () async throws -> any RealtimeVAD,
-                asr: @escaping @Sendable () async throws -> any RealtimeASR,
-                tts: @escaping @Sendable () async throws -> any RealtimeTTS,
+                asr: @escaping @Sendable (_ model: String, _ language: String?) async throws -> any RealtimeASR,
+                tts: @escaping @Sendable (_ model: String?) async throws -> any RealtimeTTS,
                 llm: @escaping @Sendable (String?) async throws -> any RealtimeLLM,
                 special: @escaping @Sendable (ModelSpec) async throws -> RealtimeSpecialModel = { spec in
                     throw EngineError.unsupported("\(spec.displayName) is not available") },
@@ -256,6 +258,32 @@ struct ClonedVoices: RealtimeTTS, ReferenceVoiceTTS {
     }
 }
 
+/// A file transcription model (Whisper, Parakeet v3) used turn by turn: a turn's audio is kept until it ends, then
+/// transcribed at once. No partial transcript while speaking; in exchange, every language those models know.
+actor TurnTranscriber: RealtimeASR {
+    private var samples: [Float] = []
+    private let transcribe: @Sendable (URL) async throws -> String
+
+    init(_ transcribe: @escaping @Sendable (URL) async throws -> String) { self.transcribe = transcribe }
+
+    func feed(_ samples16k: [Float]) async throws -> String {
+        samples += samples16k
+        return ""
+    }
+
+    func finish() async throws -> String {
+        let turn = samples
+        samples = []
+        guard turn.count >= 1600 else { return "" }   // under 0.1 s: nothing to hear
+        let dir = FileManager.default.temporaryDirectory.appending(path: "Synapse-turn/\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appending(path: "turn.wav")
+        try PCM.wav16(turn, rate: 16000).write(to: wav)
+        return try await transcribe(wav).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 public actor KokoroTTS: RealtimeTTS {
     public nonisolated let sampleRate = 24000
     private let manager: KokoroAneManager
@@ -335,7 +363,31 @@ extension RealtimeServices {
 
     /// Real components, all loaded through the ModelManager. VAD and ASR hold per-stream state, so each session
     /// leases its own copy (both are small); TTS is shared.
-    public static func real(store: ModelStore, models: ModelManager, chat: ChatService, tts ttsID: String = "pocket-tts") -> RealtimeServices {
+    static let streamingASR = "parakeet-eou-120m"
+
+    /// Turn transcription through a job queue's direct path, for `real(transcribe:)`.
+    public static func turnTranscriber(_ queue: JobQueue) -> @Sendable (AudioInput, String?, String?) async throws -> String {
+        { input, model, language in try await queue.transcribeNow(input, modelID: model, language: language).text }
+    }
+    /// What OpenAI clients send for transcription; they mean "the default recognizer".
+    static let asrAliases: Set<String> = ["", "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe-latest"]
+
+    /// The recognizer for a requested transcription model: Parakeet EOU streams (English); any downloaded Whisper or
+    /// Parakeet file model transcribes each turn when it ends (multilingual). Aliases mean the streaming model when it
+    /// is downloaded, else the default file model.
+    static func streamingOrFile(_ model: String, downloaded: Set<String>) throws -> String? {
+        if asrAliases.contains(model) { return downloaded.contains(streamingASR) ? streamingASR : nil }
+        guard let spec = Catalog.spec(model), spec.id == streamingASR || spec.engine == .whisper || spec.engine == .parakeet else {
+            throw EngineError.unsupported("'\(model)' is not a transcription model.")
+        }
+        guard downloaded.contains(spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        return spec.id
+    }
+
+    /// `transcribe` runs a file transcription model on one turn (model id or nil for the default, language hint);
+    /// without it only the streaming recognizer is available.
+    public static func real(store: ModelStore, models: ModelManager, chat: ChatService, tts ttsID: String = "pocket-tts",
+                            transcribe: (@Sendable (AudioInput, String?, String?) async throws -> String)? = nil) -> RealtimeServices {
         @Sendable func folder(_ id: String) async throws -> URL {
             guard let f = await store.folder(for: id) else { throw ResolveError.notDownloaded(id) }
             return f
@@ -348,16 +400,27 @@ extension RealtimeServices {
                     (await FluidVAD(manager: try await VadManager(modelDirectory: dir)), unload: {})
                 }
             },
-            asr: {
-                let dir = try await folder("parakeet-eou-120m")
+            asr: { model, language in
+                let id = try streamingOrFile(model, downloaded: await store.downloaded)
+                guard id == Self.streamingASR else {
+                    guard let transcribe else { throw EngineError.unsupported("Turn-by-turn transcription is not available here.") }
+                    return TurnTranscriber { wav in try await transcribe(.media(wav), id, language) }
+                }
+                let dir = try await folder(Self.streamingASR)
                 return try await models.lease("speech:parakeet-eou-120m#\(UUID().uuidString)", as: FluidStreamingASR.self,
-                                              estimatedBytes: mb("parakeet-eou-120m")) {
+                                              estimatedBytes: mb(Self.streamingASR)) {
                     let m = StreamingEouAsrManager(chunkSize: .ms160)
                     try await m.loadModels(to: dir)
                     return (await FluidStreamingASR(manager: m), unload: { await m.cleanup() })
                 }
             },
-            tts: { try await ttsLease(id: ttsID, store: store, models: models) },
+            tts: { requested in
+                let id = requested ?? ttsID
+                guard SpeechService.preference.contains(id), Catalog.spec(id) != nil else {
+                    throw EngineError.unsupported("'\(id)' is not a speech model. Use one of: \(SpeechService.preference.joined(separator: ", ")).")
+                }
+                return try await ttsLease(id: id, store: store, models: models)
+            },
             llm: { requested in
                 let downloaded = await store.downloaded
                 let known = requested.flatMap { Catalog.spec($0) }.flatMap { $0.isChat ? $0 : nil }

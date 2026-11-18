@@ -23,7 +23,8 @@ final class APIServerTool: XCTestCase {
         let images = ImageService(store: store, models: models, engineFactory: factory)
         let port = env["SYNAPSE_API_TEST_PORT"].flatMap(Int.init) ?? 19000
         print("SDK check server on 127.0.0.1:\(port), fake images: \(env["SYNAPSE_FAKE_IMAGES"] == "1")")
-        let realtime = RealtimeServices.real(store: store, models: models, chat: chat, tts: env["SYNAPSE_TTS"] ?? "pocket-tts")
+        let realtime = RealtimeServices.real(store: store, models: models, chat: chat, tts: env["SYNAPSE_TTS"] ?? "pocket-tts",
+                                             transcribe: RealtimeServices.turnTranscriber(queue))
         let app = Application(router: buildRouter(queue: queue, store: store, settings: settings, chat: chat, images: images,
                                                 speech: SpeechService(store: store, models: models, encoder: AudioEncoder(ffmpegURL: try TestSupport.ffmpeg())),
                                                 embeddings: EmbeddingService(store: store, models: models)),

@@ -31,8 +31,8 @@ final class LiveModel {
     var transcript: String { lines.map { "\($0.role): \($0.text)" }.joined(separator: "\n") }
     func clear() { lines = []; latency = nil; error = nil }
 
-    func start(mode: LiveMode, services: RealtimeServices, chatModel: String, duplexModel: String,
-               language: String, spoken: Bool, voice: String, camera useCamera: Bool = false) async {
+    func start(mode: LiveMode, services: RealtimeServices, chatModel: String, duplexModel: String, recognizer: String,
+               language: String, spoken: Bool, voiceModel: String, voice: String, camera useCamera: Bool = false) async {
         guard !running else { return }
         error = nil
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
@@ -41,19 +41,22 @@ final class LiveModel {
         }
         let s: RealtimeSession
         var update: [String: Any] = ["type": mode == .captions ? "transcription" : "realtime"]
+        let input: [String: Any] = ["transcription": ["model": recognizer]]
+        var output: [String: Any] = ["model": voiceModel]
+        if !voice.isEmpty { output["voice"] = voice }
         switch mode {
         case .captions:
             s = RealtimeSession(transcriptionOnly: true, services: services)
-            update["audio"] = ["input": ["transcription": ["model": "parakeet-eou-120m"], "turn_detection": ["type": "server_vad"]]]
+            update["audio"] = ["input": input.merging(["turn_detection": ["type": "server_vad"]]) { $1 }]
         case .translate:
             s = RealtimeSession(model: chatModel, services: services)
             update["translation_language"] = language
             update["output_modalities"] = [spoken ? "audio" : "text"]
-            if spoken && !voice.isEmpty { update["audio"] = ["output": ["voice": voice]] }
+            update["audio"] = spoken ? ["input": input, "output": output] : ["input": input]
         case .call:
             s = RealtimeSession(model: chatModel, services: services)
             update["output_modalities"] = ["audio"]
-            if !voice.isEmpty { update["audio"] = ["output": ["voice": voice]] }
+            update["audio"] = ["input": input, "output": output]
         case .duplex:
             s = RealtimeSession(model: duplexModel, services: services)
             update["output_modalities"] = ["audio"]
@@ -148,24 +151,48 @@ struct LiveView: View {
     @State private var voice = ""
     @State private var customVoices: [CustomVoice] = []
     @State private var cameraOn = false
+    @State private var recognizer = ""
+    @State private var voiceModel = ""
     private let languages = ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "English"]
 
     private var needsChat: Bool { mode == .translate || mode == .call }
     /// An omni model that hears the call and answers in its own voice, with no speech synthesis.
     private var ownVoice: Bool { mode == .call && Catalog.spec(chatModel).map(OmniVoices.canSpeak) == true }
+    /// Parakeet EOU streams (English, words appear as you talk); Whisper and Parakeet v3 transcribe each turn when
+    /// it ends, in any language they know.
+    private var recognizers: [(String, String)] {
+        (state.isReady("parakeet-eou-120m") ? [("parakeet-eou-120m", "Parakeet EOU · streaming, English")] : [])
+            + state.downloadedSpecs.map { ($0.id, "\($0.displayName) · per turn") }
+    }
+    /// The reply is spoken by a speech model (not the chat model's own voice).
+    private var synthesizes: Bool { (mode == .call || (mode == .translate && spoken)) && !ownVoice }
+    /// The voices the chosen speech model offers: its stock voices ("" is its default), then cloned ones if it clones.
+    private var voiceOptions: [(String, String)] {
+        let s = SpeechService.support(voiceModel)
+        let stock: [(String, String)] = s.stock.isEmpty ? [] : s.stock == ["default"] ? [("", "Default")] : [("", "Default")] + s.stock.map { ($0, $0) }
+        return stock + (s.clones ? customVoices.map { ($0.id, $0.name) } : [])
+    }
     private var canStart: Bool {
+        let listens = state.isReady("silero-vad") && !recognizers.isEmpty
         switch mode {
-        case .captions: state.downloadedRealtimeBase
-        case .duplex: !duplexModel.isEmpty
-        default: state.downloadedRealtimeBase && !chatModel.isEmpty
+        case .captions: return listens
+        case .duplex: return !duplexModel.isEmpty
+        default: return listens && !chatModel.isEmpty && (!synthesizes || (!voiceModel.isEmpty && !voiceOptions.isEmpty))
         }
     }
-    /// Captions have nothing to set; the options card shows only when it holds a control or a missing-model note.
-    private var hasOptions: Bool { mode != .captions || (!canStart && !model.running) }
+    private var hasOptions: Bool { true }
+    /// A download is needed (not just a cloned voice, which the voice picker explains).
+    private var missingModels: Bool {
+        switch mode {
+        case .duplex: return duplexModel.isEmpty
+        case .captions: return !state.isReady("silero-vad") || recognizers.isEmpty
+        default: return !state.isReady("silero-vad") || recognizers.isEmpty || chatModel.isEmpty || (synthesizes && voiceModel.isEmpty)
+        }
+    }
     /// The model doing the talking in this mode, for the readout.
     private var speakerID: String {
         switch mode {
-        case .captions: "parakeet-eou-120m"
+        case .captions: recognizer
         case .duplex: duplexModel
         default: chatModel
         }
@@ -193,6 +220,9 @@ struct LiveView: View {
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
         .onAppear { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: state.downloadedChatSpecs.count) { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
+        .onChange(of: recognizers.map(\.0), initial: true) { _, ids in if !ids.contains(recognizer) { recognizer = ids.first ?? "" } }
+        .onChange(of: state.downloadedTTSSpecs.map(\.id), initial: true) { _, ids in if !ids.contains(voiceModel) { voiceModel = ids.first ?? "" } }
+        .onChange(of: voiceOptions.map(\.0), initial: true) { _, ids in if !ids.contains(voice) { voice = ids.first ?? "" } }
         .onChange(of: state.downloadedDuplexSpecs.count, initial: true) { if duplexModel.isEmpty { duplexModel = state.downloadedDuplexSpecs.first?.id ?? "" } }
         .onChange(of: model.running) { state.setActive(.live, model.running) }
         .onChange(of: model.latency) { if let l = model.latency, !chatModel.isEmpty { state.metrics.record(chatModel, .firstAudio, l) } }
@@ -203,6 +233,9 @@ struct LiveView: View {
             if let m = UserDefaults.standard.string(forKey: "liveMode").flatMap(LiveMode.init(rawValue:)) { mode = m }
             if let m = UserDefaults.standard.string(forKey: "liveModel") { chatModel = m }
             if UserDefaults.standard.bool(forKey: "liveCamera") { cameraOn = true }
+            // `-liveRecognizer parakeet-v3 -liveVoiceModel voxcpm2` preselect the recognizer and speech model.
+            if let m = UserDefaults.standard.string(forKey: "liveRecognizer") { recognizer = m }
+            if let m = UserDefaults.standard.string(forKey: "liveVoiceModel") { voiceModel = m }
         }
         #endif
     }
@@ -270,6 +303,12 @@ struct LiveView: View {
         }
     }
 
+    private var voiceLabel: String {
+        let name = Catalog.spec(voiceModel)?.displayName ?? voiceModel
+        let v = voice.isEmpty ? "default" : customVoices.first { $0.id == voice }?.name ?? voice
+        return "\(name) · \(v)"
+    }
+
     private var readout: some View {
         let spec = Catalog.spec(speakerID)
         return BurnIn(
@@ -281,7 +320,8 @@ struct LiveView: View {
                     ?? Reading(label: "First audio", value: state.metrics.typical(speakerID, .firstAudio) ?? "–", muted: true),
                 Reading(label: "Lines", value: "\(model.lines.count)"),
             ] + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil),
-                                  Reading(label: "Voice", value: ownVoice ? "model's own" : (voice.isEmpty ? "PocketTTS" : customVoices.first { $0.id == voice }?.name ?? voice))] : []) + [
+                                  Reading(label: "Voice", value: ownVoice ? "model's own" : voiceLabel)] : [])
+              + (mode == .duplex ? [] : [Reading(label: "Recognizer", value: recognizer.isEmpty ? "–" : recognizer)]) + [
                 Reading(label: "Resident", value: state.resident(speakerID).map { gigabytes($0.bytes) } ?? "not loaded"),
             ],
             history: state.metrics.history(speakerID, .firstAudio), historyMetric: .firstAudio,
@@ -301,6 +341,12 @@ struct LiveView: View {
                 Picker("Translate to", selection: $language) { ForEach(languages, id: \.self) { Text($0) } }
                 Toggle("Speak the translation", isOn: $spoken)
             }
+            if mode != .duplex {
+                Picker("Recognizer", selection: $recognizer) {
+                    ForEach(recognizers, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                .help("Parakeet EOU shows words as you talk (English). Whisper and Parakeet v3 transcribe each turn when you stop, in many languages.")
+            }
             if mode == .call {
                 Toggle("Camera", systemImage: "video", isOn: $cameraOn)
                     .help("Show the model what the camera sees each time you start talking. Needs a Qwen3.5 model.")
@@ -308,13 +354,16 @@ struct LiveView: View {
             if ownVoice {
                 Label("Hears you and answers in its own voice.", systemImage: "waveform.and.person.filled")
                     .font(.callout).foregroundStyle(.secondary)
-            } else if mode == .call || (mode == .translate && spoken) {
-                Picker("Voice", selection: $voice) {
-                    Text("Default").tag("")
-                    ForEach(SpeechService.pocketVoices, id: \.self) { Text($0).tag($0) }
-                    if !customVoices.isEmpty {
-                        Divider()
-                        ForEach(customVoices) { Text($0.name).tag($0.id) }
+            } else if synthesizes {
+                Picker("Voice model", selection: $voiceModel) {
+                    ForEach(state.downloadedTTSSpecs) { Text($0.displayName).tag($0.id) }
+                }
+                if voiceOptions.isEmpty {
+                    Label("\(Catalog.spec(voiceModel)?.displayName ?? voiceModel) speaks only cloned voices. Clone one in Audio → Speak.",
+                          systemImage: "person.wave.2").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Picker("Voice", selection: $voice) {
+                        ForEach(voiceOptions, id: \.0) { Text($0.1).tag($0.0) }
                     }
                 }
             }
@@ -324,9 +373,10 @@ struct LiveView: View {
                 }
                 Label("Experimental. Needs the RAM shown in Models.", systemImage: "flask").font(.callout).foregroundStyle(.orange)
             }
-            if !canStart && !model.running {
+            if missingModels && !model.running {
                 Label(mode == .duplex ? "Download a full-duplex model in Models."
-                      : "Download Parakeet EOU, Silero VAD, PocketTTS" + (mode == .captions ? "" : " and a Qwen chat model") + " in Models.",
+                      : "Download Silero VAD and a recognizer (Parakeet EOU, Parakeet v3 or Whisper)"
+                        + (mode == .captions ? "" : ", a chat model and a speech model such as PocketTTS") + " in Models.",
                       systemImage: "arrow.down.circle").font(.callout).foregroundStyle(.orange)
             }
         }
@@ -341,8 +391,8 @@ struct LiveView: View {
             Button {
                 if model.running { model.stop() } else {
                     Task { await model.start(mode: mode, services: state.realtime, chatModel: chatModel,
-                                             duplexModel: duplexModel, language: language, spoken: spoken, voice: voice,
-                                             camera: cameraOn) }
+                                             duplexModel: duplexModel, recognizer: recognizer, language: language, spoken: spoken,
+                                             voiceModel: voiceModel, voice: voice, camera: cameraOn) }
                 }
             } label: {
                 Label(model.running ? "Stop" : "Start", systemImage: model.running ? "stop.fill" : "mic.fill").frame(minWidth: 80)

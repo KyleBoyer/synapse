@@ -69,7 +69,7 @@ final class AppState {
         let queue = queue
         chat = ChatService(store: store, models: models)
         images = ImageService(store: store, models: models, engineFactory: ImageEngines.real)
-        realtime = .real(store: store, models: models, chat: chat)
+        realtime = .real(store: store, models: models, chat: chat, transcribe: RealtimeServices.turnTranscriber(queue))
         speech = SpeechService(store: store, models: models, transcribe: SpeechService.transcriber(queue))
         embeddings = EmbeddingService(store: store, models: models)
         videos = VideoService(store: store, models: models)
@@ -145,6 +145,7 @@ final class AppState {
     var downloadedVideoSpecs: [ModelSpec] { readySpecs.filter(\.isVideoGen) }
     var downloadedSoundSpecs: [ModelSpec] { SoundEngines.mock ? Catalog.all.filter(\.isAudioGen) : readySpecs.filter(\.isAudioGen) }
     var diarizerReady: Bool { if case .ready = modelStates["speaker-diarizer"] { return true }; return false }
+    func isReady(_ id: String) -> Bool { if case .ready = modelStates[id] { return true }; return false }
     var downloadedRealtimeBase: Bool { ["parakeet-eou-120m", "silero-vad", "pocket-tts"].allSatisfy { if case .ready = modelStates[$0] { return true }; return false } }
     var downloadedDuplexSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .duplex } }
     var downloadedChatSpecs: [ModelSpec] { readySpecs.filter { $0.isChat } }

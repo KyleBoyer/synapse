@@ -17,7 +17,7 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [x] Consent dropped: voices need no consent (the consent routes stay for OpenAI clients that call them); the app's permission box is gone.
 - [ ] Record a sample with the microphone in the clone sheet (today it takes a file)
 - [ ] Stream the mlx-audio models sentence by sentence (today audio arrives per generated segment)
-- [ ] Live voice calls with the mlx-audio models (Live uses PocketTTS)
+- [x] Live voice calls with more models: realtime sessions choose the recognizer (`audio.input.transcription.model`: Parakeet EOU streaming, or Whisper / Parakeet v3 per turn through `TurnTranscriber`) and the speech model (`audio.output.model`: any TTS model, stock or cloned voices); Live has a menu for each. Verified: a French call through Parakeet v3 → Qwen3.5 0.8B → VoxCPM2, heard back word for word (VoiceCallModelsE2ETests); RealtimeTests cover the session choices; the OpenAI Realtime SDK check passes.
 
 ## Image (+text) embeddings (done)
 

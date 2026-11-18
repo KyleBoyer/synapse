@@ -24,6 +24,8 @@ public actor RealtimeSession {
     private var instructions = "You are a helpful voice assistant. Reply briefly and conversationally, in plain sentences without markdown."
     private var modalities = ["audio"]
     private var voice: String?
+    /// The speech model for spoken replies (`audio.output.model`, Synapse's addition); nil is PocketTTS.
+    private var ttsModel: String?
     private var speed = 1.0
     private var inputRate = 24000
     private var outputRate = 24000
@@ -201,8 +203,12 @@ public actor RealtimeSession {
                 if let r = f["rate"] as? Int { inputRate = r; up = nil }
             }
             if let tr = input["transcription"] as? [String: Any] {
-                if let m = tr["model"] as? String { transcriptionModel = m }
-                language = tr["language"] as? String
+                let lang = tr["language"] as? String
+                if let m = tr["model"] as? String, m != transcriptionModel || lang != language {
+                    transcriptionModel = m
+                    asr = nil; inReady = false   // the next audio builds the recognizer for the new model
+                }
+                language = lang
             }
             if input.keys.contains("turn_detection") {
                 if let td = input["turn_detection"] as? [String: Any] {
@@ -223,6 +229,13 @@ public actor RealtimeSession {
         }
         if let o = audio["output"] as? [String: Any] {
             if let v = o["voice"] as? String { voice = v }
+            if let m = o["model"] as? String, m != (ttsModel ?? SpeechService.preference[0]) {
+                guard SpeechService.preference.contains(m) else {
+                    return "Unknown speech model '\(m)'. Use one of: \(SpeechService.preference.joined(separator: ", "))."
+                }
+                ttsModel = m
+                tts = nil
+            }
             if let v = (o["speed"] as? NSNumber)?.doubleValue { speed = v }
             if let f = o["format"] as? [String: Any] {
                 guard (f["type"] as? String ?? "audio/pcm") == "audio/pcm" else { return "Only audio/pcm output is supported." }
@@ -249,7 +262,8 @@ public actor RealtimeSession {
             s["tools"] = tools
             s["tool_choice"] = "auto"
             s["audio"] = ["input": input, "output": ["format": ["type": "audio/pcm", "rate": outputRate],
-                                                      "voice": voice ?? "alloy", "speed": speed]]
+                                                      "voice": voice ?? "alloy", "speed": speed,
+                                                      "model": ttsModel ?? SpeechService.preference[0]]]
         }
         if let l = translationLanguage { s["translation_language"] = l }
         return s
@@ -304,7 +318,7 @@ public actor RealtimeSession {
         if let spec = Catalog.spec(model), spec.id.hasPrefix("hibiki") {
             special = try await services.special(spec)
         } else {
-            asr = try await services.asr()
+            asr = try await services.asr(transcriptionModel, language)
         }
         inReady = true
     }
@@ -628,7 +642,13 @@ public actor RealtimeSession {
         beginResponse(r)
         do {
             if llm == nil { llm = try await services.llm(spec?.isChat == true ? spec?.id : nil) }
-            if r.audio, tts == nil { tts = try await services.tts() }
+            if r.audio {
+                let id = ttsModel ?? SpeechService.preference[0]
+                if SpeechService.support(id).stock.isEmpty, voice?.hasPrefix("voice_") != true {
+                    throw SpeechError.voice("\(Catalog.spec(id)?.displayName ?? id) speaks only in a cloned voice: set audio.output.voice to a voice_… id.")
+                }
+                if tts == nil { tts = try await services.tts(ttsModel) }
+            }
             let llm = self.llm!
             let tts = self.tts
             let messages = messagesForResponse(instructions: instructions)

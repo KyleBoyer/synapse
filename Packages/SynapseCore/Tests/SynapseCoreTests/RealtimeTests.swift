@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 @testable import SynapseCore
 
@@ -63,8 +64,19 @@ private actor FakeDuplex: DuplexSpeechEngine {
     func unload() async {}
 }
 
-private func services(llm: FakeLLM = FakeLLM(), ttsDelay: Int = 0, voice: FakeVoice = FakeVoice()) -> RealtimeServices {
-    RealtimeServices(vad: { FakeVAD() }, asr: { FakeASR() }, tts: { FakeTTS(delayMs: ttsDelay) }, llm: { _ in llm },
+/// Which recognizer and speech models a session asked the services for.
+private final class Requested: @unchecked Sendable {
+    private let lock = NSLock()
+    private var asrModels: [String] = [], languages: [String?] = [], ttsModels: [String?] = []
+    func asr(_ m: String, _ l: String?) { lock.withLock { asrModels.append(m); languages.append(l) } }
+    func tts(_ m: String?) { lock.withLock { ttsModels.append(m) } }
+    var seen: (asr: [String], languages: [String?], tts: [String?]) { lock.withLock { (asrModels, languages, ttsModels) } }
+}
+
+private func services(llm: FakeLLM = FakeLLM(), ttsDelay: Int = 0, voice: FakeVoice = FakeVoice(),
+                      requested: Requested = Requested()) -> RealtimeServices {
+    RealtimeServices(vad: { FakeVAD() }, asr: { m, l in requested.asr(m, l); return FakeASR() },
+                     tts: { m in requested.tts(m); return FakeTTS(delayMs: ttsDelay) }, llm: { _ in llm },
                      special: { _ in RealtimeSpecialModel(duplex: FakeDuplex()) }, voice: { _ in voice })
 }
 
@@ -142,6 +154,64 @@ final class RealtimeTests: XCTestCase {
         let updated = (await c.first("session.updated")!["session"]) as! [String: Any]
         XCTAssertEqual(updated["instructions"] as? String, "Be terse.")
         await s.close()
+    }
+
+    /// session.update picks the recognizer (input.transcription.model + language) and the speech model (output.model).
+    func testSessionChoosesRecognizerAndSpeechModel() async throws {
+        let requested = Requested()
+        let s = RealtimeSession(model: "qwen3.5-0.8b", services: services(requested: requested))
+        let c = start(s)
+        await send(s, ["type": "session.update", "session": ["type": "realtime", "audio": [
+            "input": ["transcription": ["model": "parakeet-v3", "language": "fr"]],
+            "output": ["model": "chatterbox-turbo", "voice": "default"]]]])
+        let ok = await c.wait("session.updated")
+        XCTAssertTrue(ok)
+        let output = (((await c.first("session.updated")!["session"]) as! [String: Any])["audio"] as! [String: Any])["output"] as! [String: Any]
+        XCTAssertEqual(output["model"] as? String, "chatterbox-turbo")
+        await speak(s)
+        let done = await c.wait("response.done")
+        XCTAssertTrue(done)
+        XCTAssertEqual(requested.seen.asr, ["parakeet-v3"])
+        XCTAssertEqual(requested.seen.languages, ["fr"])
+        XCTAssertEqual(requested.seen.tts, ["chatterbox-turbo"])
+
+        // A model that speaks only cloned voices refuses a stock voice; an unknown speech model is refused at once.
+        await send(s, ["type": "session.update", "session": ["type": "realtime", "audio": ["output": ["model": "qwen3-tts-1.7b"]]]])
+        await send(s, ["type": "response.create"])
+        let failed = await c.wait("response.done", count: 2)
+        XCTAssertTrue(failed)
+        let errors = await c.events.filter { $0["type"] as? String == "error" }.map { "\($0)" }
+        XCTAssertTrue(errors.contains { $0.contains("cloned voice") }, "\(errors)")
+        await send(s, ["type": "session.update", "session": ["type": "realtime", "audio": ["output": ["model": "nope"]]]])
+        let refused = await c.wait("error", count: errors.count + 1)
+        XCTAssertTrue(refused)
+        await s.close()
+    }
+
+    func testRecognizerResolution() throws {
+        let both: Set<String> = ["parakeet-eou-120m", "parakeet-v3", "whisper-tiny"]
+        XCTAssertEqual(try RealtimeServices.streamingOrFile("gpt-4o-transcribe", downloaded: both), "parakeet-eou-120m")
+        XCTAssertNil(try RealtimeServices.streamingOrFile("whisper-1", downloaded: ["parakeet-v3"]), "no streaming model: the default file model")
+        XCTAssertEqual(try RealtimeServices.streamingOrFile("parakeet-v3", downloaded: both), "parakeet-v3")
+        XCTAssertEqual(try RealtimeServices.streamingOrFile("whisper-tiny", downloaded: both), "whisper-tiny")
+        XCTAssertThrowsError(try RealtimeServices.streamingOrFile("whisper-large-v3", downloaded: both), "not downloaded")
+        XCTAssertThrowsError(try RealtimeServices.streamingOrFile("qwen3.5-0.8b", downloaded: both), "not a transcription model")
+    }
+
+    func testTurnTranscriberHoldsAudioUntilTheTurnEnds() async throws {
+        let heard = Mutex<[Int]>([])
+        let t = TurnTranscriber { wav in
+            heard.withLock { $0.append(((try? Data(contentsOf: wav).count) ?? 0) - 44) }
+            return " bonjour "
+        }
+        let partial = try await t.feed([Float](repeating: 0.1, count: 16000))
+        XCTAssertEqual(partial, "")
+        _ = try await t.feed([Float](repeating: 0.1, count: 8000))
+        let final = try await t.finish()
+        XCTAssertEqual(final, "bonjour")
+        XCTAssertEqual(heard.withLock { $0 }, [48000], "1.5 s of 16 kHz 16-bit audio in one file")
+        let empty = try await t.finish()
+        XCTAssertEqual(empty, "", "nothing buffered after a turn")
     }
 
     func testBadJSONAndUnknownTypesProduceErrors() async throws {

@@ -78,7 +78,7 @@ public actor ServerController {
         self.queue = queue; self.store = store; self.box = settings
         let chat = chat ?? ChatService(store: store)
         self.chat = chat
-        self.realtime = realtime ?? .real(store: store, models: ModelManager(), chat: chat)
+        self.realtime = realtime ?? .real(store: store, models: ModelManager(), chat: chat, transcribe: RealtimeServices.turnTranscriber(queue))
         self.images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
         self.speech = speech ?? SpeechService(store: store, models: ModelManager())
         self.embeddings = embeddings ?? EmbeddingService(store: store, models: ModelManager())

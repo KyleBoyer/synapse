@@ -90,6 +90,20 @@ public actor JobQueue {
         }
     }
 
+    /// Transcribes right away, outside the job list and the queue: a voice-call turn or a voice clip should not wait
+    /// behind a long file, nor show up in the Transcribe pane. nil `modelID` uses the default transcription model.
+    public func transcribeNow(_ input: AudioInput, modelID: String?, language: String?) async throws -> Transcript {
+        let spec = try ModelResolver.resolve(requested: modelID, task: .transcribe, language: language,
+                                             defaultID: settings.current.defaultModelID, downloaded: await store.downloaded)
+        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        let dir = try tempDir(UUID())
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = try await decoder.decodeToWAV(input, into: dir)
+        let lease = try await engineLease(for: spec, folder: folder)
+        defer { lease.release() }
+        return try await lease.value.transcribe(wav: wav, language: language, task: .transcribe) { _ in }
+    }
+
     public func snapshot(_ id: UUID) -> JobSnapshot? { jobs[id] }
     public func all() -> [JobSnapshot] { order.compactMap { jobs[$0] } }
 

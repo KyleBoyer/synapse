@@ -185,6 +185,16 @@ Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-
 
 `GET /v1/realtime?model=<id>` (WebSocket, OpenAI Realtime events). Add `&intent=transcription` for live transcription only. `conversation.item.create` accepts `input_image` parts (base64 `data:image` URLs): a vision chat model sees the frame with the user's next turn, and the latest two frames are kept. The **Live** pane's Voice call sends a camera frame this way each time you start talking. The duplex models talk back in one model: `personaplex-7b` and `voicechat-11b` for voice calls, `hibiki-zero-3b` for live French-to-English speech translation. The app's **Live** pane uses the same sessions with the microphone.
 
+A voice call is three choices, each per session:
+
+| Stage | How to choose | Options |
+|---|---|---|
+| Hearing | `audio.input.transcription.model` (and `language`) | `parakeet-eou-120m` streams words as you talk (English; the default, also for `whisper-1` and `gpt-4o-transcribe`). Any downloaded Whisper or Parakeet v3 model transcribes each turn when you stop, in every language it knows. |
+| Thinking | `?model=` | Any downloaded chat model: MLX, mlx-vlm, GGUF, added from Hugging Face. |
+| Speaking | `audio.output.model` (Synapse's addition) and `audio.output.voice` | `pocket-tts` (default, streams fastest), `kokoro-82m`, `chatterbox-turbo`, `voxcpm2`, `qwen3-tts-1.7b`; stock voices or a cloned `voice_…` id (Qwen3-TTS speaks only cloned voices). Omni models that speak (`lfm3-omni-2b`, `minicpm-o-4.5`) use their own voice instead. |
+
+**Live → Voice call** has a menu for each. A French call (Parakeet v3, Qwen3.5 0.8B, VoxCPM2) heard "Quelle est la capitale de l'Allemagne?" and answered "La capitale de l'Allemagne est la ville de Berlin." The mlx-audio voices speak each sentence once it is generated, so their first audio comes later than PocketTTS's.
+
 ### vOOM (models larger than memory)
 
 Set **Settings → vOOM checkout** to a vOOM checkout with its `.venv`. Synapse then lists `voom:<model>` ids and starts the vOOM server on demand. vOOM pages weights from the SSD, so a model larger than free memory still runs, only slower. It serves chat (`/v1/chat/completions`, `/v1/responses`) for models in its own `models/` folder, and `/v1/images/generations` for Z-Image Turbo from Synapse's models folder (`voom:Z-Image-Turbo-bf16`). Set `VMODEL_IMAGE_WEIGHT_BUDGET_MB` in Synapse's environment to cap the image weights kept resident (default 6000).
