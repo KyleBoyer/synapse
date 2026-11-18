@@ -2,7 +2,8 @@
 build/
 .build/
 DerivedData/
-vendor/
+# Built binaries (scripts/build-*.sh). Anchored: core.ignorecase would otherwise also hide Packages/Vendor.
+/vendor/
 dist/
 *.xcuserstate
 .DS_Store

@@ -46,18 +46,24 @@ fi
 
 sign() { codesign --force --options runtime "${TS[@]}" -s "$IDENTITY" "$1"; }
 
-sign "$APP/Contents/MacOS/ffmpeg"
+# Helper binaries first (inside out); notarization rejects any nested code without Developer ID and hardened runtime.
+for helper in ffmpeg llama-server; do sign "$APP/Contents/MacOS/$helper"; done
 if [[ -d "$APP/Contents/Frameworks" ]]; then
   for f in "$APP"/Contents/Frameworks/*; do
     [[ -e "$f" ]] && sign "$f"
   done
 fi
-sign "$APP"
+# The Release build is unsigned (CODE_SIGNING_ALLOWED=NO), so the entitlements are applied here.
+codesign --force --options runtime "${TS[@]}" --entitlements "$ROOT/Synapse/Synapse.entitlements" -s "$IDENTITY" "$APP"
 
 codesign --verify --strict --verbose=2 "$APP"
 # Capture first: with pipefail, `grep -q` closing the pipe early makes codesign's SIGPIPE fail the check.
-FFMPEG_SIG="$(codesign -dv "$APP/Contents/MacOS/ffmpeg" 2>&1)"
-[[ "$FFMPEG_SIG" == *runtime* ]] || { echo "ffmpeg is missing the hardened runtime flag" >&2; exit 1; }
+for helper in ffmpeg llama-server; do
+  SIG="$(codesign -dv "$APP/Contents/MacOS/$helper" 2>&1)"
+  [[ "$SIG" == *runtime* ]] || { echo "$helper is missing the hardened runtime flag" >&2; exit 1; }
+done
+ENT="$(codesign -d --entitlements - "$APP" 2>&1)"
+[[ "$ENT" == *audio-input* ]] || { echo "Synapse.app is missing its entitlements" >&2; exit 1; }
 
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"

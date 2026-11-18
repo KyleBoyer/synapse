@@ -1,0 +1,28 @@
+name: Set up Synapse build
+description: Newest Xcode, xcodegen, the Metal toolchain, and the bundled ffmpeg and llama-server (cached by their build scripts).
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode
+      shell: bash
+      run: |
+        XCODE="$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)"
+        sudo xcode-select -s "$XCODE"
+        xcodebuild -version
+    - shell: bash
+      run: brew install xcodegen
+    # MLX compiles Metal shaders; the toolchain is an optional Xcode component.
+    - shell: bash
+      run: xcodebuild -downloadComponent MetalToolchain
+    - uses: actions/cache@v4
+      with:
+        path: |
+          vendor/ffmpeg
+          vendor/llama.cpp
+        key: vendor-${{ runner.os }}-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/build-llama.sh') }}
+    - uses: actions/cache@v4
+      with:
+        path: Packages/SynapseCore/.build
+        key: spm-${{ runner.os }}-${{ hashFiles('Packages/SynapseCore/Package.resolved', 'Packages/Vendor/*/Package.swift') }}
+    - shell: bash
+      run: scripts/build-ffmpeg.sh && scripts/build-llama.sh

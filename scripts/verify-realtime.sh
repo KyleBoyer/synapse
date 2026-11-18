@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Starts the opt-in API test server (HTTP + /v1/realtime) on real models and runs the official-SDK check.
-# Needs: SynapseModels with qwen3.5-0.8b, silero-vad, parakeet-eou-120m, pocket-tts; MLX metallib built once
+# Needs: a models folder (SYNAPSE_MODELS_DIR, default the app's) with qwen3.5-0.8b, silero-vad, parakeet-eou-120m, pocket-tts; MLX metallib built once
 # via scripts/test-chat-e2e.sh (xcodebuild). Usage: scripts/verify-realtime.sh <python-with-openai[realtime]> [script args]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG="${SYNAPSE_PKG:-$ROOT/Packages/SynapseCore}"
 PY="${1:?path to python with openai and websockets}"
-export SYNAPSE_MODELS_DIR="${SYNAPSE_MODELS_DIR:-/Volumes/Workspace NVME/SynapseModels}"
+export SYNAPSE_MODELS_DIR="${SYNAPSE_MODELS_DIR:-$HOME/Library/Application Support/Synapse/Models}"
 export SYNAPSE_FFMPEG="${SYNAPSE_FFMPEG:-$ROOT/vendor/ffmpeg/bin/ffmpeg}"
 export SYNAPSE_API_TEST_SERVER=1 SYNAPSE_FAKE_IMAGES=1 SYNAPSE_API_TEST_PORT="${PORT:-19100}"
 cd "$PKG"

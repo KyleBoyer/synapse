@@ -5,8 +5,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${SYNAPSE_API_TEST_PORT:-19000}"
-SCRATCH="/Volumes/Workspace NVME/SynapseScratch/sdk-server"
-MODELS="${SYNAPSE_MODELS_DIR:-/Volumes/Workspace NVME/SynapseModels}"
+SCRATCH="${SYNAPSE_SCRATCH:-${TMPDIR:-/tmp}}/synapse-sdk-server"
+# Same default as the app (ModelStore.defaultRoot).
+MODELS="${SYNAPSE_MODELS_DIR:-$HOME/Library/Application Support/Synapse/Models}"
 
 # Building the bundle is the point; the filter matches nothing, so swift test's own exit status is ignored.
 "$ROOT/scripts/test-chat-e2e.sh" NoSuchTestJustBuild >/dev/null 2>&1 || true

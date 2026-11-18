@@ -1,44 +1,69 @@
 name: Release
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump. none builds, tests and signs, uploads the zip as a run artifact, and publishes nothing."
+        type: choice
+        options: [none, patch, minor, major]
+        default: none
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode
+        with:
+          fetch-depth: 0
+
+      # project.yml holds the version (MARKETING_VERSION) and build number (CURRENT_PROJECT_VERSION).
+      - name: Version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          XCODE="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
-          sudo xcode-select -s "$XCODE"
-          xcodebuild -version
-      - run: brew install xcodegen
-      # MLX compiles Metal shaders; the toolchain is an optional Xcode component.
-      - run: xcodebuild -downloadComponent MetalToolchain
-      - uses: actions/cache@v4
-        with:
-          path: vendor/ffmpeg
-          key: ffmpeg-${{ hashFiles('scripts/build-ffmpeg.sh') }}
-      - uses: actions/cache@v4
-        with:
-          path: Packages/SynapseCore/.build
-          key: spm-${{ hashFiles('Packages/SynapseCore/Package.resolved') }}
-      - run: scripts/build-ffmpeg.sh
-      - name: Test
-        working-directory: Packages/SynapseCore
-        run: swift test
+          CURRENT="$(sed -nE 's/^ *MARKETING_VERSION: "?([0-9]+\.[0-9]+\.[0-9]+)"?.*/\1/p' project.yml)"
+          BUILD="$(sed -nE 's/^ *CURRENT_PROJECT_VERSION: "?([0-9]+)"?.*/\1/p' project.yml)"
+          [[ -n "$CURRENT" && -n "$BUILD" ]] || { echo "::error::MARKETING_VERSION or CURRENT_PROJECT_VERSION not found in project.yml"; exit 1; }
+          IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
+          case "$BUMP" in
+            major) VERSION="$((MAJOR + 1)).0.0" ;;
+            minor) VERSION="$MAJOR.$((MINOR + 1)).0" ;;
+            patch) VERSION="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+            none)  VERSION="$CURRENT" ;;
+          esac
+          if [[ "$BUMP" == none ]]; then
+            echo "artifact=$CURRENT-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          else
+            [[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]] || { echo "::error::Publish from $DEFAULT_BRANCH, not $GITHUB_REF_NAME"; exit 1; }
+            git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null && { echo "::error::Tag v$VERSION already exists"; exit 1; }
+            BUILD=$((BUILD + 1))
+            sed -i '' -E "s/^( *MARKETING_VERSION: ).*/\1\"$VERSION\"/; s/^( *CURRENT_PROJECT_VERSION: ).*/\1\"$BUILD\"/" project.yml
+            echo "artifact=$VERSION" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Synapse $VERSION (build $BUILD), bump: $BUMP" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: ./.github/actions/setup
       - run: xcodegen generate
       - name: Build
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           xcodebuild -project Synapse.xcodeproj -scheme Synapse -configuration Release \
             -destination 'generic/platform=macOS' -derivedDataPath build \
             -skipPackagePluginValidation -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO MARKETING_VERSION="$VERSION" build
+            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 build
+      - name: Unit tests
+        run: scripts/unit-tests.sh build/Build/Products/Release/mlx-swift_Cmlx.bundle
+
+      # Signs with Developer ID and notarizes when the secrets are set; ad-hoc signs otherwise.
       - name: Sign and package
         id: pkg
         env:
@@ -47,17 +72,31 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: scripts/sign-and-package.sh build/Build/Products/Release/Synapse.app "${GITHUB_REF_NAME#v}"
-      - name: Create release
+        run: scripts/sign-and-package.sh build/Build/Products/Release/Synapse.app "${{ steps.version.outputs.artifact }}"
+
+      - name: Upload build
+        if: inputs.bump == 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Synapse-${{ steps.version.outputs.artifact }}
+          path: dist/*.zip
+
+      # Only after the build, tests and signing pass: commit the bump, tag it, publish.
+      - name: Tag and publish
+        if: inputs.bump != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGNED: ${{ steps.pkg.outputs.signed }}
         run: |
-          FLAGS=()
-          [[ "$GITHUB_REF_NAME" == *-* ]] && FLAGS+=(--prerelease)
-          if [[ "${{ steps.pkg.outputs.signed }}" != "1" ]]; then
-            cat > notes.md <<'NOTES'
-          Unsigned build: after unzipping run `xattr -dr com.apple.quarantine /Applications/Synapse.app` or right-click and choose Open.
-          NOTES
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Release v$VERSION" -- project.yml
+          git tag -a "v$VERSION" -m "Synapse v$VERSION"
+          git push --atomic origin "HEAD:refs/heads/$GITHUB_REF_NAME" "refs/tags/v$VERSION"
+          FLAGS=(--title "Synapse v$VERSION" --generate-notes --verify-tag)
+          if [[ "$SIGNED" != "1" ]]; then
+            echo 'Unsigned build: after unzipping run `xattr -dr com.apple.quarantine /Applications/Synapse.app`, or right-click the app and choose Open.' > notes.md
             FLAGS+=(--notes-file notes.md)
           fi
-          gh release create "$GITHUB_REF_NAME" dist/*.zip --generate-notes "${FLAGS[@]}"
+          gh release create "v$VERSION" dist/*.zip "${FLAGS[@]}"

@@ -27,7 +27,7 @@ xcodegen generate
 open Synapse.xcodeproj
 ```
 
-Core logic tests: `cd Packages/SynapseCore && swift test`. End-to-end tests download real models and only run with `SYNAPSE_E2E=1`. Xcode 26 is required.
+Core logic tests: `scripts/unit-tests.sh build/Build/Products/Release/mlx-swift_Cmlx.bundle` after a Release build of the app (it copies MLX's Metal library into the test bundle, which plain `swift test` cannot build). End-to-end tests download real models and only run with `SYNAPSE_E2E=1`. Xcode 26 is required.
 
 MLX needs a compiled Metal library, which `swift build` cannot produce. `scripts/test-chat-e2e.sh` builds it once with xcodebuild, puts it next to the test binary, and runs the Qwen tests (downloads `qwen3.5-0.8b`, about 650 MB).
 
@@ -249,7 +249,12 @@ Add folders in the Watch Folders tab. For each new media file, Synapse writes a 
 
 ## Releases (maintainers)
 
-Pushing a tag `v*` runs `.github/workflows/release.yml`, which builds, signs, and publishes a GitHub Release (tags containing `-` are prereleases). Without secrets the app is ad-hoc signed. For Developer ID signing and notarization (paid Apple Developer account), set these repository secrets:
+Run the **Release** workflow from the Actions tab (`gh workflow run release.yml -f bump=patch`) and choose a bump:
+
+- `none`: builds, tests and signs, then attaches the zip to the workflow run. Nothing is committed, tagged or published.
+- `patch`, `minor`, `major`: bumps `MARKETING_VERSION` (and the build number) in `project.yml`, builds, tests and signs, then commits `Release vX.Y.Z`, tags it, and publishes a GitHub Release with the zip. It runs only from the default branch, and nothing is pushed if any step before it fails.
+
+Without secrets the app is ad-hoc signed. For Developer ID signing and notarization (paid Apple Developer account), set these repository secrets:
 
 - `DEVELOPER_ID_CERT_P12` (base64 of the exported .p12)
 - `DEVELOPER_ID_CERT_PASSWORD`

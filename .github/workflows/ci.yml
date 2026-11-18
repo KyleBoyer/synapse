@@ -4,36 +4,23 @@ on:
     branches: ["**"]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     # macos-26 is the arm64 macOS 26 image (actions/runner-images README)
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode
-        run: |
-          XCODE="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
-          sudo xcode-select -s "$XCODE"
-          xcodebuild -version
-      - run: brew install xcodegen
-      # MLX compiles Metal shaders; the toolchain is an optional Xcode component.
-      - run: xcodebuild -downloadComponent MetalToolchain
-      - uses: actions/cache@v4
-        with:
-          path: vendor/ffmpeg
-          key: ffmpeg-${{ hashFiles('scripts/build-ffmpeg.sh') }}
-      - uses: actions/cache@v4
-        with:
-          path: Packages/SynapseCore/.build
-          key: spm-${{ hashFiles('Packages/SynapseCore/Package.resolved') }}
-      - run: scripts/build-ffmpeg.sh
-      - name: Test
-        working-directory: Packages/SynapseCore
-        run: swift test
+      - uses: ./.github/actions/setup
       - run: xcodegen generate
       - name: Build
         run: |
           xcodebuild -project Synapse.xcodeproj -scheme Synapse -configuration Release \
-            -destination 'generic/platform=macOS' \
+            -destination 'generic/platform=macOS' -derivedDataPath build \
             -skipPackagePluginValidation -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO build
+            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 build
+      - name: Unit tests
+        run: scripts/unit-tests.sh build/Build/Products/Release/mlx-swift_Cmlx.bundle
