@@ -1,41 +1,144 @@
-# Synapse
+<p align="center"><img src="Synapse/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" alt="Synapse app icon"></p>
 
-Synapse is a native macOS app that transcribes audio and video into subtitles using local models. Nothing leaves your Mac. It runs Whisper (via WhisperKit) and NVIDIA Parakeet (via FluidAudio) on Core ML, and exposes an HTTP API that is compatible with the OpenAI transcription API and with Bazarr's Whisper provider. It can also watch folders and write subtitle files next to your media. It also runs Qwen3.5 chat and vision models (0.8B, 2B, 4B, 9B) on MLX, served through OpenAI-compatible Chat Completions and Responses endpoints and the Anthropic Messages API, so either SDK works.
+<h1 align="center">Synapse</h1>
 
-## Requirements
+<p align="center"><b>Every kind of AI model, running on your Mac, behind the APIs your tools already speak.</b></p>
 
-- Apple Silicon Mac
-- macOS 26 or later
+<p align="center">
+  <a href="https://github.com/KyleBoyer/synapse/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/KyleBoyer/synapse?label=download&color=7c5cff"></a>
+  <a href="https://github.com/KyleBoyer/synapse/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/KyleBoyer/synapse/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-111?logo=apple">
+  <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-M1%20and%20later-111">
+</p>
 
-## Install
+<p align="center">
+  <a href="https://github.com/KyleBoyer/synapse/releases/latest"><b>Download</b></a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#use-it-from-code">Use it from code</a> ·
+  <a href="#what-it-runs">What it runs</a> ·
+  <a href="#reference">API reference</a>
+</p>
 
-1. Download the latest `Synapse-<version>.zip` from the Releases page and unzip it.
-2. Move `Synapse.app` to `/Applications`.
-3. If the release is not notarized (the release notes say "Unsigned build"), macOS will block it. Run `xattr -dr com.apple.quarantine /Applications/Synapse.app`, or right-click the app and choose Open.
-4. Open the Models tab and download a model.
+<p align="center"><img src="docs/screenshots/chat.png" alt="Synapse's Chat pane: Qwen3.5 2B looks at a photo of a zebra and answers, with live speed readouts" width="900"></p>
 
-If you enable "Allow LAN" in the Server tab, the server binds to `0.0.0.0` and macOS shows an "Allow incoming connections?" firewall prompt. With ad-hoc signed builds the prompt can reappear after each update.
+Synapse is a native macOS app and a local server in one. It chats, sees, listens, transcribes, speaks, clones voices, makes music, draws, upscales, cuts out, edits video, embeds and reranks, and holds live voice calls. Every model runs on your Mac's GPU and Neural Engine. Nothing leaves the machine.
 
-## Build from source
+The same models answer on `http://127.0.0.1:9000` in the shapes of the **OpenAI**, **Anthropic** and **LM Studio** APIs, so the official SDKs, chat apps, coding agents and media tools (Bazarr included) work with it unchanged.
 
-```bash
-brew install xcodegen
-xcodebuild -downloadComponent MetalToolchain   # MLX compiles Metal shaders
-scripts/build-ffmpeg.sh      # builds vendor/ffmpeg/bin/ffmpeg (LGPL, ~minutes)
-scripts/build-llama.sh       # builds vendor/llama.cpp/bin/llama-server (MIT, ~1 minute)
-xcodegen generate
-open Synapse.xcodeproj
+## Highlights
+
+- **Private by default.** No account, no cloud, no telemetry. Audio, images and video stay on your disk.
+- **A drop-in API.** OpenAI Chat Completions, Responses, Audio, Images, Embeddings, Videos and Realtime; Anthropic Messages; LM Studio's REST API; Cohere and Jina rerank; Bazarr's Whisper provider. Streaming, tool calls and vision included.
+- **Every modality in one place.** Text, images, video and audio in. Text, speech, music, images and video out. Full-duplex voice models that listen while they talk.
+- **A real Mac app, not a web wrapper.** SwiftUI and Liquid Glass, with a live readout on every pane: time to first token, tokens per second, memory, and the exact API call that does the same thing.
+- **Any model from Hugging Face.** Paste a repo name. Synapse checks it, tells you how it would run it, and then runs it in-process on MLX, through mlx-vlm, or as a GGUF on a bundled llama.cpp.
+- **Built for a laptop's memory.** A memory budget, one GPU user at a time, idle unloading, and optional vOOM paging for models larger than RAM. Every screenshot here was taken on a 16 GB M4 Mac mini.
+
+## See it work
+
+Every screenshot below is a real run on the 16 GB Mac mini.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/transcribe.png" alt="Transcribe: a two-person recording with each line labeled by speaker"><br><b>Transcribe, with speakers.</b> Whisper or Parakeet on the Neural Engine, speaker labels from a diarization model, and SRT, WebVTT or JSON out. Watch a folder and subtitles appear next to your media.</td>
+    <td width="50%"><img src="docs/screenshots/generate.png" alt="Images: FLUX.2 klein 4B renders a glass jellyfish in a neon alley"><br><b>Generate images.</b> FLUX.2 klein, Z-Image and Qwen-Image, with seed, size and steps, and the OpenAI Images API on top. This 1024 × 1024 jellyfish took 81 seconds.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/cutout.png" alt="Images, Cut Out: the zebra lifted off its background"><br><b>Cut out, depth, upscale.</b> Lift a subject with macOS Vision, make a depth map with Depth Anything V2, or upscale ×4 with Real-ESRGAN.</td>
+    <td><img src="docs/screenshots/video.png" alt="Video, Transform: every frame of a clip turned into a depth map"><br><b>Transform video.</b> Run every frame through depth, subject mask or ×4 upscaling, keeping the sound and timing. Generate new clips with LTX-2.3.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/speak.png" alt="Audio, Speak: PocketTTS reads a sentence aloud, with first-audio time and speed"><br><b>Speak and clone voices.</b> Five speech engines; PocketTTS starts talking in a quarter second and runs 3× faster than realtime. Clone a voice from a 10-second clip and use it everywhere, including voice calls.</td>
+    <td><img src="docs/screenshots/compose.png" alt="Audio, Compose: Stable Audio 3 makes thunder and rain from a text prompt"><br><b>Make music and sound effects.</b> Stable Audio 3 from a text prompt. Clean Up removes noise, splits speakers, pulls out a described sound, or re-voices a recording.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/embed.png" alt="Embed: documents ranked against a query by cosine similarity and a reranker"><br><b>Embed and rerank.</b> Text and image embeddings plus a reranker, for search and RAG, behind the OpenAI and Cohere shapes.</td>
+    <td><img src="docs/screenshots/live.png" alt="Live: voice call settings with hearing, thinking and speaking models"><br><b>Talk to it.</b> Live captions, translation and voice calls (with the camera, if you like) over the OpenAI Realtime protocol. Pick how it hears, thinks and speaks.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/models.png" alt="Models: the catalog, with measured load time, first-token time and decode rate on this Mac"><br><b>Know what you're running.</b> Every model shows what it costs on <i>your</i> Mac: load time, first token, decode rate, memory.</td>
+    <td><img src="docs/screenshots/server.png" alt="Server: address, LAN switch, API key and the list of routes"><br><b>Serve your network.</b> One switch opens the server to your LAN behind an API key, with a ready-to-paste URL for each client.</td>
+  </tr>
+</table>
+
+## Quick start
+
+1. Download `Synapse-<version>.zip` from [the latest release](https://github.com/KyleBoyer/synapse/releases/latest), unzip it, and move `Synapse.app` to `/Applications`. Releases are signed with a Developer ID and notarized by Apple.
+2. Open Synapse, go to **Models**, and download a model. `Qwen3.5 2B` (1.6 GB) is a good first chat model; `Parakeet v3` is a good first transcriber.
+3. Press **Try in Chat**, or point any OpenAI or Anthropic client at `http://127.0.0.1:9000`.
+
+You need an Apple Silicon Mac with macOS 26 or later. 16 GB of memory runs everything in the gallery; the largest models (full-precision LTX-2.3, Qwen3-Omni 30B, MiniCPM-o) want 32 to 64 GB or more.
+
+## Use it from code
+
+Use the official SDKs and give them Synapse's address. Without LAN access, any API key works.
+
+```python
+from openai import OpenAI
+
+c = OpenAI(base_url="http://localhost:9000/v1", api_key="x")
+
+print(c.chat.completions.create(model="qwen3.5-2b", messages=[{"role": "user", "content": "Write a haiku about RAM."}]).choices[0].message.content)
+print(c.audio.transcriptions.create(model="whisper-1", file=open("interview.m4a", "rb"), response_format="srt"))
+c.audio.speech.create(model="tts-1", voice="alloy", input="Hello from Synapse.").write_to_file("hello.mp3")
+c.images.generate(model="flux2-klein-4b", prompt="a lighthouse made of glass", size="1024x1024")
+v = c.embeddings.create(model="text-embedding-3-small", input=["Paris is the capital of France."]).data[0].embedding
 ```
 
-Core logic tests: `scripts/unit-tests.sh build/Build/Products/Release/mlx-swift_Cmlx.bundle` after a Release build of the app (it copies MLX's Metal library into the test bundle, which plain `swift test` cannot build). End-to-end tests download real models and only run with `SYNAPSE_E2E=1`. Xcode 26 is required.
+```python
+import anthropic
 
-MLX needs a compiled Metal library, which `swift build` cannot produce. `scripts/test-chat-e2e.sh` builds it once with xcodebuild, puts it next to the test binary, and runs the Qwen tests (downloads `qwen3.5-0.8b`, about 650 MB).
+c = anthropic.Anthropic(base_url="http://localhost:9000", api_key="x")  # the SDK adds /v1
+print(c.messages.create(model="qwen3.5-2b", max_tokens=256, messages=[{"role": "user", "content": "Hi"}]).content[0].text)
+```
 
-With the app running and `qwen3.5-0.8b` downloaded, `scripts/verify-openai-api.py` checks the chat endpoints with the official OpenAI Python SDK (`pip install openai`). It validates every response and stream event against the SDK's types. `scripts/verify-anthropic-api.py` does the same for the Messages API with the official Anthropic Python SDK (`pip install anthropic`).
+```bash
+curl -s localhost:9000/v1/audio/generations -H 'Content-Type: application/json' \
+  -d '{"prompt":"rain on a tin roof","seconds":5}' -o rain.wav
+```
 
-## HTTP API
+It also works with anything that lets you set an OpenAI or Anthropic base URL: chat front ends, coding agents, LangChain and LlamaIndex, n8n, and LM Studio clients. Bazarr uses it as a Whisper provider ([setup](#bazarr-setup)).
+
+## What it runs
+
+| You want to | In the app | API | Models |
+|---|---|---|---|
+| Chat, with images, video and audio | Chat | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/api/v1/chat` | Qwen3.5 (0.8B to 9B), Gemma 3n and 4, LFM3 Omni, MiniCPM-o 4.5, Qwen3-Omni 30B, and any MLX or GGUF chat model from Hugging Face |
+| Transcribe and subtitle | Transcribe, Watch Folders | `/v1/audio/transcriptions`, `/v1/audio/translations`, `/asr` | Whisper (Tiny to Large v3 Turbo), Distil Large v3, Parakeet v2 and v3, speaker diarization |
+| Talk in real time | Live | `/v1/realtime` | Parakeet EOU and Silero VAD to hear, any chat model to think, any voice to speak; full-duplex PersonaPlex 7B and Nemotron VoiceChat 11B; Hibiki Zero for French-to-English speech translation |
+| Speak text, clone voices | Audio → Speak | `/v1/audio/speech`, `/v1/audio/voices` | PocketTTS, Kokoro 82M, Qwen3-TTS 1.7B, VoxCPM2, Chatterbox Turbo |
+| Make music and sound | Audio → Compose | `/v1/audio/generations` | Stable Audio 3 Music and SFX |
+| Clean up audio | Audio → Clean Up | `/v1/audio/enhance`, `/v1/audio/separate`, `/v1/audio/convert` | DeepFilterNet 3, NemotronLabs RE-USE, SAM-Audio, DialogueSidon, Chatterbox |
+| Generate and edit images | Images → Generate | `/v1/images/generations`, `/v1/images/edits` | FLUX.2 klein 4B and 9B, Z-Image and Z-Image Turbo, Qwen-Image 2.1 and 2512, Qwen-Image Edit |
+| Cut out, depth, upscale | Images | `/v1/images/cutout`, `/v1/images/depth`, `/v1/images/upscale` | macOS Vision, Depth Anything V2, Real-ESRGAN |
+| Generate video | Video → Generate | `/v1/videos` | LTX-2.3 Distilled |
+| Transform video | Video → Transform | `/v1/videos/transform` | the image tools above, per frame |
+| Search and RAG | Embed | `/v1/embeddings`, `/v1/rerank` | Qwen3 Embedding, EmbeddingGemma, Qwen3-VL Embedding, SigLIP2, Qwen3 Reranker |
+
+Some models carry their own licenses (non-commercial, Gemma terms, research use). The Models pane names the license in the model's title, and `THIRD_PARTY_NOTICES.md` lists them.
+
+## Reference
+
+Everything below is detail. Open what you need.
+
+<details>
+<summary><b>Install notes: LAN access and the firewall</b></summary>
+
+If you turn on **Allow LAN** in the Server pane, the server binds to `0.0.0.0` and macOS asks whether to allow incoming connections. With ad-hoc signed builds (built from source, or a release without the signing secrets) that prompt can come back after each update. An ad-hoc build is also blocked by Gatekeeper on first launch: run `xattr -dr com.apple.quarantine /Applications/Synapse.app`, or right-click the app and choose Open.
+
+</details>
+
+<details>
+<summary><b>Connecting a client: addresses, keys and errors</b></summary>
 
 Default address is `http://127.0.0.1:9000`. The port and LAN access are set in the Server tab. With LAN off, no key is needed. With LAN on, every route except `/health` needs the API key, sent as `Authorization: Bearer <key>`, as `x-api-key: <key>`, or as a path prefix `/k/<key>/...`. Errors use `{"type":"error","error":{"message":"...","type":"invalid_request_error"}}`, which both OpenAI and Anthropic clients read.
+
+Give a client only the host (for example `http://192.168.1.20:9000`) and the API key. Every API route answers with and without the `/v1` prefix (and at `/v1/v1`, for a `host/v1` base URL pasted into a client that adds `/v1` itself), so OpenAI SDKs work with `base_url` set to the host or `host/v1`, and the Anthropic SDK works with the host. The key is accepted as `Authorization: Bearer <key>` (OpenAI clients), `x-api-key: <key>` (Anthropic clients), or a `/k/<key>` path prefix. Each protocol answers in its own shape, streaming (SSE) or not. `scripts/verify-connect.py <host> <key>` checks all of this with the official SDKs.
+
+</details>
+
+<details>
+<summary><b>Models, transcription and jobs API</b></summary>
 
 | Method and path | Input | Output |
 |---|---|---|
@@ -63,11 +166,10 @@ curl -s "localhost:9000/asr?task=transcribe&language=en&output=srt&encode=false"
 curl -s -X POST "localhost:9000/detect-language?encode=false" -F audio_file=@$FIX/en.pcm
 ```
 
-### Connecting a client
+</details>
 
-Give a client only the host (for example `http://192.168.1.20:9000`) and the API key. Every API route answers with and without the `/v1` prefix (and at `/v1/v1`, for a `host/v1` base URL pasted into a client that adds `/v1` itself), so OpenAI SDKs work with `base_url` set to the host or `host/v1`, and the Anthropic SDK works with the host. The key is accepted as `Authorization: Bearer <key>` (OpenAI clients), `x-api-key: <key>` (Anthropic clients), or a `/k/<key>` path prefix. Each protocol answers in its own shape, streaming (SSE) or not. `scripts/verify-connect.py <host> <key>` checks all of this with the official SDKs.
-
-### Chat and vision (Qwen3.5)
+<details>
+<summary><b>Chat and vision: Chat Completions, Responses, Messages, LM Studio</b></summary>
 
 | Route | Notes |
 |---|---|
@@ -80,14 +182,7 @@ Give a client only the host (for example `http://192.168.1.20:9000`) and the API
 
 `model` is a catalog id such as `qwen3.5-0.8b`; omit it to use the smallest downloaded chat model. Qwen3.5 thinking mode is off unless `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) is set to something other than `none` or `minimal`, or `thinking.type` (Messages) is `enabled` or `adaptive`; Messages returns the reasoning as a `thinking` block. Messages `tool_choice` of `any` or a named tool is treated as `auto`. Images are capped at about one megapixel before they reach the model. One chat model stays loaded at a time.
 
-OpenAI Python SDK:
-
 ```python
-from openai import OpenAI
-
-c = OpenAI(base_url="http://localhost:9000/v1", api_key="x")  # use the real key when LAN is on
-print(c.audio.transcriptions.create(model="whisper-1", file=open("en.m4a", "rb"), response_format="srt"))
-
 import base64
 img = "data:image/jpeg;base64," + base64.b64encode(open("zebra.jpg", "rb").read()).decode()
 r = c.responses.create(model="qwen3.5-0.8b", input=[{"role": "user", "content": [
@@ -96,17 +191,23 @@ r = c.responses.create(model="qwen3.5-0.8b", input=[{"role": "user", "content": 
 print(r.output_text)
 ```
 
-Anthropic Python SDK (the host is enough; the SDK adds `/v1`):
+**Video in chat.** Qwen3.5 models and the omni models (except Gemma 3n) read video. Send a `video_url` part (Chat Completions) or `input_video` part (Responses) holding an MP4 or MOV as a `data:` URL or an `http(s)` URL, up to 200 MB. Synapse samples 8 frames. File paths and `file://` URLs are refused. A model without video input returns 400.
 
-```python
-import anthropic
+**Tool calls** work on Chat Completions, Responses, Anthropic Messages and realtime, for every input and output type: text, images, video and audio in (audio through the mlx-vlm models), spoken replies (a call comes back as `tool_calls` with `audio: null`), voice calls with or without the camera, and every chat engine (in-process MLX, mlx-vlm and GGUF through their servers' own tool parsers). Small models call less readily: Qwen3.5 0.8B only without a system prompt; 2B and larger decide on their own.
 
-c = anthropic.Anthropic(base_url="http://localhost:9000", api_key="x")
-m = c.messages.create(model="qwen3.5-0.8b", max_tokens=256, messages=[{"role": "user", "content": "Hi"}])
-print(m.content[0].text)
-```
+</details>
 
-### Images
+<details>
+<summary><b>Omni models: audio in, speech out</b></summary>
+
+`gemma-3n-e2b` (audio and image), `gemma-4-e2b`, `lfm3-omni-2b`, `minicpm-o-4.5` and `qwen3-omni-30b` run in a managed mlx-vlm server and answer on every chat route. Send audio as an `input_audio` part; non-WAV audio is converted to 16 kHz WAV first. Small omni models follow the prompt closely: "Transcribe the audio." works better than "What does the speaker say?".
+
+`lfm3-omni-2b` also speaks. Ask Chat Completions for audio with it, or pick it for a voice call (`/v1/realtime?model=lfm3-omni-2b` with audio output, or **Live → Voice call**) and it hears your turn and any camera frame itself, then answers in its own voice, streamed as it is generated; there is no separate speech synthesis. Barge-in stops it mid-sentence. On an M4 Mac mini the first audio arrives about 0.75 s after you stop talking once the model is loaded. Speech recognition still runs, only to show your words in the transcript.
+
+</details>
+
+<details>
+<summary><b>Images: generate, edit, cut out, depth, upscale</b></summary>
 
 | Route | Notes |
 |---|---|
@@ -115,14 +216,25 @@ print(m.content[0].text)
 | `POST /v1/responses` with `tools: [{"type": "image_generation"}]` | the chat model writes the prompt and the image model draws it. |
 | `POST /v1/images/cutout` | Synapse's own: multipart `image`, `output` (`cutout`, the subject on a transparent background, or `mask`, white where the subject is). Uses macOS Vision's built-in subject lifting; nothing to download. Answers in the images response shape (`data[0].b64_json`, PNG). |
 | `POST /v1/images/depth` | Synapse's own: multipart `image`, `model`. A grayscale PNG the size of the input, near is white (relative depth, stretched to the image's range). Model: `depth-anything-v2-small` (Core ML, 50 MB); about 0.2 s per image once loaded. |
-
 | `POST /v1/images/upscale` | Synapse's own: multipart `image` (up to 1024 px on a side), `model`. The image ×4 as PNG. Model: `real-esrgan-x4plus` (33 MB), run in process on MLX in 192 px tiles; about 7 s for 448 × 448 → 1792 × 1792. |
 
 The Images pane has the same: Generate, Cut Out, Depth and Upscale.
 
-### Video to video
+</details>
 
-`POST /v1/videos/transform` (Synapse's own): multipart `file` (MP4 or MOV, up to 60 seconds), `operation`, `model`. Every frame goes through an image tool and the MP4 comes back with the source's frame timing and sound. Video → Transform in the app does the same.
+<details>
+<summary><b>Video: generate and transform</b></summary>
+
+**Generate.** OpenAI Videos API: `POST /v1/videos` (`prompt`, `seconds` `4`/`8`/`12`, `size` from 256 to 1920 per side, `input_reference` start image, `seed`), `GET /v1/videos/{id}`, `GET /v1/videos`, `GET /v1/videos/{id}/content` (`variant=video` or `thumbnail`), `DELETE /v1/videos/{id}`. `sora-2` and `sora-2-pro` mean the downloaded video model. Clips render one at a time and are kept for a day. Each side is generated at the nearest smaller multiple of 64 (1280x720 renders at 1280x704). The model is LTX-2.3 Distilled. Macs with 64 GB or more run it at full precision (about 96 GB download). Smaller Macs use low-memory mode: an 8 GB 4-bit Gemma text encoder and the transformer quantized while it loads (3-bit under 24 GB, 4-bit up to 64 GB), about a 55 GB download. On a 16 GB M4 Mac mini a 1-second 384x256 clip takes about 90 seconds.
+
+```python
+v = c.videos.create(model="sora-2", prompt="A red fox walking through snow", seconds="4", size="1280x720")
+while v.status in ("queued", "in_progress"):
+    time.sleep(5); v = c.videos.retrieve(v.id)
+c.videos.download_content(v.id).write_to_file("fox.mp4")
+```
+
+**Transform.** `POST /v1/videos/transform` (Synapse's own): multipart `file` (MP4 or MOV, up to 60 seconds), `operation`, `model`. Every frame goes through an image tool and the MP4 comes back with the source's frame timing and sound. Video → Transform in the app does the same.
 
 | `operation` | What each frame becomes | Model |
 |---|---|---|
@@ -130,11 +242,10 @@ The Images pane has the same: Generate, Cut Out, Depth and Upscale.
 | `mask` | the subject white, the rest black | macOS Vision, nothing to download |
 | `upscale` | ×4, up to 2560 px out (640 px in) | `real-esrgan-general-x4v3` when downloaded (about 0.6 s per 320 px frame), else `real-esrgan-x4plus` |
 
-### Video in chat
+</details>
 
-Qwen3.5 models and the omni models (except Gemma 3n) read video. Send a `video_url` part (Chat Completions) or `input_video` part (Responses) holding an MP4 or MOV as a `data:` URL or an `http(s)` URL, up to 200 MB. Synapse samples 8 frames. File paths and `file://` URLs are refused. A model without video input returns 400.
-
-### Speech, sound and embeddings
+<details>
+<summary><b>Speech, voice cloning, sound, audio cleanup and embeddings</b></summary>
 
 **Audio → Speak → Clone Voice…** makes a voice from a clip (the first 10 seconds are kept and transcribed). Every model that clones speaks every voice, in the Voice menu and on the API by its id:
 
@@ -158,51 +269,22 @@ c.audio.speech.create(model="qwen3-tts-1.7b", voice={"id": voice.id}, input="Hel
 | `POST /v1/audio/voice_consents` | OpenAI voice consents, for clients that create one first: multipart `name`, `language`, `recording` (up to 10 MiB). Also `GET` (list, `after`, `limit`), `GET`/`POST` (rename)/`DELETE` `/v1/audio/voice_consents/{id}`. No voice needs a consent. |
 | `POST /v1/audio/voices` | OpenAI custom voices: multipart `name`, `audio_sample` (up to 10 MiB, any format ffmpeg reads). `consent` is accepted and ignored; `transcript` (Synapse's addition) replaces the automatic transcription. The first 10 seconds are kept; 5 to 10 seconds of one person speaking works best. Returns `{"id": "voice_…", "object": "audio.voice"}`; speak with `voice: {"id": "voice_…"}` and any model that clones. `DELETE /v1/audio/voices/{id}` removes it, and `GET /v1/audio/voices` (Synapse's addition) lists them. Voices from a text prompt are refused. |
 | `POST /v1/audio/generations` | Synapse's own: `prompt`, `seconds` (1 to 120, default 8), `seed`, `response_format` (`wav` default keeps stereo; other formats are mono). Models: `stable-audio-3-small-sfx`, `stable-audio-3-small-music`. |
-| `POST /v1/embeddings` | OpenAI embeddings: `input` (text or a list of texts, up to 256), `encoding_format` (`float` or `base64`, the SDK default), `dimensions`. `text-embedding-3-small`, `-3-large` and `ada-002` mean the default model. Token-array input returns 400; in LangChain set `check_embedding_ctx_length=False`. |
-| `POST /v1/embeddings` with images or video | `input` items may be `{"image": …}` (a data URL, an http(s) URL or bare base64), `{"text": …}`, or both in one item (Jina's multimodal shape; the official OpenAI SDK passes them through). `qwen3-vl-embedding-2b` (2048 dimensions) puts text, images and image+text pairs in one space; `siglip2-so400m` (1152) embeds text or an image. `{"video": …}` (Synapse's addition: an MP4 or MOV data URL or http(s) URL, optionally with `text`) is embedded by `qwen3-vl-embedding-2b` from 8 frames spread through the clip. A request with an image picks an image model by default, and one with a video picks Qwen3-VL; text models refuse both. |
 | `POST /v1/audio/enhance` | Synapse's own: multipart `file` (any format ffmpeg reads), `model`, `response_format` (`wav` default). Returns the recording with background noise removed, at 48 kHz mono. Models: `deepfilternet-3` (30 MB, the default), `nemotron-reuse`. |
 | `POST /v1/audio/convert` | Synapse's own voice conversion: multipart `file` (someone speaking), `voice` (a cloned voice id), `model` (`chatterbox-turbo`, the only one that converts), `response_format` (`wav` default). The recording re-spoken in that voice; words and timing come from the recording. About real time on the Mac mini. |
 | `POST /v1/audio/separate` | Synapse's own: multipart `file`, `model`, `prompt`, `response_format`. Returns `{"model", "tracks": [{"name", "format", "seconds", "audio": base64}]}`. With a `prompt` (what to pull out: "speech", "dog barking", "vocals") the default is `sam-audio-small`, giving `target` and `residual`; without one it is `dialoguesidon`, giving `speaker_1` and `speaker_2` from a two-person recording. Input is mixed to mono. |
+| `POST /v1/embeddings` | OpenAI embeddings: `input` (text or a list of texts, up to 256), `encoding_format` (`float` or `base64`, the SDK default), `dimensions`. `text-embedding-3-small`, `-3-large` and `ada-002` mean the default model. Token-array input returns 400; in LangChain set `check_embedding_ctx_length=False`. |
+| `POST /v1/embeddings` with images or video | `input` items may be `{"image": …}` (a data URL, an http(s) URL or bare base64), `{"text": …}`, or both in one item (Jina's multimodal shape; the official OpenAI SDK passes them through). `qwen3-vl-embedding-2b` (2048 dimensions) puts text, images and image+text pairs in one space; `siglip2-so400m` (1152) embeds text or an image. `{"video": …}` (Synapse's addition: an MP4 or MOV data URL or http(s) URL, optionally with `text`) is embedded by `qwen3-vl-embedding-2b` from 8 frames spread through the clip. A request with an image picks an image model by default, and one with a video picks Qwen3-VL; text models refuse both. |
 | `POST /v1/rerank` | Cohere and Jina shape: `query`, `documents` (strings or `{"text"}`), `top_n`, `return_documents`. Model: `qwen3-reranker-0.6b`. |
 
-```python
-c.audio.speech.create(model="tts-1", voice="alloy", input="Hello from Synapse.").write_to_file("hello.mp3")
-v = c.embeddings.create(model="text-embedding-3-small", input=["Paris is the capital of France."]).data[0].embedding
-```
-
 ```bash
-curl -s localhost:9000/v1/audio/generations -H 'Content-Type: application/json' \
-  -d '{"prompt":"rain on a tin roof","seconds":5}' -o rain.wav
 curl -s localhost:9000/v1/audio/enhance -F file=@noisy.m4a -o clean.wav
-curl -s localhost:9000/v1/audio/separate -F file=@street.m4a -F prompt=speech | jq -r '.tracks[0].name' 
+curl -s localhost:9000/v1/audio/separate -F file=@street.m4a -F prompt=speech | jq -r '.tracks[0].name'
 ```
 
-### Video generation
+</details>
 
-OpenAI Videos API: `POST /v1/videos` (`prompt`, `seconds` `4`/`8`/`12`, `size` from 256 to 1920 per side, `input_reference` start image, `seed`), `GET /v1/videos/{id}`, `GET /v1/videos`, `GET /v1/videos/{id}/content` (`variant=video` or `thumbnail`), `DELETE /v1/videos/{id}`. `sora-2` and `sora-2-pro` mean the downloaded video model. Clips render one at a time and are kept for a day. Each side is generated at the nearest smaller multiple of 64 (1280x720 renders at 1280x704). The model is LTX-2.3 Distilled. Macs with 64 GB or more run it at full precision (about 96 GB download). Smaller Macs use low-memory mode: an 8 GB 4-bit Gemma text encoder and the transformer quantized while it loads (3-bit under 24 GB, 4-bit up to 64 GB), about a 55 GB download. On a 16 GB M4 Mac mini a 1-second 384x256 clip takes about 90 seconds.
-
-```python
-v = c.videos.create(model="sora-2", prompt="A red fox walking through snow", seconds="4", size="1280x720")
-while v.status in ("queued", "in_progress"):
-    time.sleep(5); v = c.videos.retrieve(v.id)
-c.videos.download_content(v.id).write_to_file("fox.mp4")
-```
-
-### Omni models
-
-`gemma-3n-e2b` (audio and image), `gemma-4-e2b`, `lfm3-omni-2b`, `minicpm-o-4.5` and `qwen3-omni-30b` run in a managed mlx-vlm server and answer on every chat route. Send audio as an `input_audio` part; non-WAV audio is converted to 16 kHz WAV first. Small omni models follow the prompt closely: "Transcribe the audio." works better than "What does the speaker say?".
-
-`lfm3-omni-2b` also speaks. Ask Chat Completions for audio with it, or pick it for a voice call (`/v1/realtime?model=lfm3-omni-2b` with audio output, or **Live → Voice call**) and it hears your turn and any camera frame itself, then answers in its own voice, streamed as it is generated; there is no separate speech synthesis. Barge-in stops it mid-sentence. On an M4 Mac mini the first audio arrives about 0.75 s after you stop talking once the model is loaded. Speech recognition still runs, only to show your words in the transcript.
-
-### Any model from Hugging Face
-
-**Models → +** takes a Hugging Face repo (`org/name`) or its link. Synapse reads the repo's files and `config.json` and tells you how it would run it before anything downloads: chat and vision models whose architecture the Swift MLX libraries know run in-process (text-only architectures such as Llama included); other architectures run through mlx-vlm; embedding models run in Embed. GGUF repos run through a bundled llama.cpp server: Synapse lists the quantizations, picks Q4_K_M (or the largest that fits this Mac), downloads only that file plus any vision projector, and lets you pick another in the sheet. Diffusers pipelines and speech or image generators are refused with the reason. Added models appear under "Added from Hugging Face", download like catalog models, and are called by their repo id (`"model": "mlx-community/Llama-3.2-1B-Instruct-4bit"`).
-
-### Python runtimes
-
-Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-vlm) run through Python tools that Synapse installs on first use under `<models folder>/runtimes/`. The first use needs a network connection and takes a few minutes. Video generation also needs `git` (Xcode Command Line Tools). Gated models (FLUX.2 klein 9B) need their license accepted on Hugging Face and a token: Synapse uses the `hf auth login` token (or `HF_TOKEN`) automatically, or one set in **Settings**. Stable Audio is under the Stability AI Community License but is not gated.
-
-### Realtime and duplex speech
+<details>
+<summary><b>Realtime voice: captions, voice calls, full duplex, tools</b></summary>
 
 `GET /v1/realtime?model=<id>` (WebSocket, OpenAI Realtime events). Add `&intent=transcription` for live transcription only. `conversation.item.create` accepts `input_image` parts (base64 `data:image` URLs): a vision chat model sees the frame with the user's next turn, and the latest two frames are kept. The **Live** pane's Voice call sends a camera frame this way each time you start talking. The duplex models talk back in one model: `personaplex-7b` and `voicechat-11b` for voice calls, `hibiki-zero-3b` for live French-to-English speech translation. The app's **Live** pane uses the same sessions with the microphone.
 
@@ -214,28 +296,39 @@ A voice call is three choices, each per session:
 | Thinking | `?model=` | Any downloaded chat model: MLX, mlx-vlm, GGUF, added from Hugging Face. |
 | Speaking | `audio.output.model` (Synapse's addition) and `audio.output.voice` | `pocket-tts` (default, streams fastest), `kokoro-82m`, `chatterbox-turbo`, `voxcpm2`, `qwen3-tts-1.7b`; stock voices or a cloned `voice_…` id (Qwen3-TTS speaks only cloned voices). Omni models that speak (`lfm3-omni-2b`, `minicpm-o-4.5`) use their own voice instead. |
 
-**Tool calls** work on Chat Completions, Responses, Anthropic Messages and realtime, for every input and output type: text, images, video and audio in (audio through the mlx-vlm models), spoken replies (a call comes back as `tool_calls` with `audio: null`), voice calls with or without the camera, and every chat engine (in-process MLX, mlx-vlm and GGUF through their servers' own tool parsers). Small models call less readily: Qwen3.5 0.8B only without a system prompt; 2B and larger decide on their own. In voice calls they work in every kind: put function tools in `session.tools`; the model's call arrives as a `function_call` output item (`response.function_call_arguments.delta/done`), and the client sends a `function_call_output` item and `response.create` to hear the answer. Assembled calls pass the tools to the chat model (in-process MLX models such as Qwen3.5; 0.8B calls tools only without a system prompt, so use 2B or larger). Omni calls (LFM3) first ask the model in text whether it wants a tool, since it does not call tools while speaking, then speak if it does not. Verified with the official SDK: both call `get_weather` for "What's the weather like in Paris right now?" and speak the result. Full-duplex calls take tools too, and keep listening and talking while a tool runs. `voicechat-11b` calls tools itself on its own function channel and hears the `function_call_output` directly. `personaplex-7b` has no tool calling, so a chat model listens along: the session transcribes each user turn, the chat model (`session.tools_model`, a Synapse extension; the smallest downloaded chat model if unset, so set `qwen3.5-2b` or larger) decides whether to call a tool, and once the result arrives it writes one sentence that is fed into PersonaPlex's inner monologue, so PersonaPlex says it in its own voice. In a duplex call `response.create` is accepted and does nothing, since the model decides when to speak.
+**Tools in voice calls** work in every kind of call: put function tools in `session.tools`; the model's call arrives as a `function_call` output item (`response.function_call_arguments.delta/done`), and the client sends a `function_call_output` item and `response.create` to hear the answer. Assembled calls pass the tools to the chat model (in-process MLX models such as Qwen3.5; 0.8B calls tools only without a system prompt, so use 2B or larger). Omni calls (LFM3) first ask the model in text whether it wants a tool, since it does not call tools while speaking, then speak if it does not. Verified with the official SDK: both call `get_weather` for "What's the weather like in Paris right now?" and speak the result. Full-duplex calls take tools too, and keep listening and talking while a tool runs. `voicechat-11b` calls tools itself on its own function channel and hears the `function_call_output` directly. `personaplex-7b` has no tool calling, so a chat model listens along: the session transcribes each user turn, the chat model (`session.tools_model`, a Synapse extension; the smallest downloaded chat model if unset, so set `qwen3.5-2b` or larger) decides whether to call a tool, and once the result arrives it writes one sentence that is fed into PersonaPlex's inner monologue, so PersonaPlex says it in its own voice. In a duplex call `response.create` is accepted and does nothing, since the model decides when to speak.
 
 **Live → Voice call** has a menu for each. A French call (Parakeet v3, Qwen3.5 0.8B, VoxCPM2) heard "Quelle est la capitale de l'Allemagne?" and answered "La capitale de l'Allemagne est la ville de Berlin." The mlx-audio voices speak each sentence once it is generated, so their first audio comes later than PocketTTS's.
 
-### vOOM (models larger than memory)
+</details>
 
-Set **Settings → vOOM checkout** to a vOOM checkout with its `.venv`. Synapse then lists `voom:<model>` ids and starts the vOOM server on demand. vOOM pages weights from the SSD, so a model larger than free memory still runs, only slower. It serves chat (`/v1/chat/completions`, `/v1/responses`) for models in its own `models/` folder, and `/v1/images/generations` for Z-Image Turbo from Synapse's models folder (`voom:Z-Image-Turbo-bf16`). Set `VMODEL_IMAGE_WEIGHT_BUDGET_MB` in Synapse's environment to cap the image weights kept resident (default 6000).
+<details>
+<summary><b>Any model from Hugging Face, Python runtimes and vOOM</b></summary>
 
-## Bazarr setup
+**Models → +** takes a Hugging Face repo (`org/name`) or its link. Synapse reads the repo's files and `config.json` and tells you how it would run it before anything downloads: chat and vision models whose architecture the Swift MLX libraries know run in-process (text-only architectures such as Llama included); other architectures run through mlx-vlm; embedding models run in Embed. GGUF repos run through a bundled llama.cpp server: Synapse lists the quantizations, picks Q4_K_M (or the largest that fits this Mac), downloads only that file plus any vision projector, and lets you pick another in the sheet. Diffusers pipelines and speech or image generators are refused with the reason. Added models appear under "Added from Hugging Face", download like catalog models, and are called by their repo id (`"model": "mlx-community/Llama-3.2-1B-Instruct-4bit"`).
 
-In Bazarr, add the Whisper provider and set its endpoint to:
+**Python runtimes.** Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-vlm) run through Python tools that Synapse installs on first use under `<models folder>/runtimes/`. The first use needs a network connection and takes a few minutes. Video generation also needs `git` (Xcode Command Line Tools). Gated models (FLUX.2 klein 9B) need their license accepted on Hugging Face and a token: Synapse uses the `hf auth login` token (or `HF_TOKEN`) automatically, or one set in **Settings**. Stable Audio is under the Stability AI Community License but is not gated.
+
+**vOOM (models larger than memory).** Set **Settings → vOOM checkout** to a vOOM checkout with its `.venv`. Synapse then lists `voom:<model>` ids and starts the vOOM server on demand. vOOM pages weights from the SSD, so a model larger than free memory still runs, only slower. It serves chat (`/v1/chat/completions`, `/v1/responses`) for models in its own `models/` folder, and `/v1/images/generations` for Z-Image Turbo from Synapse's models folder (`voom:Z-Image-Turbo-bf16`). Set `VMODEL_IMAGE_WEIGHT_BUDGET_MB` in Synapse's environment to cap the image weights kept resident (default 6000).
+
+</details>
+
+<details id="bazarr-setup">
+<summary><b>Bazarr setup and watched folders</b></summary>
+
+**Bazarr.** In Bazarr, add the Whisper provider and set its endpoint to:
 
 - Bazarr on another machine: `http://<mac-ip>:9000/k/<api-key>` (enable Allow LAN in Synapse first; the Server tab shows this string).
 - Bazarr on the same Mac: `http://127.0.0.1:9000`.
 
 Bazarr uses the model set as the Bazarr model in Synapse settings, falling back to the default model. Language detection needs a multilingual Whisper model downloaded.
 
-## Watched folders
+**Watched folders.** Add folders in the Watch Folders tab. For each new media file, Synapse writes a sidecar `Movie.<lang>.srt` next to it. If that sidecar already exists, the file is skipped. New files are picked up through FSEvents once their size is stable. Because FSEvents can miss changes on network shares, folders are also rescanned every 10 minutes.
 
-Add folders in the Watch Folders tab. For each new media file, Synapse writes a sidecar `Movie.<lang>.srt` next to it. If that sidecar already exists, the file is skipped. New files are picked up through FSEvents once their size is stable. Because FSEvents can miss changes on network shares, folders are also rescanned every 10 minutes.
+</details>
 
-## Known limitations
+<details>
+<summary><b>Known limitations</b></summary>
 
 - Whisper can hallucinate text over silence or music (for example "Thanks for watching"). VAD chunking reduces this but does not remove it.
 - The first use of a model compiles it for Core ML, which can take several minutes for large models. The job shows "preparing model" during this time.
@@ -247,12 +340,35 @@ Add folders in the Watch Folders tab. For each new media file, Synapse writes a 
 - Video jobs do not survive a restart.
 - Qwen3-Omni's audio understanding is unreliable with mlx-vlm 0.8.0: the same recording is transcribed or the answer derails, depending on small differences in length. Its video input is refused (mlx-vlm returns only control tokens). Images work.
 
-## Releases (maintainers)
+</details>
+
+<details>
+<summary><b>Build from source and run the tests</b></summary>
+
+```bash
+brew install xcodegen
+xcodebuild -downloadComponent MetalToolchain   # MLX compiles Metal shaders
+scripts/build-ffmpeg.sh      # builds vendor/ffmpeg/bin/ffmpeg (LGPL, ~minutes)
+scripts/build-llama.sh       # builds vendor/llama.cpp/bin/llama-server (MIT, ~1 minute)
+xcodegen generate
+open Synapse.xcodeproj
+```
+
+Xcode 26 is required. Core logic tests: `scripts/unit-tests.sh build/Build/Products/Release/mlx-swift_Cmlx.bundle` after a Release build of the app (it copies MLX's Metal library into the test bundle, which plain `swift test` cannot build). End-to-end tests download real models and only run with `SYNAPSE_E2E=1`.
+
+MLX needs a compiled Metal library, which `swift build` cannot produce. `scripts/test-chat-e2e.sh` builds it once with xcodebuild, puts it next to the test binary, and runs the Qwen tests (downloads `qwen3.5-0.8b`, about 650 MB).
+
+With the app running and `qwen3.5-0.8b` downloaded, `scripts/verify-openai-api.py` checks the chat endpoints with the official OpenAI Python SDK (`pip install openai`). It validates every response and stream event against the SDK's types. `scripts/verify-anthropic-api.py` does the same for the Messages API with the official Anthropic Python SDK (`pip install anthropic`).
+
+</details>
+
+<details>
+<summary><b>Releases (maintainers)</b></summary>
 
 Run the **Release** workflow from the Actions tab (`gh workflow run release.yml -f bump=patch`) and choose a bump:
 
 - `none`: builds, tests and signs, then attaches the zip to the workflow run. Nothing is committed, tagged or published.
-- `patch`, `minor`, `major`: bumps `MARKETING_VERSION` (and the build number) in `project.yml`, builds, tests and signs, then commits `Release vX.Y.Z`, tags it, and publishes a GitHub Release with the zip. It runs only from the default branch, and nothing is pushed if any step before it fails.
+- `patch`, `minor`, `major`: bumps `MARKETING_VERSION` (and the build number) in `project.yml`, builds, tests, signs and notarizes, then commits `Release vX.Y.Z`, tags it, and publishes a GitHub Release with the zip. It runs only from the default branch, and nothing is pushed if any step before it fails.
 
 Without secrets the app is ad-hoc signed. For Developer ID signing and notarization (paid Apple Developer account), set these repository secrets:
 
@@ -262,6 +378,8 @@ Without secrets the app is ad-hoc signed. For Developer ID signing and notarizat
 - `APPLE_TEAM_ID`
 - `APPLE_APP_PASSWORD` (app-specific password)
 
+</details>
+
 ## License and notices
 
-See `THIRD_PARTY_NOTICES.md`.
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the libraries and model licenses Synapse uses.
