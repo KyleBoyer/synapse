@@ -11,13 +11,11 @@ mkdir -p "$ROOT/dist"
 KC=""
 ORIG_KEYCHAINS=""
 cleanup() {
-  local rc=$?
   if [[ -n "$KC" ]]; then
     # shellcheck disable=SC2086
     [[ -n "$ORIG_KEYCHAINS" ]] && security list-keychains -d user -s $ORIG_KEYCHAINS || true
     security delete-keychain "$KC" 2>/dev/null || true
   fi
-  exit "$rc"
 }
 trap cleanup EXIT
 
