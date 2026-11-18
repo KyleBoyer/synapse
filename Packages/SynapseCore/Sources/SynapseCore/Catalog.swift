@@ -81,6 +81,7 @@ public enum Catalog {
                   variant: "apple/coreml-depth-anything-v2-small", approxMB: 50, languages: nil, canTranslate: false,
                   canDetectLanguage: false, files: ["DepthAnythingV2SmallF16.mlpackage/"]),
         hf("real-esrgan-x4plus", "Real-ESRGAN x4plus (upscaling)", .imagetool, "mlx-community/Real-ESRGAN-x4plus", 33),
+        hf("real-esrgan-general-x4v3", "Real-ESRGAN general x4v3 (fast upscaling, for video)", .imagetool, "mlx-community/Real-ESRGAN-general-x4v3", 5),
         // Audio to audio through mlx-audio's speech-to-speech models.
         hf("deepfilternet-3", "DeepFilterNet 3 (noise removal)", .audioedit, "mlx-community/DeepFilterNet-mlx", 30),
         hf("nemotron-reuse", "NemotronLabs RE-USE (noise removal)", .audioedit, "nvidia/NVIDIA-NemotronLabs-RE-USE", 40),

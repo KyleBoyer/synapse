@@ -576,7 +576,34 @@ def image_tools():
     check("image-tools: upscale makes it four times larger", big.size == (1792, 1792), f"{big.size}")
 
 
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools}
+def video_transform():
+    """Every frame through an image tool (mask needs nothing; depth and upscale need their models). Output is checked
+    with macOS's own avmetareadwrite-free probe: the MP4 header and, via ffprobe when installed, size and frame count."""
+    import json, os, shutil, subprocess, tempfile, urllib.request
+
+    clip = open(os.path.join(os.path.dirname(__file__), "..", "Packages", "SynapseCore", "Tests", "SynapseCoreTests", "Fixtures", "zebra.mp4"), "rb").read()
+    ffprobe = shutil.which("ffprobe")
+    for op, size in [("mask", "320x320"), ("depth", "320x320"), ("upscale", "1280x1280")]:
+        body = (f'--XyZ\r\nContent-Disposition: form-data; name="operation"\r\n\r\n{op}\r\n'.encode()
+                + b'--XyZ\r\nContent-Disposition: form-data; name="file"; filename="zebra.mp4"\r\nContent-Type: video/mp4\r\n\r\n' + clip + b"\r\n--XyZ--\r\n")
+        req = urllib.request.Request(f"{HOST}/v1/videos/transform", data=body, method="POST",
+                                     headers={"Authorization": f"Bearer {KEY}", "Content-Type": "multipart/form-data; boundary=XyZ"})
+        with urllib.request.urlopen(req, timeout=900) as r:
+            data, ctype = r.read(), r.headers.get("Content-Type")
+        detail = f"{ctype}, {len(data)} bytes"
+        ok = ctype == "video/mp4" and data[4:8] == b"ftyp"
+        if ffprobe and ok:
+            path = os.path.join(tempfile.mkdtemp(), f"{op}.mp4")
+            open(path, "wb").write(data)
+            s = json.loads(subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                                           "stream=width,height,nb_read_frames", "-of", "json", path], capture_output=True, text=True).stdout)["streams"][0]
+            got = f"{s['width']}x{s['height']}"
+            detail += f", {got}, {s['nb_read_frames']} frames"
+            ok = got == size and int(s["nb_read_frames"]) == 16
+        check(f"video-transform: {op} returns an MP4 of every frame", ok, detail)
+
+
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools, "video-transform": video_transform}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

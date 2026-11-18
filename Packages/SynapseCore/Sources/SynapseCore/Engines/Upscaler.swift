@@ -4,8 +4,9 @@ import Foundation
 import ImageIO
 import MLX
 
-/// Real-ESRGAN ×4 (RRDBNet) on MLX, in process. mlx-community's weights are already in MLX's conv layout
-/// (out, kH, kW, in), so the network is a handful of functional convolutions over the weight dictionary.
+/// Real-ESRGAN ×4 on MLX, in process: RRDBNet (x4plus, best for photos) or SRVGGNetCompact (general-x4v3, about ten
+/// times faster, for video). mlx-community's weights are already in MLX's conv layout (out, kH, kW, in), so each network
+/// is a handful of functional convolutions over the weight dictionary.
 final class RealESRGAN: @unchecked Sendable {
     static let scale = 4
     /// Input tiles (plus `pad` on each side) keep memory flat on large images; the padding hides seams.
@@ -13,10 +14,16 @@ final class RealESRGAN: @unchecked Sendable {
     private let w: [String: MLXArray]
     private let blocks: Int
 
+    /// SRVGGNetCompact's layers: conv, PReLU, conv, PReLU, ..., conv to 3 × 4 × 4 channels.
+    private let compactLayers: Int
+
     init(folder: URL) throws {
         w = try loadArrays(url: folder.appending(path: "model.safetensors"))
         blocks = w.keys.filter { $0.hasSuffix(".rdb1.conv1.weight") }.count
-        guard blocks > 0, w["conv_first.weight"] != nil else { throw ImageToolError.failed("Not a Real-ESRGAN RRDBNet checkpoint.") }
+        compactLayers = blocks == 0 ? w.keys.filter { $0.hasPrefix("body.") && $0.hasSuffix(".weight") }.count : 0
+        guard (blocks > 0 && w["conv_first.weight"] != nil) || compactLayers > 2 else {
+            throw ImageToolError.failed("Not a Real-ESRGAN checkpoint (RRDBNet or SRVGGNetCompact).")
+        }
     }
 
     private func conv(_ x: MLXArray, _ name: String) -> MLXArray { conv2d(x, w[name + ".weight"]!, padding: 1) + w[name + ".bias"]! }
@@ -34,6 +41,27 @@ final class RealESRGAN: @unchecked Sendable {
 
     /// [1, H, W, 3] in 0...1 to [1, 4H, 4W, 3].
     func forward(_ x: MLXArray) -> MLXArray {
+        compactLayers > 0 ? forwardCompact(x) : forwardRRDB(x)
+    }
+
+    private func forwardCompact(_ x: MLXArray) -> MLXArray {
+        let s = Self.scale
+        var h = x.asType(w["body.0.weight"]!.dtype)
+        for i in 0..<compactLayers {
+            let weight = w["body.\(i).weight"]!
+            if weight.ndim == 4 {
+                h = conv2d(h, weight, padding: 1) + w["body.\(i).bias"]!
+            } else {
+                h = maximum(h, 0) + weight * minimum(h, 0)   // PReLU, one slope per channel
+            }
+        }
+        // Pixel shuffle (PyTorch channel order c·r·r + i·r + j) in NHWC, plus the input upsampled.
+        let n = h.dim(1), m = h.dim(2), c = h.dim(3) / (s * s)
+        let shuffled = h.reshaped([1, n, m, c, s, s]).transposed(0, 1, 4, 2, 5, 3).reshaped([1, n * s, m * s, c])
+        return shuffled + repeated(repeated(x.asType(h.dtype), count: s, axis: 1), count: s, axis: 2)
+    }
+
+    private func forwardRRDB(_ x: MLXArray) -> MLXArray {
         let x = x.asType(w["conv_first.weight"]!.dtype)
         let first = conv(x, "conv_first")
         var body = first
@@ -76,14 +104,18 @@ final class RealESRGAN: @unchecked Sendable {
 }
 
 extension ImageTools {
-    /// Decodes to RGB floats (alpha dropped), upscales ×4, and encodes PNG.
+    /// The image ×4 as PNG (alpha dropped).
     static func upscale(_ image: Data, model: RealESRGAN, maxSide: Int = 1024) throws -> Data {
-        guard let src = CGImageSourceCreateWithData(image as CFData, nil),
-              let cg = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldAllowFloat: false] as CFDictionary) else {
-            throw ImageToolError.unreadable
+        let cg = try decode(image)
+        guard max(cg.width, cg.height) <= maxSide else {
+            throw ImageToolError.failed("Upscaling takes images up to \(maxSide) px on a side; this one is \(cg.width)×\(cg.height).")
         }
+        return try png(CIImage(cgImage: try upscale(cg, model: model)), gray: false)
+    }
+
+    /// The image ×4 (alpha dropped).
+    static func upscale(_ cg: CGImage, model: RealESRGAN) throws -> CGImage {
         let w = cg.width, h = cg.height
-        guard max(w, h) <= maxSide else { throw ImageToolError.failed("Upscaling takes images up to \(maxSide) px on a side; this one is \(w)×\(h).") }
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         guard let ctx = CGContext(data: &rgba, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: space,
@@ -91,15 +123,10 @@ extension ImageTools {
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
         var rgb = [Float](repeating: 0, count: w * h * 3)
         for i in 0..<(w * h) { for c in 0..<3 { rgb[i * 3 + c] = Float(rgba[i * 4 + c]) / 255 } }
-
         let up = model.upscale(rgb, width: w, height: h)
         let s = RealESRGAN.scale, ow = w * s, oh = h * s
         var bytes = [UInt8](repeating: 255, count: ow * oh * 4)
         for i in 0..<(ow * oh) { for c in 0..<3 { bytes[i * 4 + c] = UInt8((up[i * 3 + c] * 255).rounded()) } }
-        let ci = CIImage(bitmapData: Data(bytes), bytesPerRow: ow * 4, size: CGSize(width: ow, height: oh), format: .RGBA8, colorSpace: space)
-        guard let png = CIContext().pngRepresentation(of: ci, format: .RGBA8, colorSpace: space) else {
-            throw ImageToolError.failed("Could not encode the result as PNG.")
-        }
-        return png
+        return try cgImage(CIImage(bitmapData: Data(bytes), bytesPerRow: ow * 4, size: CGSize(width: ow, height: oh), format: .RGBA8, colorSpace: space))
     }
 }

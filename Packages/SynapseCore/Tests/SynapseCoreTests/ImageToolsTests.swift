@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreImage
 import Foundation
 import Hummingbird
@@ -58,6 +59,80 @@ final class ImageToolsTests: XCTestCase, @unchecked Sendable {
     }
 }
 
+/// `/v1/videos/transform` with `mask` runs Vision on every frame (nothing to download).
+final class VideoTransformTests: XCTestCase, @unchecked Sendable {
+    /// zebra.mp4 with en.m4a's speech under it, made with a passthrough export.
+    static func zebraWithSound(in dir: URL) async throws -> URL {
+        let mix = AVMutableComposition()
+        let video = AVURLAsset(url: try TestSupport.fixture("zebra.mp4")), audio = AVURLAsset(url: try TestSupport.fixture("en.m4a"))
+        let duration = try await video.load(.duration)
+        try mix.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: try await video.loadTracks(withMediaType: .video)[0], at: .zero)
+        try mix.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: try await audio.loadTracks(withMediaType: .audio)[0], at: .zero)
+        let out = dir.appending(path: "zebra-sound.mp4")
+        try await AVAssetExportSession(asset: mix, presetName: AVAssetExportPresetPassthrough)!.export(to: out, as: .mp4)
+        return out
+    }
+
+    static func form(_ video: Data, _ fields: [String: String]) -> ByteBuffer {
+        var body = ByteBuffer()
+        for (k, v) in fields { body.writeString("--XyZ\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n") }
+        body.writeString("--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp4\"\r\nContent-Type: video/mp4\r\n\r\n")
+        body.writeBytes(video)
+        body.writeString("\r\n--XyZ--\r\n")
+        return body
+    }
+
+    /// Facts about a video: seconds, size, frames, whether it has sound, and the mean brightness of its middle frame.
+    static func facts(_ url: URL) async throws -> (seconds: Double, size: CGSize, frames: Int, audio: Bool, brightness: Float) {
+        let a = AVURLAsset(url: url)
+        let track = try await a.loadTracks(withMediaType: .video)[0]
+        let reader = try AVAssetReader(asset: a)
+        let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(out); reader.startReading()
+        var frames = 0
+        while out.copyNextSampleBuffer() != nil { frames += 1 }
+        let seconds = try await a.load(.duration).seconds
+        let gen = AVAssetImageGenerator(asset: a)
+        let cg = try await gen.image(at: CMTime(seconds: seconds / 2, preferredTimescale: 600)).image
+        return (seconds, try await track.load(.naturalSize), frames, !(try await a.loadTracks(withMediaType: .audio)).isEmpty,
+                CIContext().averageRGBA(CIImage(cgImage: cg))[0])
+    }
+
+    func testMaskVideoKeepsTimingSizeAndSound() async throws {
+        let dir = try TestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try await Self.zebraWithSound(in: dir)
+        let store = try TestSupport.store(downloaded: [])
+        let box = SettingsBox(Settings())
+        let queue = JobQueue(store: store, decoder: AudioDecoder(ffmpegURL: URL(fileURLWithPath: "/usr/bin/true")), settings: box,
+                             engineFactory: { _, _ in FakeEngine() })
+        let video = try Data(contentsOf: source)
+        let before = try await Self.facts(source)
+        try await Application(router: buildRouter(queue: queue, store: store, settings: box)).test(.router) { c in
+            try await c.execute(uri: "/v1/videos/transform", method: .post, headers: [.contentType: "multipart/form-data; boundary=XyZ"],
+                                body: Self.form(video, ["operation": "mask"])) { r in
+                XCTAssertEqual(r.status, .ok, String(buffer: r.body))
+                XCTAssertEqual(r.headers[.contentType], "video/mp4")
+                let out = dir.appending(path: "mask.mp4")
+                try Data(buffer: r.body).write(to: out)
+                let after = try await Self.facts(out)
+                print("[video] mask: \(before) -> \(after)")
+                XCTAssertEqual(after.seconds, before.seconds, accuracy: 0.1)
+                XCTAssertEqual(after.size, before.size)
+                XCTAssertEqual(after.frames, before.frames)
+                XCTAssertTrue(after.audio, "the source's sound is kept")
+                XCTAssertGreaterThan(after.brightness, 0.2); XCTAssertLessThan(after.brightness, 0.8)
+            }
+            try await c.execute(uri: "/v1/videos/transform", method: .post, headers: [.contentType: "multipart/form-data; boundary=XyZ"],
+                                body: Self.form(video, ["operation": "restyle"])) { r in XCTAssertEqual(r.status, .badRequest) }
+            try await c.execute(uri: "/v1/videos/transform", method: .post, headers: [.contentType: "multipart/form-data; boundary=XyZ"],
+                                body: Self.form(video, ["operation": "depth"])) { r in XCTAssertEqual(r.status, .serviceUnavailable) }
+        }
+    }
+}
+
 /// Depth Anything V2 through Core ML. SYNAPSE_E2E=1 with depth-anything-v2-small downloaded.
 final class ImageToolsE2ETests: XCTestCase {
     /// The zebra (Vision's subject mask) is nearer than the sky and field behind it: brighter in the depth map.
@@ -111,6 +186,37 @@ extension ImageToolsE2ETests {
                      src.extent.width, src.extent.height, up.extent.width, up.extent.height, mad))
         if let dir = ProcessInfo.processInfo.environment["SYNAPSE_SCRATCH"] { try png.write(to: URL(fileURLWithPath: dir).appending(path: "zebra-x4.png")) }
         XCTAssertLessThan(mad, 0.04)
+    }
+}
+
+extension ImageToolsE2ETests {
+    /// Depth and ×4 video through the real models: same timing and frames, sound kept; upscaling uses general-x4v3.
+    func testDepthAndUpscaleVideo() async throws {
+        guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let root = ProcessInfo.processInfo.environment["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
+        let store = ModelStore(root: root)
+        let images = ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
+        let dir = try TestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try await VideoTransformTests.zebraWithSound(in: dir)
+        let before = try await VideoTransformTests.facts(source)
+        for op in [VideoOperation.depth, .upscale] {
+            let out = dir.appending(path: "\(op.rawValue).mp4")
+            let start = Date()
+            let spec = try await images.transformVideo(source, to: out, operation: op, model: nil)
+            let after = try await VideoTransformTests.facts(out)
+            print(String(format: "[video] %@ with %@: %.1f s for %d frames; %@", op.rawValue, spec?.id ?? "-", Date().timeIntervalSince(start),
+                         after.frames, "\(after)"))
+            if let dir = ProcessInfo.processInfo.environment["SYNAPSE_SCRATCH"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: dir).appending(path: "zebra-\(op.rawValue).mp4"))
+                try FileManager.default.copyItem(at: out, to: URL(fileURLWithPath: dir).appending(path: "zebra-\(op.rawValue).mp4"))
+            }
+            XCTAssertEqual(after.frames, before.frames, op.rawValue)
+            XCTAssertEqual(after.seconds, before.seconds, accuracy: 0.1)
+            XCTAssertTrue(after.audio, op.rawValue)
+            XCTAssertEqual(after.size, op == .upscale ? CGSize(width: before.size.width * 4, height: before.size.height * 4) : before.size)
+            if op == .upscale { XCTAssertEqual(spec?.id, "real-esrgan-general-x4v3") }
+        }
     }
 }
 

@@ -76,4 +76,4 @@ Models are downloaded by the user at runtime and are not part of the app bundle.
 - **DialogueSidon** (MLX conversion by mlx-community), Creative Commons Attribution-NonCommercial 4.0 (CC-BY-NC-4.0). https://huggingface.co/mlx-community/DialogueSidon-bf16
 - **SAM-Audio small** (Meta, MLX conversion by mlx-community), SAM License; it loads Google's T5-base text encoder (Apache License 2.0) on first use. https://huggingface.co/facebook/sam-audio-small
 - **Depth Anything V2 small** (Core ML conversion by Apple), Apache License 2.0. https://huggingface.co/apple/coreml-depth-anything-v2-small
-- **Real-ESRGAN x4plus** (Xintao Wang et al., MLX conversion by mlx-community), BSD 3-Clause License. https://github.com/xinntao/Real-ESRGAN
+- **Real-ESRGAN x4plus** and **general-x4v3** (Xintao Wang et al., MLX conversions by mlx-community), BSD 3-Clause License. https://github.com/xinntao/Real-ESRGAN

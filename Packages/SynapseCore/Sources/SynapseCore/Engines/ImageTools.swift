@@ -62,20 +62,50 @@ public enum ImageTools {
 
     /// Relative depth at the input's size, near = white, as an 8-bit grayscale PNG.
     static func depth(_ image: Data, model: VNCoreMLModel) throws -> Data {
-        let handler = VNImageRequestHandler(data: image)
+        try png(CIImage(cgImage: try depth(decode(image), model: model)), gray: true)
+    }
+
+    /// Relative depth at the image's size, near = white (grayscale).
+    static func depth(_ image: CGImage, model: VNCoreMLModel) throws -> CGImage {
+        let handler = VNImageRequestHandler(cgImage: image)
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFill
         do { try handler.perform([request]) } catch { throw ImageToolError.unreadable }
         guard let out = (request.results?.first as? VNPixelBufferObservation)?.pixelBuffer else {
             throw ImageToolError.failed("The depth model returned no image.")
         }
-        guard let source = CIImage(data: image) else { throw ImageToolError.unreadable }
         // Depth Anything gives unscaled inverse depth; stretch this image's range to 0...1 before resizing back.
         let normalized = try stretch(out)
-        let size = source.extent.size
-        let scaled = normalized.transformed(by: CGAffineTransform(scaleX: size.width / normalized.extent.width,
-                                                                  y: size.height / normalized.extent.height))
-        return try png(scaled, gray: true)
+        let scaled = normalized.transformed(by: CGAffineTransform(scaleX: CGFloat(image.width) / normalized.extent.width,
+                                                                  y: CGFloat(image.height) / normalized.extent.height))
+        return try cgImage(scaled)
+    }
+
+    /// White where the subject is, black elsewhere (all black when Vision finds no subject, as in an empty video frame).
+    static func mask(_ image: CGImage) throws -> CGImage {
+        let handler = VNImageRequestHandler(cgImage: image)
+        let request = VNGenerateForegroundInstanceMaskRequest()
+        do { try handler.perform([request]) } catch { throw ImageToolError.unreadable }
+        let rect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        guard let result = request.results?.first, !result.allInstances.isEmpty,
+              let buffer = try? result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler) else {
+            return try cgImage(CIImage(color: .black).cropped(to: rect))
+        }
+        return try cgImage(CIImage(cvPixelBuffer: buffer))
+    }
+
+    /// One context for every conversion (they are expensive to make and safe to share).
+    static let context = CIContext()
+
+    /// Decoded with its EXIF orientation applied.
+    static func decode(_ data: Data) throws -> CGImage {
+        guard let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else { throw ImageToolError.unreadable }
+        return try cgImage(ci)
+    }
+
+    static func cgImage(_ image: CIImage) throws -> CGImage {
+        guard let cg = context.createCGImage(image, from: image.extent.integral) else { throw ImageToolError.failed("Could not render the image.") }
+        return cg
     }
 
     /// One-channel half or float buffer to a 0...1 CIImage.
@@ -104,8 +134,8 @@ public enum ImageTools {
                        colorSpace: CGColorSpaceCreateDeviceGray())
     }
 
-    private static func png(_ image: CIImage, gray: Bool) throws -> Data {
-        let ctx = CIContext()
+    static func png(_ image: CIImage, gray: Bool) throws -> Data {
+        let ctx = context
         let space = gray ? CGColorSpaceCreateDeviceGray() : CGColorSpace(name: CGColorSpace.sRGB)!
         guard let data = ctx.pngRepresentation(of: image, format: gray ? .L8 : .RGBA8, colorSpace: space) else {
             throw ImageToolError.failed("Could not encode the result as PNG.")

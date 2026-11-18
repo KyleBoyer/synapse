@@ -67,6 +67,12 @@ private struct ImagesResponse: Encodable {
     var usage = ImageUsage()
 }
 
+private struct VideoTransformForm: Decodable {
+    var file: File
+    var operation: String?
+    var model: String?
+}
+
 private func toolResponse(_ png: Data, background: String) -> ImagesResponse {
     let size = CIImage(data: png).map { "\(Int($0.extent.width))x\(Int($0.extent.height))" } ?? "auto"
     return ImagesResponse(created: Int(Date().timeIntervalSince1970), data: [ImageItem(b64_json: png.base64EncodedString())],
@@ -194,6 +200,24 @@ func addImageRoutes(to g: RouterGroup<SynapseContext>, images: ImageService, fil
             throw HTTPError(.serviceUnavailable, message: ImageToolError.noUpscaler.localizedDescription)
         } catch let e as ImageToolError { throw badRequest(e.localizedDescription) }
         catch let e as ResolveError { throw badRequest(e.localizedDescription) }
+    }
+    // Video to video, frame by frame (ours): multipart `file`, `operation` (depth, mask, upscale), `model`. Answers MP4.
+    g.post("videos/transform") { req, ctx in
+        let form = try await req.decode(as: VideoTransformForm.self, context: ctx)
+        guard let op = VideoOperation(rawValue: form.operation ?? "") else {
+            throw badRequest("operation must be one of \(VideoOperation.allCases.map(\.rawValue).joined(separator: ", ")).")
+        }
+        do {
+            let data = try await withUpload(form.file) { url -> Data in
+                let out = url.deletingLastPathComponent().appending(path: "transformed.mp4")
+                _ = try await images.transformVideo(url, to: out, operation: op, model: nonEmpty(form.model))
+                return try Data(contentsOf: out)
+            }
+            return Response(status: .ok, headers: [.contentType: "video/mp4"], body: .init(byteBuffer: ByteBuffer(data: data)))
+        } catch let e as ImageToolError {
+            if e == .noDepthModel || e == .noUpscaler { throw HTTPError(.serviceUnavailable, message: e.localizedDescription) }
+            throw badRequest(e.localizedDescription)
+        } catch let e as ResolveError { throw badRequest(e.localizedDescription) }
     }
     g.get("images/files/:name") { _, ctx in
         guard let name = ctx.parameters.get("name"), let f = await cache.get(name) else {

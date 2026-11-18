@@ -71,5 +71,6 @@ Upscaling, background removal, segmentation, depth.
 
 Editing, restyling, upscaling. Heavy on 16 GB; may be Mac Studio only.
 
-- [ ] Research models
-- [ ] API shape and pane
+- [x] Research: frame-by-frame tools reuse the image models (depth, Vision masks, Real-ESRGAN; mlx-community's compact general-x4v3 is about ten times faster than x4plus). Restyling needs a video diffusion model (LTX-2 IC-LoRAs), heavy enough to be Mac Studio work.
+- [x] Frame by frame: `POST /v1/videos/transform` (`depth`, `mask`, `upscale`) and Video → Transform; H.264 at the source's frame timing, the source's sound passed through. Verified on zebra.mp4 with sound: mask (Vision) 20 frames in 0.7 s, depth 1.2 s, ×4 to 1280 px with general-x4v3 in 12 s; same frame count, duration and sound (VideoTransformTests, ImageToolsE2ETests); app captures.
+- [ ] Restyle with LTX-2 (video to video with a prompt): Mac Studio

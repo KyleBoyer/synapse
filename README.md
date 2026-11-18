@@ -120,6 +120,16 @@ print(m.content[0].text)
 
 The Images pane has the same: Generate, Cut Out, Depth and Upscale.
 
+### Video to video
+
+`POST /v1/videos/transform` (Synapse's own): multipart `file` (MP4 or MOV, up to 60 seconds), `operation`, `model`. Every frame goes through an image tool and the MP4 comes back with the source's frame timing and sound. Video → Transform in the app does the same.
+
+| `operation` | What each frame becomes | Model |
+|---|---|---|
+| `depth` | relative depth, near is white | `depth-anything-v2-small` (about 0.06 s per frame) |
+| `mask` | the subject white, the rest black | macOS Vision, nothing to download |
+| `upscale` | ×4, up to 2560 px out (640 px in) | `real-esrgan-general-x4v3` when downloaded (about 0.6 s per 320 px frame), else `real-esrgan-x4plus` |
+
 ### Video in chat
 
 Qwen3.5 models and the omni models (except Gemma 3n) read video. Send a `video_url` part (Chat Completions) or `input_video` part (Responses) holding an MP4 or MOV as a `data:` URL or an `http(s)` URL, up to 200 MB. Synapse samples 8 frames. File paths and `file://` URLs are refused. A model without video input returns 400.

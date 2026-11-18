@@ -29,9 +29,14 @@ struct VideoView: View {
     private var active: VideoJob? { jobs.first { $0.status == .in_progress } ?? jobs.first { $0.status == .queued } }
     private var running: Bool { active != nil }
 
+    enum Mode: String, CaseIterable { case generate = "Generate", transform = "Transform" }
+    @State private var mode = Mode.generate
+
     var body: some View {
         Group {
-            if specs.isEmpty {
+            if mode == .transform {
+                VideoTransformView()
+            } else if specs.isEmpty {
                 ContentUnavailableView("No video models", systemImage: "film",
                                        description: Text("Download LTX-2.3 Distilled in Models. On Macs under 64 GB it runs in low-memory mode (about 55 GB download)."))
             } else {
@@ -51,14 +56,23 @@ struct VideoView: View {
         .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.video) { modelID = s.id } }
         .navigationTitle("Video")
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Mode", selection: $mode) { ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden().disabled(running)
+            }
             ToolbarItemGroup {
-                if !specs.isEmpty {
+                if mode == .generate, !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                         .id(modelID)   // the toolbar measures the menu once; a new identity re-measures it for the chosen name
                 }
             }
         }
-        .task { await state.refreshModels() }
+        .task {
+            await state.refreshModels()
+            #if DEBUG
+            if UserDefaults.standard.string(forKey: "autoVideoTransform") != nil { mode = .transform }
+            #endif
+        }
         .task {
             // Generation lives in the service, so leaving the pane keeps it running; coming back resumes the list.
             jobs = await state.videos.all()
@@ -248,7 +262,7 @@ private extension VideoJob.Status {
 
 /// One clip with AppKit's player controls. SwiftUI's VideoPlayer is avoided: its AVKit overlay aborted at launch
 /// (fatal error in _AVKit_SwiftUI class metadata) on macOS 26.
-private struct ClipPlayer: NSViewRepresentable {
+struct ClipPlayer: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> AVPlayerView {

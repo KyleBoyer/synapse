@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 @preconcurrency import Vision
 
@@ -92,11 +93,7 @@ public actor ImageService {
     /// The image ×4. nil picks the downloaded upscaler. Holds the GPU while it runs (MLX).
     public func upscale(_ image: Data, model requested: String?) async throws -> (ModelSpec, Data) {
         let spec = try await tool(requested, \.isUpscaler, missing: .noUpscaler)
-        if upscaler?.id != spec.id {
-            guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
-            upscaler = (spec.id, try RealESRGAN(folder: folder))
-        }
-        let model = upscaler!.model
+        let model = try await upscalerModel(spec)
         let png = try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes + (1 << 30)) {
             try await GPUGate.shared.run { try await Task.detached { try ImageTools.upscale(image, model: model) }.value }
         }
@@ -117,12 +114,63 @@ public actor ImageService {
     /// A depth map the size of the input (near is white). nil picks the downloaded depth model.
     public func depth(_ image: Data, model requested: String?) async throws -> (ModelSpec, Data) {
         let spec = try await tool(requested, \.isDepth, missing: .noDepthModel)
+        let model = try await depthModel(spec)
+        return (spec, try await Task.detached { try ImageTools.depth(image, model: model) }.value)
+    }
+
+    private func depthModel(_ spec: ModelSpec) async throws -> VNCoreMLModel {
         if depthModel?.id != spec.id {
             guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
             depthModel = (spec.id, try ImageTools.loadDepthModel(folder: folder))
         }
-        let model = depthModel!.model
-        return (spec, try await Task.detached { try ImageTools.depth(image, model: model) }.value)
+        return depthModel!.model
+    }
+
+    private func upscalerModel(_ spec: ModelSpec) async throws -> RealESRGAN {
+        if upscaler?.id != spec.id {
+            guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+            upscaler = (spec.id, try RealESRGAN(folder: folder))
+        }
+        return upscaler!.model
+    }
+
+    /// Upscaled video stays at most this wide or tall (input ×4).
+    public static let maxUpscaledVideoSide = 2560
+
+    /// Every frame of a video through one image tool, written as MP4 to `output` with the source's sound. The model
+    /// used, if any, is returned. Upscaling prefers the fast general-x4v3 when it is downloaded.
+    public func transformVideo(_ input: URL, to output: URL, operation: VideoOperation, model requested: String?,
+                               progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> ModelSpec? {
+        let spec: ModelSpec?
+        let frame: @Sendable (CGImage) throws -> CGImage
+        var scale = 1
+        switch operation {
+        case .mask:
+            spec = nil
+            frame = { try ImageTools.mask($0) }
+        case .depth:
+            let s = try await tool(requested, \.isDepth, missing: .noDepthModel)
+            let model = try await depthModel(s)
+            spec = s
+            frame = { try ImageTools.depth($0, model: model) }
+        case .upscale:
+            let downloaded = await store.downloaded
+            let fast = requested == nil && downloaded.contains("real-esrgan-general-x4v3") ? "real-esrgan-general-x4v3" : requested
+            let s = try await tool(fast, \.isUpscaler, missing: .noUpscaler)
+            let model = try await upscalerModel(s)
+            let size = try await AVURLAsset(url: input).loadTracks(withMediaType: .video).first?.load(.naturalSize) ?? .zero
+            guard max(size.width, size.height) * 4 <= CGFloat(Self.maxUpscaledVideoSide) else {
+                throw ImageToolError.failed("Upscaled video is limited to \(Self.maxUpscaledVideoSide) px; this one is \(Int(size.width))×\(Int(size.height)), so it would be \(Int(size.width) * 4)×\(Int(size.height) * 4).")
+            }
+            spec = s; scale = RealESRGAN.scale
+            frame = { try ImageTools.upscale($0, model: model) }
+        }
+        let factor = scale
+        let run: @Sendable () async throws -> Void = {
+            try await GPUGate.shared.run { try await VideoTransform.run(input: input, output: output, scale: factor, frame: frame, progress: progress) }
+        }
+        if let spec { try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes + (1 << 30), during: run) } else { try await run() }
+        return spec
     }
 
     /// nil picks the smallest downloaded image model that can do the job.
