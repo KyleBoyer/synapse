@@ -29,6 +29,13 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [x] Verified across input and output types with real models and the official SDKs (`verify-modalities.py --only tools`, `verify-openai-realtime.py`): text, image, video (Qwen3.5 2B), audio in (Gemma 4 E2B, LFM3), spoken replies (Qwen3.5 2B + TTS, LFM3's own voice), a GGUF model (Llama 3.2 1B), Responses, and a realtime call that sees a camera frame then calls record_animal("zebra").
 - [ ] MiniCPM-o in the omni path (its whole-reply generation ignores tools)
 
+## Tool calls in full-duplex calls
+
+NemotronLabs VoiceChat 11B (`voicechat-11b`, in the catalog) has native tool calling, and the vendored SpeechSwift port implements its function channel; Synapse does not wire it yet.
+
+- [ ] VoiceChat: session tools into its system prompt, the function channel's JSON as `function_call` events, `function_call_output` back through `injectFunctionResponse`; verify (about 20 GB of RAM: paging on 16 GB, comfortable on the Mac Studio)
+- [ ] PersonaPlex: tool calls with the personaplex-tool-calling approach (a side model decides calls from the running transcript; the result is forced into the inner monologue so the model speaks it itself)
+
 ## Image (+text) embeddings (done)
 
 Image and text in one vector space, for image search and image-to-text matching.
