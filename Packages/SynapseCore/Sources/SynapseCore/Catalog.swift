@@ -95,6 +95,7 @@ public enum Catalog {
         hf("voxcpm2", "VoxCPM2 (clones voices)", .mlxspeech, "mlx-community/VoxCPM2-8bit", 3078, ramGB: 8),
         hf("chatterbox-turbo", "Chatterbox Turbo (clones voices, English)", .mlxspeech, "mlx-community/chatterbox-turbo-4bit", 398, ramGB: 2),
         realtime("voicechat-11b", "Nemotron VoiceChat 11B (full duplex)", .duplex, "voicechat-int8", 12127, ramGB: 20),
+        realtime("voicechat-11b-int5", "Nemotron VoiceChat 11B int5 (full duplex, smaller)", .duplex, "voicechat-int5", 8581, ramGB: 14),
         realtime("personaplex-7b", "PersonaPlex 7B (full duplex, non-commercial)", .duplex, "personaplex-4bit", 5821, ramGB: 12),
         realtime("hibiki-zero-3b", "Hibiki Zero 3B (speech translation to English, non-commercial)", .duplex, "hibiki-zero-8bit", 4130, ramGB: 10),
         hf("qwen3-embedding-0.6b", "Qwen3 Embedding 0.6B", .embedding, "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ", 335),

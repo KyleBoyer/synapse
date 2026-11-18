@@ -31,10 +31,10 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 
 ## Tool calls in full-duplex calls
 
-NemotronLabs VoiceChat 11B (`voicechat-11b`, in the catalog) has native tool calling, and the vendored SpeechSwift port implements its function channel; Synapse does not wire it yet.
+Both full-duplex families take session tools. VoiceChat calls them itself on its function channel; PersonaPlex has no tool head, so a small chat model (`session.tools_model`) decides calls from the transcript and its answer is forced into PersonaPlex's inner monologue, which the model then speaks in its own voice. `response.create` is a no-op in these calls (the model decides when to talk).
 
-- [ ] VoiceChat: session tools into its system prompt, the function channel's JSON as `function_call` events, `function_call_output` back through `injectFunctionResponse`; verify (about 20 GB of RAM: paging on 16 GB, comfortable on the Mac Studio)
-- [ ] PersonaPlex: tool calls with the personaplex-tool-calling approach (a side model decides calls from the running transcript; the result is forced into the inner monologue so the model speaks it itself)
+- [ ] VoiceChat: session tools into its system prompt, the function channel's JSON as `function_call` events, `function_call_output` back through `injectFunctionResponse`. Built; RealtimeTests cover the session flow. The int8 build (12 GB) stalled on 16 GB: 88 minutes paging at 5% CPU without finishing one exchange. Added the upstream int5 build (`voicechat-11b-int5`, 8.6 GB) to verify here; int8 is for the Mac Studio.
+- [ ] PersonaPlex: tool calls with the personaplex-tool-calling approach (a side model decides calls from the running transcript; the result is forced into the inner monologue so the model speaks it itself). Built; verified on the real model that a forced sentence is spoken in its voice ("It is eighteen degrees with light rain in Paris", heard back by Whisper); RealtimeTests cover the session flow. Still to run: the WebSocket check with a real tools model.
 
 ## Image (+text) embeddings (done)
 

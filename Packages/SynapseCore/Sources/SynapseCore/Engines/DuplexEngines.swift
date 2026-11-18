@@ -6,7 +6,7 @@ import MLX
 public enum DuplexEngines {
     public static let duplex: @Sendable (ModelSpec, URL) async throws -> any DuplexSpeechEngine = { spec, folder in
         switch spec.id {
-        case "voicechat-11b": return try await DuplexVoiceChatEngine(folder: folder)
+        case "voicechat-11b", "voicechat-11b-int5": return try await DuplexVoiceChatEngine(folder: folder)
         case "personaplex-7b": return try await DuplexPersonaPlexEngine(folder: folder)
         default: throw EngineError.unsupported("\(spec.displayName) is not a duplex model")
         }

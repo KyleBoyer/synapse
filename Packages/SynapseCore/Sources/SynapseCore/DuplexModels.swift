@@ -6,6 +6,7 @@ enum DuplexModels {
     /// Catalog variant -> Hugging Face repo (aufklarer's MLX conversions that speech-swift loads).
     static let repos: [String: String] = [
         "voicechat-int8": "aufklarer/VoiceChat-11B-Perception-MLX-int8",   // encoder/ llm/ tts/ (12.1 GB)
+        "voicechat-int5": "aufklarer/VoiceChat-11B-Perception-MLX-int5",   // same layout, 5-bit with 8-bit heads (8.6 GB)
         "personaplex-4bit": "aufklarer/PersonaPlex-7B-MLX-4bit",           // 4 safetensors + voices/ + SPM (5.8 GB)
         "hibiki-zero-8bit": "aufklarer/Hibiki-Zero-3B-MLX-8bit",           // 4 safetensors + SPM + config (4.1 GB)
     ]

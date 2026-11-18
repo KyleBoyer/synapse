@@ -82,6 +82,12 @@ public actor RealtimeSession {
     private var activeTask: Task<Void, Never>?
     private var active: Response?
     private var duplexResponse: Response?
+    /// Tools last given to the duplex engine, and its calls still waiting for a result (call id -> tool name).
+    private var duplexTools: [ChatTool]?
+    private var duplexCalls: [String: String] = [:]
+    /// Synapse extension: the chat model that decides tool calls for a duplex model without its own (PersonaPlex);
+    /// nil picks the smallest downloaded chat model.
+    private var toolsModel: String?
     private var closed = false
     /// Seconds from speech_stopped to the first audio delta of the last response (for latency checks).
     public private(set) var lastFirstAudioLatency: Double?
@@ -211,6 +217,7 @@ public actor RealtimeSession {
         if let l = s["translation_language"] as? String { translationLanguage = l.isEmpty ? nil : l }
         if let t = s["tools"] as? [Any] { tools = t }
         if let c = s["tool_choice"] { toolChoice = c }
+        if let m = s["tools_model"] as? String { toolsModel = m.isEmpty ? nil : m; llm = nil }
         let audio = s["audio"] as? [String: Any] ?? [:]
         if let input = audio["input"] as? [String: Any] {
             if let f = input["format"] as? [String: Any] {
@@ -269,6 +276,7 @@ public actor RealtimeSession {
                                        "interrupt_response": t.interruptResponse]
         } else { input["turn_detection"] = NSNull() }
         var s: [String: Any] = ["type": type, "id": sessionID, "object": "realtime.session", "model": model]
+        if let toolsModel { s["tools_model"] = toolsModel }
         if type == "transcription" {
             s["audio"] = ["input": input]
         } else {
@@ -307,9 +315,16 @@ public actor RealtimeSession {
 
     private func ingest(_ samples: [Float]) async {
         guard !closed, !samples.isEmpty else { return }
-        if isDuplexModel(), type == "realtime", !(Catalog.spec(model)?.id.hasPrefix("hibiki") ?? false) {
-            return await pumpDuplex(samples)
-        }
+        if isFullDuplex() { return await pumpDuplex(samples) }
+        await recognize(samples)
+    }
+
+    private func isFullDuplex() -> Bool {
+        isDuplexModel() && type == "realtime" && !(Catalog.spec(model)?.id.hasPrefix("hibiki") ?? false)
+    }
+
+    /// Turn detection and transcription of the mic audio.
+    private func recognize(_ samples: [Float]) async {
         do { try await ensureInput() } catch { return fail("server_error", "model_unavailable", error.localizedDescription) }
         if up == nil { up = StreamResampler(from: Double(inputRate), to: 16000) }
         let x = up!.convert(samples)
@@ -330,7 +345,7 @@ public actor RealtimeSession {
     private func ensureInput() async throws {
         guard !inReady else { return }
         if turn != nil { vad = try await services.vad() }
-        if let spec = Catalog.spec(model), spec.id.hasPrefix("hibiki") {
+        if let spec = Catalog.spec(model), spec.id.hasPrefix("hibiki"), !isFullDuplex() {
             special = try await services.special(spec)
         } else {
             asr = try await services.asr(transcriptionModel, language)
@@ -357,7 +372,7 @@ public actor RealtimeSession {
             let id = newItemID(); itemID = id
             speechStartMs = max(0, startMs - t.prefixPaddingMs)
             emit("input_audio_buffer.speech_started", ["item_id": id, "audio_start_ms": speechStartMs])
-            if t.interruptResponse, active != nil || duplexResponse != nil { await cancelResponse(reason: "turn_detected") }
+            if t.interruptResponse, !isFullDuplex(), active != nil || duplexResponse != nil { await cancelResponse(reason: "turn_detected") }
             await asrFeed(utt)
         } else {
             await asrFeed(chunk)
@@ -428,6 +443,7 @@ public actor RealtimeSession {
         if type == "realtime", speaks { keepUtterance(id, audio) }
         if type == "realtime" {
             items.append(Item(id: id, role: "user", text: text))
+            if isFullDuplex() { return decideTools() }
             if respond { startResponse(instructions: nil, modalities: nil) }
         }
     }
@@ -448,7 +464,11 @@ public actor RealtimeSession {
             }
             let id = (item["id"] as? String) ?? newItemID()
             if kind == "function_call_output" {
-                items.append(Item(id: id, role: "user", text: ToolMarkup.response(item["output"] as? String ?? "")))
+                let output = item["output"] as? String ?? ""
+                items.append(Item(id: id, role: "user", text: ToolMarkup.response(output)))
+                if let name = duplexCalls.removeValue(forKey: callID) {
+                    Task { await self.deliverDuplexResult(name: name, output: output) }
+                }
             } else {
                 guard let name = item["name"] as? String else {
                     return fail("invalid_request_error", "missing_required_parameter", "function_call items need name.", param: "item.name")
@@ -492,6 +512,8 @@ public actor RealtimeSession {
 
     private func startResponse(instructions override: String?, modalities override2: [String]?) {
         guard type == "realtime" else { return fail("invalid_request_error", "invalid_value", "Responses are not available in transcription sessions.") }
+        // A full-duplex model speaks whenever it decides to; there is no turn to start (clients send this after a tool result).
+        if isFullDuplex() { return }
         let audio = (override2 ?? modalities).contains("audio")
         let r = Response(audio: audio)
         active = r
@@ -766,6 +788,10 @@ public actor RealtimeSession {
                 duplexUp = StreamResampler(from: Double(inputRate), to: Double(await engine.inputSampleRate))
                 duplexDown = StreamResampler(from: Double(await engine.outputSampleRate), to: Double(outputRate))
             }
+            let support = await engine.toolSupport, tools = chatTools
+            if support == .native, tools != duplexTools { duplexTools = tools; duplexCalls = [:]; await engine.setTools(tools) }
+            // Without its own tool calling, a side recognizer and chat model listen along (decideTools).
+            if support == .spokenResults, !tools.isEmpty { await recognize(samples) }
             for ev in try await engine.push(duplexUp!.convert(samples)) {
                 switch ev {
                 case .audio(let a): respAudio(duplexResponseOpen(), duplexDown!.convert(a))
@@ -774,9 +800,60 @@ public actor RealtimeSession {
                     let id = newItemID()
                     items.append(Item(id: id, role: "user", text: t))
                     complete(id, t)
+                case .toolCall(let name, let arguments): await emitDuplexCalls([(name, arguments)])
                 }
             }
         } catch { fail("server_error", "duplex_failed", error.localizedDescription) }
+    }
+
+    /// Ends the current duplex response with the calls as its function_call items, as a cascade response does,
+    /// so a client runs its tools on response.done. Later speech goes out in a new response.
+    private func emitDuplexCalls(_ calls: [(name: String, arguments: String)]) async {
+        let r = duplexResponseOpen()
+        for c in calls {
+            recordCall(r, c.name, c.arguments)
+            duplexCalls[r.calls[r.calls.count - 1].callID] = c.name
+        }
+        duplexResponse = nil
+        await endResponse(r, status: "completed", reason: nil)
+    }
+
+    /// PersonaPlex: the tools model reads the conversation after each user turn and calls a tool when one is needed;
+    /// otherwise the duplex model answers on its own and the chat model's text is dropped.
+    private func decideTools() {
+        let messages = messagesForResponse(instructions: instructions), tools = chatTools
+        guard !tools.isEmpty else { return }
+        Task { await self.runToolsModel(messages, tools: tools, speak: false) }
+    }
+
+    private func deliverDuplexResult(name: String, output: String) async {
+        guard let engine = special?.duplex else { return }
+        do {
+            switch await engine.toolSupport {
+            case .native: try await engine.toolResult(name: name, output: output)
+            case .spokenResults:
+                // The tools model turns the result into a sentence, which the duplex model then says in its own voice.
+                await runToolsModel(messagesForResponse(instructions: instructions), tools: chatTools, speak: true)
+            case .none: break
+            }
+        } catch { fail("server_error", "tool_result_failed", error.localizedDescription) }
+    }
+
+    private func runToolsModel(_ messages: [ChatMessage], tools: [ChatTool], speak: Bool) async {
+        do {
+            if llm == nil { llm = try await services.llm(toolsModel) }
+            var calls: [(name: String, arguments: String)] = [], text = ""
+            for try await ev in try await llm!.stream(messages, options: ChatOptions(maxTokens: 200, tools: tools)) {
+                switch ev {
+                case .delta(let d): text += d
+                case .toolCall(let name, let arguments): calls.append((name, arguments))
+                default: break
+                }
+            }
+            if !calls.isEmpty { return await emitDuplexCalls(calls) }
+            let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if speak, !sentence.isEmpty { await special?.duplex?.say(sentence) }
+        } catch { fail("server_error", "tools_model_failed", error.localizedDescription) }
     }
 
     private func duplexResponseOpen() -> Response {

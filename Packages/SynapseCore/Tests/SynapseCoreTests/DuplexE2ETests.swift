@@ -2,7 +2,7 @@ import AVFoundation
 import XCTest
 @testable import SynapseCore
 
-/// Real full-duplex / translation models. SYNAPSE_DUPLEX_E2E_IDS=hibiki-zero-3b,personaplex-7b,voicechat-11b, models in
+/// Real full-duplex / translation models. SYNAPSE_DUPLEX_E2E_IDS=hibiki-zero-3b,personaplex-7b,voicechat-11b[-int5], models in
 /// SYNAPSE_MODELS_DIR (download with DownloadTool). Run: scripts/with-gpu-lock.sh scripts/test-chat-e2e.sh DuplexE2ETests
 final class DuplexE2ETests: XCTestCase {
     private var ids: Set<String> = []
@@ -81,10 +81,13 @@ final class DuplexE2ETests: XCTestCase {
     }
 
     /// Question clip + 8 s silence (time for the spoken reply), in 80 ms-ish chunks; returns assistant audio and text.
-    private func converse(_ engine: any DuplexSpeechEngine, label: String) async throws -> (audio: [Float], user: String, text: String) {
+    private func converse(_ engine: any DuplexSpeechEngine, label: String,
+                          question: String = "Hello! My name is Sam. Can you tell me what the capital of France is?",
+                          silence: Int = 8,
+                          onCall: (String, String) async throws -> Void = { _, _ in }) async throws -> (audio: [Float], user: String, text: String) {
         let rate = await engine.inputSampleRate
-        var clip = try say("Hello! My name is Sam. Can you tell me what the capital of France is?", voice: "Samantha", rate: rate)
-        clip += [Float](repeating: 0, count: rate * 8)
+        var clip = try say(question, voice: "Samantha", rate: rate)
+        clip += [Float](repeating: 0, count: rate * silence)
         _ = try writeWAV(clip, rate: rate, name: "\(label)-in-en.wav")
         let chunk = rate * 80 / 1000
         var audio: [Float] = [], user = "", text = ""
@@ -96,6 +99,9 @@ final class DuplexE2ETests: XCTestCase {
                 case .audio(let a): audio += a
                 case .userText(let u): user += u
                 case .assistantText(let a): text += a
+                case .toolCall(let name, let arguments):
+                    print("[\(label)] tool call \(name) \(arguments) at \(Double(i) / Double(rate))s")
+                    try await onCall(name, arguments)
                 }
             }
             i += chunk
@@ -118,7 +124,7 @@ final class DuplexE2ETests: XCTestCase {
     }
 
     func testVoiceChatAnswers() async throws {
-        let (s, dir) = try spec("voicechat-11b")
+        let (s, dir) = try spec(ids.contains("voicechat-11b-int5") ? "voicechat-11b-int5" : "voicechat-11b")
         let t = Date()
         let engine = try await DuplexEngines.duplex(s, dir)
         print("[voicechat] load \(Date().timeIntervalSince(t))s")
@@ -129,6 +135,57 @@ final class DuplexE2ETests: XCTestCase {
         XCTAssertFalse(r.user.trimmingCharacters(in: .whitespaces).isEmpty, "no user transcript")
         XCTAssertTrue(r.text.lowercased().contains("paris"), r.text)
         XCTAssertFalse(r.text.contains("<SPECIAL"), r.text)
+        await engine.unload()
+    }
+
+    private static let weather = ChatTool(name: "get_weather", description: "Get the current weather for a city",
+                                          parametersJSON: #"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#)
+
+    /// VoiceChat calls the tool on its function channel, hears the result, and speaks it.
+    func testVoiceChatCallsToolAndSpeaksResult() async throws {
+        let (s, dir) = try spec(ids.contains("voicechat-11b-int5") ? "voicechat-11b-int5" : "voicechat-11b")
+        let engine = try await DuplexEngines.duplex(s, dir)
+        await engine.setTools([Self.weather])
+        var calls: [(String, String)] = []
+        let r = try await converse(engine, label: "voicechat-tools", question: "What's the weather like in Paris right now?", silence: 14) { name, args in
+            calls.append((name, args))
+            try await engine.toolResult(name: name, output: #"{"city":"Paris","temperature_c":18,"sky":"light rain"}"#)
+        }
+        let wav = try writeWAV(r.audio, rate: await engine.outputSampleRate, name: "voicechat-tools-out.wav")
+        let heard = await transcribe(wav)
+        print("[voicechat-tools] whisper: \(heard)")
+        XCTAssertEqual(calls.first?.0, "get_weather")
+        XCTAssertTrue(calls.first?.1.lowercased().contains("paris") == true, calls.first?.1 ?? "no call")
+        let said = (r.text + " " + heard).lowercased()
+        XCTAssertTrue(said.contains("rain") || said.contains("18") || said.contains("eighteen"), said)
+        await engine.unload()
+    }
+
+    /// PersonaPlex says a tool's answer in its own voice when it is forced into the inner monologue.
+    func testPersonaPlexSpeaksForcedAnswer() async throws {
+        let (s, dir) = try spec("personaplex-7b")
+        let engine = try await DuplexEngines.duplex(s, dir)
+        let rate = await engine.inputSampleRate, chunk = rate * 80 / 1000
+        let clip = try say("What's the weather like in Paris right now?", voice: "Samantha", rate: rate)
+        var audio: [Float] = [], text = ""
+        func run(_ x: [Float]) async throws {
+            var i = 0
+            while i < x.count {
+                for e in try await engine.push(Array(x[i..<min(i + chunk, x.count)])) {
+                    if case .audio(let a) = e { audio += a }
+                    if case .assistantText(let t) = e { text += t }
+                }
+                i += chunk
+            }
+        }
+        try await run(clip + [Float](repeating: 0, count: rate))
+        await engine.say("It is eighteen degrees with light rain in Paris.")
+        try await run([Float](repeating: 0, count: rate * 8))
+        let wav = try writeWAV(audio, rate: await engine.outputSampleRate, name: "personaplex-said-out.wav")
+        let heard = await transcribe(wav)
+        print("[personaplex-said] text=\(text) whisper: \(heard)")
+        XCTAssertTrue(text.lowercased().contains("light rain"), text)
+        XCTAssertTrue(["rain", "18", "eighteen"].contains { heard.lowercased().contains($0) }, heard)
         await engine.unload()
     }
 }

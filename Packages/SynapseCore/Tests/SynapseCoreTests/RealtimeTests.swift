@@ -72,6 +72,35 @@ private actor FakeDuplex: DuplexSpeechEngine {
     func unload() async {}
 }
 
+/// A duplex model with its own tool calling (VoiceChat): once it has tools, it calls the first one, then waits.
+private actor NativeToolDuplex: DuplexSpeechEngine {
+    nonisolated var inputSampleRate: Int { 16000 }
+    nonisolated var outputSampleRate: Int { 24000 }
+    var toolSupport: DuplexToolSupport { .native }
+    var tools: [ChatTool] = [], called = false, results: [(String, String)] = []
+    func setTools(_ t: [ChatTool]) { tools = t; called = false }
+    func toolResult(name: String, output: String) { results.append((name, output)) }
+    func push(_ samples: [Float]) async throws -> [DuplexEvent] {
+        var out: [DuplexEvent] = [.audio([Float](repeating: 0.2, count: 2400))]
+        if let t = tools.first, !called { called = true; out.append(.toolCall(name: t.name, arguments: #"{"city":"Paris"}"#)) }
+        return out
+    }
+    func reset() async {}
+    func unload() async {}
+}
+
+/// A duplex model that only speaks (PersonaPlex): records what it was asked to say.
+private actor SpeakingDuplex: DuplexSpeechEngine {
+    nonisolated var inputSampleRate: Int { 16000 }
+    nonisolated var outputSampleRate: Int { 24000 }
+    var toolSupport: DuplexToolSupport { .spokenResults }
+    var said: [String] = []
+    func say(_ text: String) { said.append(text) }
+    func push(_ samples: [Float]) async throws -> [DuplexEvent] { [.audio([Float](repeating: 0.2, count: 2400))] }
+    func reset() async {}
+    func unload() async {}
+}
+
 /// Which recognizer and speech models a session asked the services for.
 private final class Requested: @unchecked Sendable {
     private let lock = NSLock()
@@ -82,10 +111,10 @@ private final class Requested: @unchecked Sendable {
 }
 
 private func services(llm: FakeLLM = FakeLLM(), ttsDelay: Int = 0, voice: FakeVoice = FakeVoice(),
-                      requested: Requested = Requested()) -> RealtimeServices {
+                      requested: Requested = Requested(), duplex: any DuplexSpeechEngine = FakeDuplex()) -> RealtimeServices {
     RealtimeServices(vad: { FakeVAD() }, asr: { m, l in requested.asr(m, l); return FakeASR() },
                      tts: { m in requested.tts(m); return FakeTTS(delayMs: ttsDelay) }, llm: { _ in llm },
-                     special: { _ in RealtimeSpecialModel(duplex: FakeDuplex()) }, voice: { _ in voice })
+                     special: { _ in RealtimeSpecialModel(duplex: duplex) }, voice: { _ in voice })
 }
 
 /// An omni model that answers in its own voice: records what it heard, returns 0.5 s of 24 kHz audio.
@@ -491,6 +520,48 @@ final class RealtimeTests: XCTestCase {
         XCTAssertTrue(closed)
         let t2 = await c.types
         XCTAssertEqual(t2.last, "response.done")
+    }
+
+    /// Starts a duplex session with the weather tool, waits for its call, and returns the result for it.
+    private func duplexCall(_ engine: any DuplexSpeechEngine, llm: FakeLLM = FakeLLM(), audio: [Int16]) async throws -> RealtimeSession {
+        let s = RealtimeSession(model: engine is SpeakingDuplex ? "personaplex-7b" : "voicechat-11b", services: services(llm: llm, duplex: engine))
+        let c = start(s)
+        await send(s, ["type": "session.update", "session": ["type": "realtime", "tools": [Self.weather]]])
+        await feed(s, audio)
+        let called = await c.wait("response.function_call_arguments.done")
+        XCTAssertTrue(called)
+        let done = await c.first("response.function_call_arguments.done")
+        XCTAssertEqual(done?["name"] as? String, "get_weather")
+        XCTAssertEqual(done?["arguments"] as? String, #"{"city":"Paris"}"#)
+        let callID = try XCTUnwrap(done?["call_id"] as? String)
+        await send(s, ["type": "conversation.item.create", "item": ["type": "function_call_output", "call_id": callID,
+                       "output": #"{"sky": "light rain"}"#]])
+        await send(s, ["type": "response.create"])
+        try await Task.sleep(for: .milliseconds(300))
+        let errors = await c.types.filter { $0 == "error" }
+        XCTAssertEqual(errors, [], "response.create after a tool result is fine in a duplex call")
+        return s
+    }
+
+    func testNativeDuplexCallsToolsAndHearsTheResult() async throws {
+        let engine = NativeToolDuplex()
+        let s = try await duplexCall(engine, audio: tone(ms: 200))
+        let tools = await engine.tools.map(\.name), results = await engine.results
+        XCTAssertEqual(tools, ["get_weather"])
+        XCTAssertEqual(results.first?.0, "get_weather")
+        XCTAssertEqual(results.first?.1, #"{"sky": "light rain"}"#)
+        await s.close()
+    }
+
+    func testSpokenResultsDuplexDecidesWithChatModelAndSpeaksTheAnswer() async throws {
+        let engine = SpeakingDuplex(), llm = FakeLLM()
+        let s = try await duplexCall(engine, llm: llm, audio: quiet(ms: 300) + tone(ms: 1000) + quiet(ms: 1200))
+        XCTAssertEqual(llm.seen.first?.last?.text, "hello world", "the chat model reads the transcribed turn")
+        var said: [String] = []
+        for _ in 0..<50 where said.isEmpty { said = await engine.said; try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(said.first?.hasPrefix("Hi there."), true, "the answer goes to the duplex model to say")
+        XCTAssertTrue(llm.seen.last?.last?.text.contains("light rain") == true)
+        await s.close()
     }
 
     func testSentenceSplitter() {

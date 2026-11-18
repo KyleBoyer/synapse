@@ -1,6 +1,7 @@
 import AudioCommon
 import Foundation
 import PersonaPlex
+import Synchronization
 
 /// NVIDIA PersonaPlex 7B (Moshi-style, audio only, 24 kHz, 80 ms frames). speech-swift exposes a pull stream
 /// reading a ring buffer; we run it in lock-step (one output frame per full input frame) so `push` returns
@@ -19,6 +20,14 @@ public actor DuplexPersonaPlexEngine: DuplexSpeechEngine {
     private var delivered = 0
     private var failure: Error?
     private var ended = false
+    /// Text tokens to force into the inner monologue, one per frame (spoken tool results).
+    private let forced = TokenBox()
+    /// The model's own monologue so far (the text of what it says).
+    private let monologue = TokenBox()
+
+    private var said = ""
+
+    public var toolSupport: DuplexToolSupport { .spokenResults }
 
     init(folder: URL) async throws {
         let m = try await PersonaPlexModel.fromPretrained(
@@ -35,7 +44,10 @@ public actor DuplexPersonaPlexEngine: DuplexSpeechEngine {
         let gen = generation
         ring = AudioRingBuffer(capacity: 24_000 * 30)
         fed = 0; produced = []; delivered = 0; failure = nil; ended = false
-        let stream = model.respondRealtime(userAudioBuffer: ring, waitForFullFrames: true)
+        let forced = self.forced, monologue = self.monologue
+        let stream = model.respondRealtime(userAudioBuffer: ring, waitForFullFrames: true,
+                                           forcedTextToken: { forced.tokens.withLock { $0.isEmpty ? nil : $0.removeFirst() } },
+                                           onTextToken: { t in monologue.tokens.withLock { $0.append(t) } })
         pump = Task {
             do { for try await f in stream { self.append(f, gen) } } catch { self.fail(error, gen) }
             self.finish(gen)
@@ -62,10 +74,26 @@ public actor DuplexPersonaPlexEngine: DuplexSpeechEngine {
         if let failure { throw failure }
         let audio = produced[delivered...].flatMap { $0 }
         delivered = produced.count
-        return audio.isEmpty ? [] : [.audio(audio)]
+        var out: [DuplexEvent] = []
+        // The inner monologue is the text of what the model says (it leads its audio by a few frames).
+        let text = model?.tokenizer?.decode(monologue.tokens.withLock { $0 }) ?? ""
+        if text.count > said.count, text.hasPrefix(said) {
+            let delta = String(text.dropFirst(said.count))
+            out.append(.assistantText(delta))
+            said = text
+        }
+        if !audio.isEmpty { out.append(.audio(audio)) }
+        return out
+    }
+
+    /// Feeds `text` into the monologue a token per 80 ms frame, so the audio head speaks it at a natural pace.
+    public func say(_ text: String) async {
+        guard let tokens = model?.tokenizer?.encode(text), !tokens.isEmpty else { return }
+        forced.tokens.withLock { $0 += tokens }
     }
 
     public func reset() async {
+        forced.tokens.withLock { $0 = [] }; monologue.tokens.withLock { $0 = [] }; said = ""
         generation += 1
         pump?.cancel(); pump = nil
         produced = []; delivered = 0; fed = 0; ended = false; failure = nil
@@ -78,3 +106,6 @@ public actor DuplexPersonaPlexEngine: DuplexSpeechEngine {
         DuplexAudio.freeMLXMemory()
     }
 }
+
+/// Shared with the generation task, which reads and writes it every frame.
+final class TokenBox: Sendable { let tokens = Mutex<[Int32]>([]) }
