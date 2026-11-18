@@ -38,12 +38,13 @@ final class VideoAPITests: XCTestCase {
                 XCTAssertTrue(["queued", "in_progress"].contains(o["status"] as? String ?? ""))
             }
             try await c.execute(uri: "/v1/videos/\(id)/content", method: .get) { r in XCTAssertEqual(r.status, .notFound) }
-            var status = ""
+            var status = "", failure: Any?
             for _ in 0..<200 where status != "completed" && status != "failed" {
                 try await Task.sleep(for: .milliseconds(50))
                 try await c.execute(uri: "/v1/videos/\(id)", method: .get) { r in
                     let o = try object(r)
                     status = o["status"] as? String ?? ""
+                    failure = o["error"]
                     if status == "completed" {
                         XCTAssertEqual(o["progress"] as? Int, 100)
                         XCTAssertNotNil(o["completed_at"] as? Int)
@@ -51,7 +52,7 @@ final class VideoAPITests: XCTestCase {
                     }
                 }
             }
-            XCTAssertEqual(status, "completed")
+            XCTAssertEqual(status, "completed", "\(failure ?? "no error")")
             try await c.execute(uri: "/v1/videos/\(id)/content", method: .get) { r in
                 XCTAssertEqual(r.headers[.contentType], "video/mp4")
                 XCTAssertEqual(String(decoding: Data(buffer: r.body)[4..<8], as: UTF8.self), "ftyp")
