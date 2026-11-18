@@ -3,10 +3,10 @@ import SwiftUI
 import SynapseCore
 import UniformTypeIdentifiers
 
-/// Images → Cut Out and Depth: an image in, a result beside it. Cut-outs use macOS Vision (nothing to download);
-/// depth uses Depth Anything V2 through Core ML.
+/// Images → Cut Out, Depth and Upscale: an image in, a result beside it. Cut-outs use macOS Vision (nothing to
+/// download); depth uses Depth Anything V2 through Core ML; upscaling uses Real-ESRGAN on MLX.
 struct ImageToolsView: View {
-    enum Tool: String { case cutout = "Cut Out", depth = "Depth" }
+    enum Tool: String { case cutout = "Cut Out", depth = "Depth", upscale = "Upscale" }
     struct Result: Identifiable {
         let id = UUID()
         let name: String
@@ -25,13 +25,23 @@ struct ImageToolsView: View {
     @State private var started: Date?
     @State private var error: String?
 
-    private var depthSpec: ModelSpec? { state.downloadedDepthSpecs.first }
+    /// The model the tool needs (nil for Cut Out, which uses Vision).
+    private var toolSpec: ModelSpec? {
+        switch tool {
+        case .cutout: nil
+        case .depth: state.downloadedImageToolSpecs.first(where: \.isDepth)
+        case .upscale: state.downloadedImageToolSpecs.first(where: \.isUpscaler)
+        }
+    }
 
     var body: some View {
         Group {
-            if tool == .depth, depthSpec == nil {
+            if tool == .depth, toolSpec == nil {
                 ContentUnavailableView("No depth model", systemImage: "square.3.layers.3d",
                                        description: Text("Download Depth Anything V2 small (50 MB) in Models."))
+            } else if tool == .upscale, toolSpec == nil {
+                ContentUnavailableView("No upscaling model", systemImage: "arrow.up.left.and.arrow.down.right",
+                                       description: Text("Download Real-ESRGAN x4plus (33 MB) in Models."))
             } else {
                 HStack(alignment: .top, spacing: 0) {
                     canvas
@@ -66,17 +76,18 @@ struct ImageToolsView: View {
         TimelineView(.periodic(from: .now, by: 0.1)) { ctx in
             let last = results.first
             BurnIn(
-                name: tool == .depth ? depthSpec?.displayName ?? "Depth" : "Vision subject lifting",
-                modelID: tool == .depth ? depthSpec?.id ?? "" : "built into macOS",
+                name: toolSpec?.displayName ?? "Vision subject lifting",
+                modelID: toolSpec?.id ?? "built into macOS",
                 readings: [
                     Reading(label: "Status", value: running ? "working" : "idle", live: running),
                     Reading(label: "Elapsed", value: running ? started.map { String(format: "%.1f s", ctx.date.timeIntervalSince($0)) } ?? "–"
                                 : last.map { String(format: "%.2f s", $0.seconds) } ?? "–", live: running),
                     Reading(label: "Size", value: last.flatMap { NSImage(data: $0.output) }.map { "\(Int($0.size.width)) × \(Int($0.size.height))" } ?? "–"),
-                    Reading(label: "Runs on", value: tool == .depth ? "Core ML" : "Vision"),
+                    Reading(label: "Runs on", value: tool == .depth ? "Core ML" : tool == .upscale ? "MLX" : "Vision"),
                 ],
                 running: running,
-                api: tool == .depth ? "POST /v1/images/depth\nmodel: \(depthSpec?.id ?? "")" : "POST /v1/images/cutout\noutput: \(maskOnly ? "mask" : "cutout")")
+                api: tool == .cutout ? "POST /v1/images/cutout\noutput: \(maskOnly ? "mask" : "cutout")"
+                    : "POST /v1/images/\(tool == .depth ? "depth" : "upscale")\nmodel: \(toolSpec?.id ?? "")")
         }
     }
 
@@ -101,10 +112,12 @@ struct ImageToolsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
                 if results.isEmpty && !running {
-                    Text(tool == .depth ? "Choose or drop an image to see its depth." : "Choose or drop an image to lift its subject out.")
+                    Text(tool == .depth ? "Choose or drop an image to see its depth."
+                         : tool == .upscale ? "Choose or drop an image, up to 1024 px on a side, to make it four times larger."
+                         : "Choose or drop an image to lift its subject out.")
                         .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                 }
-                if running { LiveProgress(label: tool == .depth ? "Estimating depth" : "Finding the subject") }
+                if running { LiveProgress(label: tool == .depth ? "Estimating depth" : tool == .upscale ? "Upscaling" : "Finding the subject") }
                 ForEach(results) { r in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(alignment: .firstTextBaseline) {
@@ -149,7 +162,8 @@ struct ImageToolsView: View {
             Button(input == nil ? "Choose Image…" : "Change…", systemImage: "photo") { choose() }.buttonStyle(.glass)
             if let input { Text(input.name).lineLimit(1).truncationMode(.middle).font(.title3) }
             Spacer(minLength: 0)
-            Button(tool == .depth ? "Estimate Depth" : "Cut Out", systemImage: tool == .depth ? "square.3.layers.3d" : "person.crop.rectangle",
+            Button(tool == .depth ? "Estimate Depth" : tool == .upscale ? "Upscale" : "Cut Out",
+                   systemImage: tool == .depth ? "square.3.layers.3d" : tool == .upscale ? "arrow.up.left.and.arrow.down.right" : "person.crop.rectangle",
                    action: run)
                 .buttonStyle(.glassProminent).keyboardShortcut(.return, modifiers: .command)
                 .disabled(input == nil || running)
@@ -176,9 +190,12 @@ struct ImageToolsView: View {
         Task {
             defer { running = false }
             do {
-                let out = tool == .depth ? try await images.depth(input.data, model: nil).1
-                    : try await images.cutout(input.data, output: mask ? .mask : .cutout)
-                let label = tool == .depth ? "depth" : mask ? "mask" : "subject"
+                let out = switch tool {
+                case .depth: try await images.depth(input.data, model: nil).1
+                case .upscale: try await images.upscale(input.data, model: nil).1
+                case .cutout: try await images.cutout(input.data, output: mask ? .mask : .cutout)
+                }
+                let label = tool == .depth ? "depth" : tool == .upscale ? "×4" : mask ? "mask" : "subject"
                 results.insert(Result(name: input.name, label: label, source: input.data, output: out,
                                       seconds: Date().timeIntervalSince(started ?? Date())), at: 0)
             } catch { self.error = error.localizedDescription }
@@ -188,7 +205,7 @@ struct ImageToolsView: View {
     private func save(_ data: Data) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = tool == .depth ? "depth.png" : "cutout.png"
+        panel.nameFieldStringValue = tool == .depth ? "depth.png" : tool == .upscale ? "upscaled.png" : "cutout.png"
         if panel.runModal() == .OK, let url = panel.url {
             do { try data.write(to: url) } catch { self.error = error.localizedDescription }
         }

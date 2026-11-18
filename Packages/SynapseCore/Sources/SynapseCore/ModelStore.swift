@@ -108,7 +108,7 @@ public actor ModelStore {
 
     private static func partialFolder(_ spec: ModelSpec, root: URL) -> URL {
         switch spec.engine {
-        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .videogen, .audiogen, .mlxvlm, .mlxspeech, .audioedit, .coreml: return mlxFolder(spec, root: root)
+        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .videogen, .audiogen, .mlxvlm, .mlxspeech, .audioedit, .imagetool: return mlxFolder(spec, root: root)
         case .gguf: return root.appending(path: "gguf/\(spec.variant)", directoryHint: .isDirectory)
         case .speech: return SpeechModels.folder(spec, root: root)
         case .duplex: return DuplexModels.folder(spec, root: root)
@@ -130,8 +130,8 @@ public actor ModelStore {
             return try await SpeechModels.download(spec, root: root, progress: progress)
         case .duplex:
             return try await DuplexModels.download(spec, root: root, token: token, progress: progress)
-        case .coreml:
-            // Core ML repos publish one package per precision; only the named one is fetched.
+        case .imagetool:
+            // Core ML repos publish one package per precision; only the named one is fetched (none named: the whole model).
             return try await HFDownloader.download(repo: spec.variant, to: partialFolder(spec, root: root), only: spec.files ?? [],
                                                    token: token, progress: progress)
         case .gguf:

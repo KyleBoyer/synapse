@@ -24,7 +24,7 @@ struct ImagesView: View {
     }
     private static let sizes = ["1024x1024", "1024x768", "768x1024", "1536x1024", "1024x1536", "512x512"]
 
-    enum Mode: String, CaseIterable { case generate = "Generate", cutout = "Cut Out", depth = "Depth" }
+    enum Mode: String, CaseIterable { case generate = "Generate", cutout = "Cut Out", depth = "Depth", upscale = "Upscale" }
     @State private var mode = Mode.generate
     @State private var modelID = ""
     @State private var prompt = ""
@@ -53,7 +53,7 @@ struct ImagesView: View {
         let specs = state.downloadedImageSpecs
         Group {
             if mode != .generate {
-                ImageToolsView(tool: mode == .depth ? .depth : .cutout).id(mode)
+                ImageToolsView(tool: mode == .depth ? .depth : mode == .upscale ? .upscale : .cutout).id(mode)
             } else if specs.isEmpty {
                 ContentUnavailableView("No image models", systemImage: "photo.on.rectangle.angled",
                                        description: Text("Download FLUX.2 klein, Z-Image Turbo or Qwen-Image in Models."))
@@ -74,7 +74,7 @@ struct ImagesView: View {
         }
         .onChange(of: state.tryRequest, initial: true) {
             guard let s = state.takeTry(.images) else { return }
-            if s.isDepth { mode = .depth } else { mode = .generate; modelID = s.id }
+            if s.isDepth { mode = .depth } else if s.isUpscaler { mode = .upscale } else { mode = .generate; modelID = s.id }
         }
         .navigationTitle("Images")
         .toolbar {

@@ -116,7 +116,9 @@ print(m.content[0].text)
 | `POST /v1/images/cutout` | Synapse's own: multipart `image`, `output` (`cutout`, the subject on a transparent background, or `mask`, white where the subject is). Uses macOS Vision's built-in subject lifting; nothing to download. Answers in the images response shape (`data[0].b64_json`, PNG). |
 | `POST /v1/images/depth` | Synapse's own: multipart `image`, `model`. A grayscale PNG the size of the input, near is white (relative depth, stretched to the image's range). Model: `depth-anything-v2-small` (Core ML, 50 MB); about 0.2 s per image once loaded. |
 
-The Images pane has the same three: Generate, Cut Out and Depth.
+| `POST /v1/images/upscale` | Synapse's own: multipart `image` (up to 1024 px on a side), `model`. The image ×4 as PNG. Model: `real-esrgan-x4plus` (33 MB), run in process on MLX in 192 px tiles; about 7 s for 448 × 448 → 1792 × 1792. |
+
+The Images pane has the same: Generate, Cut Out, Depth and Upscale.
 
 ### Video in chat
 

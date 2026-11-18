@@ -4,12 +4,13 @@ import Foundation
 @preconcurrency import Vision
 
 public enum ImageToolError: Error, LocalizedError, Equatable {
-    case unreadable, noSubject, noDepthModel, failed(String)
+    case unreadable, noSubject, noDepthModel, noUpscaler, failed(String)
     public var errorDescription: String? {
         switch self {
         case .unreadable: "The image could not be read; send PNG, JPEG, HEIC or WebP."
         case .noSubject: "No foreground subject was found in the image."
         case .noDepthModel: "No depth model is downloaded. Download Depth Anything V2 small in Models."
+        case .noUpscaler: "No upscaling model is downloaded. Download Real-ESRGAN x4plus in Models."
         case .failed(let m): m
         }
     }

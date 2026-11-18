@@ -77,9 +77,10 @@ public enum Catalog {
         // repos are not gated, so no token is needed. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),
         hf("stable-audio-3-small-music", "Stable Audio 3 Music", .audiogen, "mlx-community/stable-audio-3-small-music", 3490, ramGB: 8),
-        ModelSpec(id: "depth-anything-v2-small", engine: .coreml, displayName: "Depth Anything V2 small (depth maps)",
+        ModelSpec(id: "depth-anything-v2-small", engine: .imagetool, displayName: "Depth Anything V2 small (depth maps)",
                   variant: "apple/coreml-depth-anything-v2-small", approxMB: 50, languages: nil, canTranslate: false,
                   canDetectLanguage: false, files: ["DepthAnythingV2SmallF16.mlpackage/"]),
+        hf("real-esrgan-x4plus", "Real-ESRGAN x4plus (upscaling)", .imagetool, "mlx-community/Real-ESRGAN-x4plus", 33),
         // Audio to audio through mlx-audio's speech-to-speech models.
         hf("deepfilternet-3", "DeepFilterNet 3 (noise removal)", .audioedit, "mlx-community/DeepFilterNet-mlx", 30),
         hf("nemotron-reuse", "NemotronLabs RE-USE (noise removal)", .audioedit, "nvidia/NVIDIA-NemotronLabs-RE-USE", 40),
@@ -144,7 +145,7 @@ public enum ModelResolver {
         let aliases: Set<String> = ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe-diarize"]
         let id = (requested == nil || aliases.contains(requested!)) ? defaultID : requested!
         guard var spec = Catalog.spec(id) else { throw ResolveError.unknownModel(id) }
-        guard !spec.isChat, !spec.isEmbedding, !spec.isReranker, !spec.isVideoGen, !spec.isAudioGen, !spec.isAudioEdit, !spec.isDepth else { throw ResolveError.wrongKind(id) }
+        guard !spec.isChat, !spec.isEmbedding, !spec.isReranker, !spec.isVideoGen, !spec.isAudioGen, !spec.isAudioEdit, spec.engine != .imagetool else { throw ResolveError.wrongKind(id) }
         if (task == .translate && !spec.canTranslate) || !spec.supports(language: language) {
             guard let fb = whisperFallbackOrder.compactMap(Catalog.spec).first(where: {
                 downloaded.contains($0.id) && ($0.canTranslate || task != .translate) && $0.supports(language: language)

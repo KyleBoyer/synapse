@@ -52,6 +52,8 @@ final class ImageToolsTests: XCTestCase, @unchecked Sendable {
                                 body: self.form(zebra, ["output": "outline"])) { r in XCTAssertEqual(r.status, .badRequest) }
             try await c.execute(uri: "/v1/images/depth", method: .post, headers: [.contentType: "multipart/form-data; boundary=XyZ"],
                                 body: self.form(zebra)) { r in XCTAssertEqual(r.status, .serviceUnavailable) }
+            try await c.execute(uri: "/v1/images/upscale", method: .post, headers: [.contentType: "multipart/form-data; boundary=XyZ"],
+                                body: self.form(zebra)) { r in XCTAssertEqual(r.status, .serviceUnavailable) }
         }
     }
 }
@@ -84,6 +86,31 @@ final class ImageToolsE2ETests: XCTestCase {
                      Date().timeIntervalSince(warm), near, far))
         if let dir = ProcessInfo.processInfo.environment["SYNAPSE_SCRATCH"] { try png.write(to: URL(fileURLWithPath: dir).appending(path: "zebra-depth.png")) }
         XCTAssertGreaterThan(near, far + 0.2)
+    }
+}
+
+extension ImageToolsE2ETests {
+    /// Real-ESRGAN ×4: four times the size, and shrinking it back gives the input again (within 4% on average).
+    func testUpscaleIsFourTimesAndFaithful() async throws {
+        guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let root = ProcessInfo.processInfo.environment["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
+        let store = ModelStore(root: root)
+        guard await store.downloaded.contains("real-esrgan-x4plus") else { throw XCTSkip("real-esrgan-x4plus not downloaded") }
+        let images = ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
+        let zebra = try Data(contentsOf: TestSupport.fixture("zebra.jpg"))
+        let start = Date()
+        let (spec, png) = try await images.upscale(zebra, model: nil)
+        let took = Date().timeIntervalSince(start)
+        let up = try XCTUnwrap(CIImage(data: png)), src = try XCTUnwrap(CIImage(data: zebra))
+        XCTAssertEqual(up.extent.size, CGSize(width: src.extent.width * 4, height: src.extent.height * 4))
+        let back = up.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: 0.25, kCIInputAspectRatioKey: 1])
+        // Mean absolute difference per channel (8-bit averaging is too coarse for squared errors).
+        let diff = back.applyingFilter("CIDifferenceBlendMode", parameters: [kCIInputBackgroundImageKey: src])
+        let mad = CIContext().averageRGBA(diff.cropped(to: src.extent)).prefix(3).reduce(0, +) / 3
+        print(String(format: "[upscale] %@: %.1f s for %.0f×%.0f -> %.0f×%.0f; shrunk back, mean difference %.3f", spec.id, took,
+                     src.extent.width, src.extent.height, up.extent.width, up.extent.height, mad))
+        if let dir = ProcessInfo.processInfo.environment["SYNAPSE_SCRATCH"] { try png.write(to: URL(fileURLWithPath: dir).appending(path: "zebra-x4.png")) }
+        XCTAssertLessThan(mad, 0.04)
     }
 }
 

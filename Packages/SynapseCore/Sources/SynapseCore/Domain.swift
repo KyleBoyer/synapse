@@ -22,8 +22,9 @@ public enum EngineKind: String, Codable, Sendable {
     case mlxspeech
     /// Audio-to-audio models run by mlx-audio: noise removal and source separation; `variant` is the Hugging Face repo id.
     case audioedit
-    /// Core ML image models run through Vision (depth); `files` names the `.mlpackage` to fetch.
-    case coreml
+    /// Image models that do not generate: depth (Core ML through Vision; `files` names the `.mlpackage`) and upscaling
+    /// (Real-ESRGAN on MLX); `variant` is the Hugging Face repo id.
+    case imagetool
 }
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
@@ -58,7 +59,8 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public var isVideoGen: Bool { engine == .videogen }
     public var isAudioGen: Bool { engine == .audiogen }
     public var isAudioEdit: Bool { engine == .audioedit }
-    public var isDepth: Bool { engine == .coreml }
+    public var isDepth: Bool { engine == .imagetool && id.hasPrefix("depth") }
+    public var isUpscaler: Bool { engine == .imagetool && !isDepth }
     /// Models behind `POST /v1/audio/speech`.
     public var isTTS: Bool { SpeechService.preference.contains(id) }
     public var isImage: Bool { engine == .flux2 || engine == .zimage || engine == .mflux }

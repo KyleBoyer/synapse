@@ -62,10 +62,10 @@ Noise removal, music stem separation, voice conversion.
 
 Upscaling, background removal, segmentation, depth.
 
-- [x] Research: background removal and subject masks are built into macOS Vision (`VNGenerateForegroundInstanceMaskRequest`, no download); depth from Apple's Core ML Depth Anything V2 small (`apple/coreml-depth-anything-v2-small`); BRIA RMBG 2.0 is non-commercial. No Core ML or MLX Real-ESRGAN is published; upscaling would need a conversion or a diffusion upscaler (Qwen-Image-Edit LoRAs, heavy).
+- [x] Research: background removal and subject masks are built into macOS Vision (`VNGenerateForegroundInstanceMaskRequest`, no download); depth from Apple's Core ML Depth Anything V2 small (`apple/coreml-depth-anything-v2-small`); BRIA RMBG 2.0 is non-commercial; mlx-community publishes Real-ESRGAN weights for MLX.
 - [x] Background removal and subject masks (Vision): `POST /v1/images/cutout` and Images → Cut Out. Verified: the zebra lifted in 0.43 s on a transparent background (48% coverage), mask at input size; SDK check passes.
 - [x] Depth maps (Depth Anything V2 small, Core ML, 50 MB): `POST /v1/images/depth` and Images → Depth. Verified: the zebra is near (0.52) and the sky far (0.01), 0.2 s per image warm; app capture in light mode.
-- [ ] Upscaling: pick an approach
+- [x] Upscaling: Real-ESRGAN x4plus (mlx-community's MLX weights, 33 MB) as functional MLX in Swift, tiled; `POST /v1/images/upscale` and Images → Upscale. Verified: 448 → 1792 px in 6.4 s, shrinking it back is within 1.7% of the input, and a close crop is sharp where bicubic is soft; app capture.
 
 ## Video → video
 

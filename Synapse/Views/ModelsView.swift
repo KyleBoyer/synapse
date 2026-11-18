@@ -21,7 +21,7 @@ struct ModelsView: View {
          ("Video generation", Catalog.builtIn.filter(\.isVideoGen)),
          ("Sound generation", Catalog.builtIn.filter(\.isAudioGen)),
          ("Audio cleanup and separation", Catalog.builtIn.filter(\.isAudioEdit)),
-         ("Depth", Catalog.builtIn.filter(\.isDepth)),
+         ("Depth and upscaling", Catalog.builtIn.filter { $0.engine == .imagetool }),
          ("Omni (mlx-vlm)", Catalog.builtIn.filter { $0.engine == .mlxvlm })]
         return all.filter { !$0.1.isEmpty }  // a family appears once its first model is in the catalog
     }
@@ -96,7 +96,7 @@ struct Datasheet: View {
         if spec.isReranker { return [] }
         if spec.isVideoGen { return [.videoTime] }
         if spec.isAudioGen { return [.soundSpeed] }
-        if spec.isAudioEdit || spec.isDepth { return [] }
+        if spec.isAudioEdit || spec.engine == .imagetool { return [] }
         if spec.isChat { return [.loadTime, .firstToken, .decodeRate, .prefillRate, .firstAudio] }
         if spec.isTranscription { return [.realtimeSpeed] }
         if spec.isImage { return [.secondsPerStep, .imageTime] }
@@ -107,7 +107,7 @@ struct Datasheet: View {
         if spec.isEmbedding || spec.isReranker { return .embed }
         if spec.isVideoGen { return .video }
         if spec.isAudioGen || spec.isAudioEdit { return .audio }
-        if spec.isDepth { return .images }
+        if spec.engine == .imagetool { return .images }
         if spec.isChat { return .chat }
         if spec.isTranscription { return .transcribe }
         if spec.isImage { return .images }
@@ -120,7 +120,7 @@ struct Datasheet: View {
         if spec.isReranker { return ["POST /v1/rerank"] }
         if spec.isVideoGen { return ["POST /v1/videos", "GET /v1/videos/{id}/content"] }
         if spec.isAudioGen { return ["POST /v1/audio/generations"] }
-        if spec.isDepth { return ["POST /v1/images/depth"] }
+        if spec.engine == .imagetool { return [spec.isDepth ? "POST /v1/images/depth" : "POST /v1/images/upscale"] }
         if spec.isAudioEdit { return [SoundService.editTask(spec) == .separate ? "POST /v1/audio/separate" : "POST /v1/audio/enhance"] }
         if spec.isChat { return ["POST /v1/responses", "POST /v1/messages", "POST /v1/chat/completions"] }
         if spec.isTranscription { return ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /asr"] }

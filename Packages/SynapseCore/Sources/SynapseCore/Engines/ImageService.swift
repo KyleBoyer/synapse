@@ -87,19 +87,36 @@ public actor ImageService {
     }
 
     private var depthModel: (id: String, model: VNCoreMLModel)?
+    private var upscaler: (id: String, model: RealESRGAN)?
+
+    /// The image ×4. nil picks the downloaded upscaler. Holds the GPU while it runs (MLX).
+    public func upscale(_ image: Data, model requested: String?) async throws -> (ModelSpec, Data) {
+        let spec = try await tool(requested, \.isUpscaler, missing: .noUpscaler)
+        if upscaler?.id != spec.id {
+            guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+            upscaler = (spec.id, try RealESRGAN(folder: folder))
+        }
+        let model = upscaler!.model
+        let png = try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes + (1 << 30)) {
+            try await GPUGate.shared.run { try await Task.detached { try ImageTools.upscale(image, model: model) }.value }
+        }
+        return (spec, png)
+    }
+
+    private func tool(_ requested: String?, _ kind: (ModelSpec) -> Bool, missing: ImageToolError) async throws -> ModelSpec {
+        let downloaded = await store.downloaded
+        if let id = requested, !id.isEmpty {
+            guard let s = Catalog.spec(id), kind(s) else { throw ResolveError.wrongKind(id) }
+            guard downloaded.contains(id) else { throw ResolveError.notDownloaded(id) }
+            return s
+        }
+        guard let s = Catalog.all.first(where: { kind($0) && downloaded.contains($0.id) }) else { throw missing }
+        return s
+    }
 
     /// A depth map the size of the input (near is white). nil picks the downloaded depth model.
     public func depth(_ image: Data, model requested: String?) async throws -> (ModelSpec, Data) {
-        let downloaded = await store.downloaded
-        let spec: ModelSpec
-        if let id = requested, !id.isEmpty {
-            guard let s = Catalog.spec(id), s.isDepth else { throw ResolveError.wrongKind(id) }
-            guard downloaded.contains(id) else { throw ResolveError.notDownloaded(id) }
-            spec = s
-        } else {
-            guard let s = Catalog.all.first(where: { $0.isDepth && downloaded.contains($0.id) }) else { throw ImageToolError.noDepthModel }
-            spec = s
-        }
+        let spec = try await tool(requested, \.isDepth, missing: .noDepthModel)
         if depthModel?.id != spec.id {
             guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
             depthModel = (spec.id, try ImageTools.loadDepthModel(folder: folder))

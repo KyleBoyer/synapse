@@ -184,6 +184,17 @@ func addImageRoutes(to g: RouterGroup<SynapseContext>, images: ImageService, fil
         } catch let e as ImageToolError { throw badRequest(e.localizedDescription) }
         catch let e as ResolveError { throw badRequest(e.localizedDescription) }
     }
+    g.post("images/upscale") { req, ctx in
+        let (fields, files) = try await parseMultipart(req, ctx)
+        guard let image = files.first?.data else { throw badRequest("image is required.") }
+        do {
+            let (_, png) = try await images.upscale(image, model: nonEmpty(fields["model"]))
+            return json(toolResponse(png, background: "opaque"))
+        } catch ImageToolError.noUpscaler {
+            throw HTTPError(.serviceUnavailable, message: ImageToolError.noUpscaler.localizedDescription)
+        } catch let e as ImageToolError { throw badRequest(e.localizedDescription) }
+        catch let e as ResolveError { throw badRequest(e.localizedDescription) }
+    }
     g.get("images/files/:name") { _, ctx in
         guard let name = ctx.parameters.get("name"), let f = await cache.get(name) else {
             throw HTTPError(.notFound, message: "Image not found or expired.")

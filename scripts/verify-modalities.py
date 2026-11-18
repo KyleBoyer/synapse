@@ -558,6 +558,8 @@ def image_tools():
     top_right, middle = depth.crop((400, 0, 448, 48)), depth.crop((150, 200, 250, 300))
     near, far = sum(middle.getdata()) / (100 * 100), sum(top_right.getdata()) / (48 * 48)
     check("image-tools: depth puts the zebra in front of the sky", depth.mode == "L" and near > far + 50, f"zebra {near:.0f}, sky {far:.0f}")
+    _, big = post("upscale")
+    check("image-tools: upscale makes it four times larger", big.size == (1792, 1792), f"{big.size}")
 
 
 SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools}
