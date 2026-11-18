@@ -34,6 +34,18 @@ public actor RealtimeSession {
     private var language: String?
     private var translationLanguage: String?
     private var tools: [Any] = []
+    private var toolChoice: Any = "auto"
+    /// Session tools for the model: realtime function tools ({type, name, description, parameters}); none when
+    /// tool_choice is "none".
+    // shortcut: "required" and a named function are treated as auto (a local model can't be forced to call).
+    private var chatTools: [ChatTool] {
+        if toolChoice as? String == "none" { return [] }
+        return tools.compactMap { t in
+            guard let t = t as? [String: Any], (t["type"] as? String ?? "function") == "function", let name = t["name"] as? String else { return nil }
+            let params = (t["parameters"]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }.map { String(decoding: $0, as: UTF8.self) }
+            return ChatTool(name: name, description: t["description"] as? String ?? "", parametersJSON: params ?? #"{"type":"object","properties":{}}"#)
+        }
+    }
     private let sessionID = "sess_" + UUID().uuidString.prefix(12).lowercased()
 
     // Components, created on first use.
@@ -81,6 +93,8 @@ public actor RealtimeSession {
         var text = ""
         var audioBytes = 0
         var gotAudio = false
+        /// Function calls the model made, sent as output items after the message.
+        var calls: [(itemID: String, callID: String, name: String, arguments: String)] = []
         init(audio: Bool) { self.audio = audio }
     }
 
@@ -196,6 +210,7 @@ public actor RealtimeSession {
         }
         if let l = s["translation_language"] as? String { translationLanguage = l.isEmpty ? nil : l }
         if let t = s["tools"] as? [Any] { tools = t }
+        if let c = s["tool_choice"] { toolChoice = c }
         let audio = s["audio"] as? [String: Any] ?? [:]
         if let input = audio["input"] as? [String: Any] {
             if let f = input["format"] as? [String: Any] {
@@ -260,7 +275,7 @@ public actor RealtimeSession {
             s["instructions"] = instructions
             s["output_modalities"] = modalities
             s["tools"] = tools
-            s["tool_choice"] = "auto"
+            s["tool_choice"] = toolChoice
             s["audio"] = ["input": input, "output": ["format": ["type": "audio/pcm", "rate": outputRate],
                                                       "voice": voice ?? "alloy", "speed": speed,
                                                       "model": ttsModel ?? SpeechService.preference[0]]]
@@ -426,9 +441,29 @@ public actor RealtimeSession {
     }
 
     private func createItem(_ item: [String: Any]?, previous: String?) {
+        // A tool's result (or a call the client adds): kept in the markup the model writes calls in.
+        if let item, let kind = item["type"] as? String, kind == "function_call_output" || kind == "function_call" {
+            guard let callID = item["call_id"] as? String else {
+                return fail("invalid_request_error", "missing_required_parameter", "\(kind) items need call_id.", param: "item.call_id")
+            }
+            let id = (item["id"] as? String) ?? newItemID()
+            if kind == "function_call_output" {
+                items.append(Item(id: id, role: "user", text: ToolMarkup.response(item["output"] as? String ?? "")))
+            } else {
+                guard let name = item["name"] as? String else {
+                    return fail("invalid_request_error", "missing_required_parameter", "function_call items need name.", param: "item.name")
+                }
+                items.append(Item(id: id, role: "assistant", text: ToolMarkup.call(name: name, argumentsJSON: item["arguments"] as? String ?? "{}")))
+            }
+            var echoed = item
+            echoed["id"] = id; echoed["object"] = "realtime.item"; echoed["status"] = "completed"; echoed["call_id"] = callID
+            emit("conversation.item.added", ["item": echoed])
+            emit("conversation.item.done", ["item": echoed])
+            return
+        }
         guard let item, (item["type"] as? String ?? "message") == "message", let role = item["role"] as? String,
               ["user", "assistant", "system"].contains(role) else {
-            return fail("invalid_request_error", "invalid_value", "Unsupported item; expected a message with role user, assistant or system.", param: "item")
+            return fail("invalid_request_error", "invalid_value", "Unsupported item; expected a message, function_call or function_call_output.", param: "item")
         }
         let parts = item["content"] as? [[String: Any]] ?? []
         let text = parts.compactMap { ($0["text"] as? String) ?? ($0["transcript"] as? String) }.joined(separator: "\n")
@@ -494,10 +529,11 @@ public actor RealtimeSession {
                 messages[i].text = ""
             }
             var down: StreamResampler?
-            for try await e in omniVoice!.respond(messages, options: ChatOptions(maxTokens: 512)) {
+            for try await e in omniVoice!.respond(messages, options: ChatOptions(maxTokens: 512, tools: chatTools)) {
                 try Task.checkCancellation()
                 switch e {
                 case .text(let t): respText(r, t)
+                case .toolCall(let name, let arguments): recordCall(r, name, arguments)
                 case .audio(let a, let rate):
                     if down == nil { down = StreamResampler(from: Double(rate), to: Double(outputRate)) }
                     respAudio(r, down!.convert(a))
@@ -530,14 +566,25 @@ public actor RealtimeSession {
     }
 
     private func responseJSON(_ r: Response, status: String, details: [String: Any]?) -> [String: Any] {
+        let finished = status == "completed" ? "completed" : "incomplete"
         var j: [String: Any] = ["id": r.id, "object": "realtime.response", "status": status,
-                                "output": status == "in_progress" ? [] : [itemJSON(r, status: status == "completed" ? "completed" : "incomplete")],
+                                "output": status == "in_progress" ? [] : [itemJSON(r, status: finished)] + r.calls.map { callJSON($0, status: finished) },
                                 "output_modalities": r.audio ? ["audio"] : ["text"]]
         j["status_details"] = details ?? NSNull()
         if status != "in_progress" {
             j["usage"] = ["total_tokens": 0, "input_tokens": 0, "output_tokens": 0]
         }
         return j
+    }
+
+    private func recordCall(_ r: Response, _ name: String, _ arguments: String) {
+        r.calls.append((newItemID(), "call_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16).lowercased(), name, arguments))
+    }
+
+    private func callJSON(_ c: (itemID: String, callID: String, name: String, arguments: String), status: String,
+                          arguments: String? = nil) -> [String: Any] {
+        ["id": c.itemID, "object": "realtime.item", "type": "function_call", "status": status, "name": c.name,
+         "call_id": c.callID, "arguments": arguments ?? c.arguments]
     }
 
     private func respText(_ r: Response, _ delta: String) {
@@ -573,6 +620,18 @@ public actor RealtimeSession {
         emit("response.output_item.done", ["response_id": r.id, "output_index": 0, "item": item])
         emit("conversation.item.done", ["item": item])
         if !r.text.isEmpty { items.append(Item(id: r.itemID, role: "assistant", text: r.text)) }
+        for (i, call) in r.calls.enumerated() where status == "completed" {
+            let index = i + 1
+            emit("response.output_item.added", ["response_id": r.id, "output_index": index, "item": callJSON(call, status: "in_progress", arguments: "")])
+            emit("conversation.item.added", ["item": callJSON(call, status: "in_progress", arguments: "")])
+            emit("response.function_call_arguments.delta", ["response_id": r.id, "item_id": call.itemID, "output_index": index,
+                                                            "call_id": call.callID, "delta": call.arguments])
+            emit("response.function_call_arguments.done", ["response_id": r.id, "item_id": call.itemID, "output_index": index,
+                                                           "call_id": call.callID, "name": call.name, "arguments": call.arguments])
+            emit("response.output_item.done", ["response_id": r.id, "output_index": index, "item": callJSON(call, status: "completed")])
+            emit("conversation.item.done", ["item": callJSON(call, status: "completed")])
+            items.append(Item(id: call.itemID, role: "assistant", text: ToolMarkup.call(name: call.name, argumentsJSON: call.arguments)))
+        }
         var details: [String: Any]? = nil
         switch status {
         case "cancelled": details = ["type": "cancelled", "reason": reason ?? "client_cancelled"]
@@ -653,17 +712,21 @@ public actor RealtimeSession {
             let tts = self.tts
             let messages = messagesForResponse(instructions: instructions)
             let (sentences, sentenceIn) = AsyncStream<String>.makeStream()
-            let voice = ttsVoice(), speed = self.speed
+            let voice = ttsVoice(), speed = self.speed, tools = chatTools
             let down = tts.map { StreamResampler(from: Double($0.sampleRate), to: Double(outputRate)) }
             try await withThrowingTaskGroup(of: Void.self) { g in
                 g.addTask { [self] in
                     var splitter = SentenceSplitter()
                     defer { sentenceIn.finish() }
-                    for try await ev in try await llm.stream(messages, options: ChatOptions(maxTokens: 600)) {
+                    for try await ev in try await llm.stream(messages, options: ChatOptions(maxTokens: 600, tools: tools)) {
                         try Task.checkCancellation()
-                        if case .delta(let d) = ev {
+                        switch ev {
+                        case .delta(let d):
                             await respText(r, d)
                             splitter.feed(d).forEach { sentenceIn.yield($0) }
+                        case .toolCall(let name, let arguments):
+                            await recordCall(r, name, arguments)
+                        default: break
                         }
                     }
                     if let rest = splitter.flush() { sentenceIn.yield(rest) }

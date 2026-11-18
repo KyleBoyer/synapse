@@ -53,8 +53,12 @@ enum ChatAudio {
                                  _ c: AsyncThrowingStream<Event, Error>.Continuation) async throws {
         let voice = try await chat.voice(spec)
         var down: StreamResampler?
-        for try await e in voice.respond(messages, options: options) {
+        // shortcut: spoken Chat Completions replies don't carry tool calls, so the voice gets no tools; return calls if needed.
+        var spoken = options
+        spoken.tools = []
+        for try await e in voice.respond(messages, options: spoken) {
             switch e {
+            case .toolCall: break
             case .text(let t): c.yield(.transcript(t))
             case .audio(let a, let r):
                 if down == nil { down = StreamResampler(from: Double(r), to: Double(rate)) }

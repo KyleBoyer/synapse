@@ -6,6 +6,8 @@ public enum VoiceEvent: Sendable, Equatable {
     case text(String)
     case audio([Float], sampleRate: Int)
     case done(promptTokens: Int, generationTokens: Int)
+    /// The model called a tool instead of speaking; `arguments` is a JSON object string.
+    case toolCall(name: String, arguments: String)
 }
 
 /// A chat model that answers in its own voice (an omni model with speech output).
@@ -122,6 +124,7 @@ public final class OmniVoice: @unchecked Sendable {
             wire.append(["role": m.role.rawValue, "content": m.text])
         }
         var req: [String: Any] = ["id": id, "messages": wire, "images": images, "audios": audios, "max_tokens": options.maxTokens ?? 512]
+        if !options.tools.isEmpty { req["tools"] = options.tools.map(\.spec) }
         if let t = options.temperature { req["temperature"] = t }
         await GPUGate.shared.acquire()
         let gpu = GateRelease()
@@ -134,6 +137,9 @@ public final class OmniVoice: @unchecked Sendable {
             guard r["id"] as? String == id else { continue }   // a cancelled request's last lines
             if let e = r["error"] as? String { throw EngineError.unsupported("The voice model failed: \(e)") }
             if let t = r["text"] as? String { yield(.text(t)) }
+            for call in r["tool_calls"] as? [[String: Any]] ?? [] {
+                if let name = call["name"] as? String { yield(.toolCall(name: name, arguments: call["arguments"] as? String ?? "{}")) }
+            }
             if let b = r["audio"] as? String, let d = Data(base64Encoded: b) {
                 yield(.audio(d.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }, sampleRate: r["sample_rate"] as? Int ?? 24000))
             }

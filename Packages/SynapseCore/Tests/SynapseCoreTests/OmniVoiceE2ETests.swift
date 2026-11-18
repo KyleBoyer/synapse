@@ -34,7 +34,7 @@ final class OmniVoiceE2ETests: XCTestCase {
             case .audio(let a, let r):
                 audio += a; rate = r
                 if firstAudio == nil { firstAudio = Date().timeIntervalSince(start) }
-            case .done: break
+            case .done, .toolCall: break
             }
         }
         let took = Date().timeIntervalSince(start)

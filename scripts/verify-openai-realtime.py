@@ -202,6 +202,34 @@ async def run(args):
         c.close()
         check(not c.errors, "errors: events pass strict SDK validation" + ("" if not c.errors else f" {c.errors[:2]}"))
 
+    # 6. Tool calls, in both kinds of voice call: assembled (--tools-model, a chat model) and omni (--omni-model).
+    weather = {"type": "function", "name": "get_weather", "description": "Current weather for a city.",
+               "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}
+    for label, model in [("tools", args.tools_model), ("omni tools", args.omni_model)]:
+        if not model:
+            continue
+        async with client.realtime.connect(model=model) as conn:
+            c = Checker(conn)
+            await c.wait("session.created", timeout=10)
+            await conn.send({"type": "session.update", "session": {"type": "realtime", "tools": [weather], "tool_choice": "auto",
+                             "instructions": "You are a voice assistant. Use tools when they help. Answer in one short sentence."}})
+            await conn.send({"type": "conversation.item.create", "item": {"type": "message", "role": "user",
+                             "content": [{"type": "input_text", "text": "What's the weather like in Paris right now?"}]}})
+            await conn.send({"type": "response.create"})
+            check(await c.wait("response.done", timeout=300), f"{label}: first response done")
+            done = c.of("response.function_call_arguments.done")
+            check(done and done[0]["name"] == "get_weather" and "paris" in done[0]["arguments"].lower(),
+                  f"{label}: {model} calls get_weather for Paris" + ("" if done else f" (said {''.join(e['delta'] for e in c.of('response.output_audio_transcript.delta'))!r})"))
+            if done:
+                await conn.send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": done[0]["call_id"],
+                                 "output": json.dumps({"city": "Paris", "temperature_c": 18, "sky": "light rain"})}})
+                await conn.send({"type": "response.create"})
+                check(await c.wait("response.done", n=2, timeout=300), f"{label}: answer after the tool result")
+                said = "".join(e["delta"] for e in c.of("response.output_audio_transcript.delta"))
+                check("18" in said or "rain" in said.lower(), f"{label}: the spoken answer uses the result ({said!r})")
+            c.close()
+            check(not c.errors, f"{label}: events pass strict SDK validation" + ("" if not c.errors else f" {c.errors[:2]}"))
+
     print("\n%d failure(s)" % len(failures))
     return 1 if failures else 0
 
@@ -211,4 +239,6 @@ if __name__ == "__main__":
     p.add_argument("--base-url", default="http://127.0.0.1:19100/v1")
     p.add_argument("--api-key", default="synapse")
     p.add_argument("--model", default="qwen3.5-0.8b")
+    p.add_argument("--tools-model", default="qwen3.5-2b", help="chat model for the assembled tool-call check (empty to skip)")
+    p.add_argument("--omni-model", default="lfm3-omni-2b", help="omni model for the tool-call check (empty to skip)")
     sys.exit(asyncio.run(run(p.parse_args())))

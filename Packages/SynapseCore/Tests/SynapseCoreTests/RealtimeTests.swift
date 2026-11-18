@@ -41,6 +41,14 @@ private final class FakeLLM: RealtimeLLM, @unchecked Sendable {
     func stream(_ messages: [ChatMessage], options: ChatOptions) async throws -> AsyncThrowingStream<ChatEvent, Error> {
         seen.append(messages)
         let d = delayMs
+        // Offered tools and no result yet: call the first one, like a model that needs data.
+        if let tool = options.tools.first, !(messages.last?.text.contains("<tool_response>") ?? false) {
+            return AsyncThrowingStream { c in
+                c.yield(.toolCall(name: tool.name, arguments: #"{"city":"Paris"}"#))
+                c.yield(.done(finishReason: "stop", usage: ChatUsage(promptTokens: 1, completionTokens: 1)))
+                c.finish()
+            }
+        }
         return AsyncThrowingStream { c in
             let t = Task {
                 for part in ["Hi there. ", "How can ", "I help you today? ", "Anything else. ", "Really."] {
@@ -88,6 +96,13 @@ private final class FakeVoice: RealtimeVoiceLLM, @unchecked Sendable {
     func respond(_ messages: [ChatMessage], options: ChatOptions) -> AsyncThrowingStream<VoiceEvent, Error> {
         seen.append(messages)
         heardBytes = messages.last?.audios.first.flatMap { try? Data(contentsOf: $0).count } ?? 0
+        if let tool = options.tools.first, !(messages.last?.text.contains("<tool_response>") ?? false) {
+            return AsyncThrowingStream { c in
+                c.yield(.toolCall(name: tool.name, arguments: #"{"city":"Paris"}"#))
+                c.yield(.done(promptTokens: 1, generationTokens: 1))
+                c.finish()
+            }
+        }
         return AsyncThrowingStream { c in
             c.yield(.text("I heard "))
             c.yield(.audio([Float](repeating: 0.1, count: 6000), sampleRate: 24000))
@@ -212,6 +227,54 @@ final class RealtimeTests: XCTestCase {
         XCTAssertEqual(heard.withLock { $0 }, [48000], "1.5 s of 16 kHz 16-bit audio in one file")
         let empty = try await t.finish()
         XCTAssertEqual(empty, "", "nothing buffered after a turn")
+    }
+
+    nonisolated(unsafe) private static let weather: [String: Any] = ["type": "function", "name": "get_weather", "description": "Current weather for a city.",
+                                                 "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]
+
+    /// Both voice-call paths: the model calls a tool (function_call item and argument events, no speech), the client
+    /// returns the result, and the next response speaks with the result in the conversation.
+    private func checkToolCall(model: String, llm: FakeLLM, voice: FakeVoice) async throws -> [[ChatMessage]] {
+        let s = RealtimeSession(model: model, services: services(llm: llm, voice: voice))
+        let c = start(s)
+        await send(s, ["type": "session.update", "session": ["type": "realtime", "tools": [Self.weather], "tool_choice": "auto"]])
+        await send(s, ["type": "conversation.item.create", "item": ["type": "message", "role": "user",
+                       "content": [["type": "input_text", "text": "Weather in Paris?"]]]])
+        await send(s, ["type": "response.create"])
+        let first = await c.wait("response.done")
+        XCTAssertTrue(first)
+        let done = await c.first("response.function_call_arguments.done")
+        XCTAssertEqual(done?["name"] as? String, "get_weather")
+        XCTAssertEqual(done?["arguments"] as? String, #"{"city":"Paris"}"#)
+        let callID = try XCTUnwrap(done?["call_id"] as? String)
+        let output = ((await c.first("response.done")?["response"]) as? [String: Any])?["output"] as? [[String: Any]] ?? []
+        XCTAssertEqual(output.last?["type"] as? String, "function_call")
+        XCTAssertEqual(output.last?["call_id"] as? String, callID)
+        let audioBefore = await c.events.filter { $0["type"] as? String == "response.output_audio.delta" }.count
+
+        await send(s, ["type": "conversation.item.create", "item": ["type": "function_call_output", "call_id": callID,
+                       "output": #"{"temperature_c": 18, "sky": "light rain"}"#]])
+        await send(s, ["type": "response.create"])
+        let second = await c.wait("response.done", count: 2)
+        XCTAssertTrue(second)
+        let audioAfter = await c.events.filter { $0["type"] as? String == "response.output_audio.delta" }.count
+        XCTAssertGreaterThan(audioAfter, audioBefore, "the answer after the tool result is spoken")
+        await s.close()
+        return model == "lfm3-omni-2b" ? voice.seen : llm.seen
+    }
+
+    func testAssembledCallCallsToolsAndSpeaksTheResult() async throws {
+        let seen = try await checkToolCall(model: "qwen3.5-0.8b", llm: FakeLLM(), voice: FakeVoice())
+        let last = try XCTUnwrap(seen.last)
+        XCTAssertTrue(last.contains { $0.role == .assistant && $0.text.contains("<function=get_weather>") }, "the call is in the history")
+        XCTAssertTrue(last.last?.text.contains("<tool_response>") == true && last.last?.text.contains("light rain") == true)
+    }
+
+    func testOmniCallCallsToolsAndSpeaksTheResult() async throws {
+        let seen = try await checkToolCall(model: "lfm3-omni-2b", llm: FakeLLM(), voice: FakeVoice())
+        let last = try XCTUnwrap(seen.last)
+        XCTAssertTrue(last.contains { $0.role == .assistant && $0.text.contains("<function=get_weather>") })
+        XCTAssertTrue(last.last?.text.contains("light rain") == true)
     }
 
     func testBadJSONAndUnknownTypesProduceErrors() async throws {

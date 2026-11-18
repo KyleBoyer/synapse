@@ -49,13 +49,12 @@ enum AnthropicParse {
             case "tool_use":
                 guard let name = b["name"]?.string else { throw ChatParse.bad("tool_use block is missing name.") }
                 guard case .object(let input) = b["input"] ?? .object([:]) else { throw ChatParse.bad("tool_use input must be an object.") }
-                let params = input.keys.sorted().map { "<parameter=\($0)>\n\(parameterText(input[$0]!))\n</parameter>\n" }.joined()
-                return [.text("<tool_call>\n<function=\(name)>\n\(params)</function>\n</tool_call>")]
+                return [.text(ToolMarkup.call(name: name, arguments: input))]
             case "tool_result":
                 let inner = try blocks(b["content"])
                 let text = inner.compactMap { if case .text(let t) = $0 { t } else { nil } }.joined(separator: "\n")
                 let images = inner.filter { if case .image = $0 { true } else { false } }
-                return [.text("<tool_response>\n\(text)\n</tool_response>")] + images
+                return [.text(ToolMarkup.response(text))] + images
             case "thinking", "redacted_thinking":
                 return []
             case let t:
@@ -76,13 +75,6 @@ enum AnthropicParse {
             return url
         default:
             throw ChatParse.bad("Image source type must be 'base64' or 'url'.")
-        }
-    }
-
-    private static func parameterText(_ v: JSONValue) -> String {
-        switch v {
-        case .string(let s): return s
-        default: return encodeJSON(v)
         }
     }
 

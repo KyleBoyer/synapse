@@ -19,13 +19,14 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [ ] Stream the mlx-audio models sentence by sentence (today audio arrives per generated segment)
 - [x] Live voice calls with more models: realtime sessions choose the recognizer (`audio.input.transcription.model`: Parakeet EOU streaming, or Whisper / Parakeet v3 per turn through `TurnTranscriber`) and the speech model (`audio.output.model`: any TTS model, stock or cloned voices); Live has a menu for each. Verified: a French call through Parakeet v3 → Qwen3.5 0.8B → VoxCPM2, heard back word for word (VoiceCallModelsE2ETests); RealtimeTests cover the session choices; the OpenAI Realtime SDK check passes.
 
-## Tool calls in voice calls
+## Tool calls in voice calls (done)
 
-Realtime sessions accept `tools` and echo them but never call them.
-
-- [ ] Assembled path: pass session tools to the chat model; send `response.function_call_arguments.delta/done` and a `function_call` item; take `function_call_output` items back and continue the response
-- [ ] Live: show tool calls in the transcript
-- [ ] Verify with the OpenAI Realtime SDK (a function the model must call)
+- [x] Assembled path: session tools go to the chat model; calls come back as `function_call` items with `response.function_call_arguments.delta/done`; `function_call_output` items go back into the conversation (as the `<tool_call>` / `<tool_response>` markup the models write) and the next response speaks the answer.
+- [x] Omni path (LFM3): it answers instead of calling tools while speaking, so a short text-only pass decides first (a reply that opens with `<tool_call>` is a call; anything else stops within a few tokens and the turn is spoken).
+- [x] Verified with real models and the official Realtime SDK (strict event validation): Qwen3.5 2B + PocketTTS and LFM3 both call `get_weather` for Paris unprompted and speak "18 °C with light rain" after the result. Qwen3.5 0.8B calls tools only with no system prompt.
+- [ ] Function tools on Chat Completions and Responses (today only Anthropic Messages takes them)
+- [ ] Tools for mlx-vlm and GGUF chat models (their servers' tool support is not wired; only in-process MLX models get tools)
+- [ ] MiniCPM-o in the omni path (its whole-reply generation ignores tools)
 
 ## Image (+text) embeddings (done)
 

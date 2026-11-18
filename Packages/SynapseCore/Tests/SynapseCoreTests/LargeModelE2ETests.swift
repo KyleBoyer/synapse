@@ -73,7 +73,7 @@ final class LargeModelE2ETests: XCTestCase {
             switch e {
             case .text(let t): text += t
             case .audio(let a, let r): audio += a; rate = r
-            case .done: break
+            case .done, .toolCall: break
             }
         }
         let spoken = try await transcribe(audio, rate: rate)

@@ -2,15 +2,17 @@
 /// It uses the functions mlx-vlm's CLI uses for `--output-modality audio` (load, apply_chat_template with
 /// use_tts_template, the model's speech sampler and codec), but loads the model once instead of once per turn.
 ///
-/// Request (one line): {"id", "messages": [{"role", "content"}], "images": [path], "audios": [path], "max_tokens", "temperature"}
+/// Request (one line): {"id", "messages": [{"role", "content"}], "images": [path], "audios": [path], "max_tokens", "temperature",
+///                      "tools"?: [chat-template function tools]}
 /// Cancel (any time):  {"cancel": id}
 /// Replies, each a line starting with "SYNAPSE ":
 ///   {"id", "text": delta}                                  transcript as it is generated
 ///   {"id", "audio": base64 float32 LE, "sample_rate"}      speech as it is generated
+///   {"id", "tool_calls": [{"name", "arguments": JSON}]}    the model called tools instead of speaking
 ///   {"id", "done": true, "cancelled", "prompt_tokens", "generation_tokens"}  or  {"id", "error"}
 enum OmniVoiceScript {
     static let source = #"""
-import base64, json, os, select, sys, threading, time, traceback
+import base64, json, os, re, select, sys, threading, time, traceback
 
 parent = os.getppid()
 def watch():
@@ -78,8 +80,53 @@ def cancelled(rid):
             pending.append(msg)
     return hit
 
+TOOL = "<tool_call>"
+
+def parse_tool_calls(text):
+    """The XML tool calls LFM3 writes: <function=name><parameter=key>value</parameter>...</function>."""
+    calls = []
+    for name, body in re.findall(r"<function=([^>\n]+)>\s*(.*?)</function>", text, re.S):
+        args = {}
+        for key, value in re.findall(r"<parameter=([^>\n]+)>\n?(.*?)\n?</parameter>", body, re.S):
+            value = value.strip()
+            try:
+                args[key.strip()] = json.loads(value)
+            except ValueError:
+                args[key.strip()] = value
+        calls.append({"name": name.strip(), "arguments": json.dumps(args)})
+    return calls
+
+def probe_tools(req, images, audios):
+    """In speech mode LFM3 answers instead of calling a tool, so a text-only pass decides first. A reply that does not
+    open with <tool_call> stops within a few tokens and the turn is spoken; one that does is finished and returned."""
+    cfg = model.config
+    prompt = apply_chat_template(processor, cfg, req["messages"], num_images=len(images), num_audios=len(audios),
+                                 use_tts_template=True, tools=req["tools"])
+    inputs = prepare_inputs(processor, images=images or None, audio=audios or None, prompts=prompt,
+                            add_special_tokens=should_add_special_tokens(cfg.model_type, processor))
+    input_ids = inputs.pop("input_ids")
+    inputs.pop("attention_mask", None)
+    ids = []
+    with wired_limit(model, [generation_stream]), mx.stream(generation_stream):
+        for token, codes in model.stream_slots(input_ids, generation_mode="text", **model.audio_sampling, **inputs, max_tokens=400):
+            if codes is not None or token == cfg.audio_out_token_id:
+                continue
+            ids.append(token)
+            head = tokenizer.decode(ids, skip_special_tokens=False).lstrip()
+            if head and not (TOOL.startswith(head) or head.startswith(TOOL)):
+                return None
+            if "<|im_end|>" in head or "<|text_end|>" in head:
+                break
+    return parse_tool_calls(tokenizer.decode(ids, skip_special_tokens=False)) or None
+
 def stream_joint(req, prompt, images, audios):
     rid = req["id"]
+    if req.get("tools"):
+        calls = probe_tools(req, images, audios)
+        if calls:
+            reply({"id": rid, "tool_calls": calls})
+            reply({"id": rid, "done": True, "cancelled": False, "prompt_tokens": 0, "generation_tokens": 0})
+            return
     cfg = model.config
     inputs = prepare_inputs(processor, images=images or None, audio=audios or None, prompts=prompt,
                             add_special_tokens=should_add_special_tokens(cfg.model_type, processor))
@@ -149,7 +196,8 @@ while True:
         images = req.get("images") or []
         audios = req.get("audios") or []
         prompt = apply_chat_template(processor, model.config, with_voice_instruction(req["messages"]),
-                                     num_images=len(images), num_audios=len(audios), use_tts_template=True)
+                                     num_images=len(images), num_audios=len(audios), use_tts_template=True,
+                                     tools=req.get("tools") or None)
         (stream_joint if joint else whole)(req, prompt, images, audios)
     except Exception as e:
         traceback.print_exc()

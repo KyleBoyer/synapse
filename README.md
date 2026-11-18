@@ -193,6 +193,8 @@ A voice call is three choices, each per session:
 | Thinking | `?model=` | Any downloaded chat model: MLX, mlx-vlm, GGUF, added from Hugging Face. |
 | Speaking | `audio.output.model` (Synapse's addition) and `audio.output.voice` | `pocket-tts` (default, streams fastest), `kokoro-82m`, `chatterbox-turbo`, `voxcpm2`, `qwen3-tts-1.7b`; stock voices or a cloned `voice_…` id (Qwen3-TTS speaks only cloned voices). Omni models that speak (`lfm3-omni-2b`, `minicpm-o-4.5`) use their own voice instead. |
 
+**Tool calls** work in both kinds of voice call: put function tools in `session.tools`; the model's call arrives as a `function_call` output item (`response.function_call_arguments.delta/done`), and the client sends a `function_call_output` item and `response.create` to hear the answer. Assembled calls pass the tools to the chat model (in-process MLX models such as Qwen3.5; 0.8B calls tools only without a system prompt, so use 2B or larger). Omni calls (LFM3) first ask the model in text whether it wants a tool, since it does not call tools while speaking, then speak if it does not. Verified with the official SDK: both call `get_weather` for "What's the weather like in Paris right now?" and speak the result.
+
 **Live → Voice call** has a menu for each. A French call (Parakeet v3, Qwen3.5 0.8B, VoxCPM2) heard "Quelle est la capitale de l'Allemagne?" and answered "La capitale de l'Allemagne est la ville de Berlin." The mlx-audio voices speak each sentence once it is generated, so their first audio comes later than PocketTTS's.
 
 ### vOOM (models larger than memory)
