@@ -67,4 +67,20 @@ final class SoundE2ETests: XCTestCase {
         XCTAssertEqual(clip.seconds, 3, accuracy: 0.5)
         XCTAssertGreaterThan(rms, 0.001)
     }
+
+    func testPianoMusic() async throws {
+        guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let root = ProcessInfo.processInfo.environment["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
+        let store = ModelStore(root: root)
+        guard await store.folder(for: "stable-audio-3-small-music") != nil else { throw XCTSkip("stable-audio-3-small-music is not downloaded") }
+        let sound = SoundService(store: store, models: ModelManager())
+        let spec = try await sound.resolve("stable-audio-3-small-music")
+        let start = Date()
+        let clip = try await sound.generate(model: spec, prompt: "calm solo piano melody, slow tempo", seconds: 6, seed: 7)
+        let rms = sqrt(clip.mono.reduce(0) { $0 + $1 * $1 } / Float(max(clip.mono.count, 1)))
+        print(String(format: "[music] %.2f s of audio at %d Hz in %.1f s, rms %.4f", clip.seconds, clip.sampleRate, Date().timeIntervalSince(start), rms))
+        if let dir = ProcessInfo.processInfo.environment["SYNAPSE_SCRATCH"] { try clip.wav.write(to: URL(fileURLWithPath: dir).appending(path: "piano.wav")) }
+        XCTAssertEqual(clip.seconds, 6, accuracy: 0.5)
+        XCTAssertGreaterThan(rms, 0.005)
+    }
 }
