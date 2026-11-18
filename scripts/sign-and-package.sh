@@ -11,11 +11,13 @@ mkdir -p "$ROOT/dist"
 KC=""
 ORIG_KEYCHAINS=""
 cleanup() {
+  local rc=$?
   if [[ -n "$KC" ]]; then
     # shellcheck disable=SC2086
     [[ -n "$ORIG_KEYCHAINS" ]] && security list-keychains -d user -s $ORIG_KEYCHAINS || true
     security delete-keychain "$KC" 2>/dev/null || true
   fi
+  exit "$rc"
 }
 trap cleanup EXIT
 
@@ -44,7 +46,7 @@ else
   TS=()
 fi
 
-sign() { codesign --force --options runtime "${TS[@]}" -s "$IDENTITY" "$1"; }
+sign() { codesign --force --options runtime ${TS[@]+"${TS[@]}"} -s "$IDENTITY" "$1"; }
 
 # Helper binaries first (inside out); notarization rejects any nested code without Developer ID and hardened runtime.
 for helper in ffmpeg llama-server; do sign "$APP/Contents/MacOS/$helper"; done
@@ -54,7 +56,7 @@ if [[ -d "$APP/Contents/Frameworks" ]]; then
   done
 fi
 # The Release build is unsigned (CODE_SIGNING_ALLOWED=NO), so the entitlements are applied here.
-codesign --force --options runtime "${TS[@]}" --entitlements "$ROOT/Synapse/Synapse.entitlements" -s "$IDENTITY" "$APP"
+codesign --force --options runtime ${TS[@]+"${TS[@]}"} --entitlements "$ROOT/Synapse/Synapse.entitlements" -s "$IDENTITY" "$APP"
 
 codesign --verify --strict --verbose=2 "$APP"
 # Capture first: with pipefail, `grep -q` closing the pipe early makes codesign's SIGPIPE fail the check.

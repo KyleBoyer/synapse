@@ -80,6 +80,7 @@ jobs:
         with:
           name: Synapse-${{ steps.version.outputs.artifact }}
           path: dist/*.zip
+          if-no-files-found: error
 
       # Only after the build, tests and signing pass: commit the bump, tag it, publish.
       - name: Tag and publish
