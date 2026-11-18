@@ -3,7 +3,8 @@ import SwiftUI
 import SynapseCore
 import UniformTypeIdentifiers
 
-/// Clone a voice from a clip of one person speaking. PocketTTS reads up to 10 seconds; 5 to 10 works best.
+/// Clone a voice from a clip of one person speaking, chosen or recorded. PocketTTS reads up to 10 seconds; 5 to 10
+/// works best.
 struct CloneVoiceSheet: View {
     @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
@@ -15,26 +16,36 @@ struct CloneVoiceSheet: View {
     @State private var name = ""
     @State private var cloning = false
     @State private var error: String?
+    @State private var recorder: AVAudioRecorder?
+    @State private var recorded: TimeInterval = 0
 
     private var ready: Bool {
-        sample != nil && !cloning && !name.trimmingCharacters(in: .whitespaces).isEmpty
+        sample != nil && !cloning && recorder == nil && !name.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Clone a Voice").font(.title2.weight(.semibold))
-                Text("Use 5 to 10 seconds of one person speaking clearly, with no music or other voices. The clip is transcribed, and every model that clones can speak the voice.")
+                Text("Choose or record 5 to 10 seconds of one person speaking clearly, with no music or other voices. The clip is transcribed, and every model that clones can speak the voice.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 12) {
                 PanelRow("Sample") {
                     HStack(spacing: 8) {
-                        if let sample {
-                            Text(sample.lastPathComponent).lineLimit(1).truncationMode(.middle)
-                            if let seconds { Text(String(format: "%.1f s", seconds)).font(.mono()).foregroundStyle(.secondary) }
+                        if recorder != nil {
+                            Label(String(format: "Recording %.1f s", recorded), systemImage: "record.circle")
+                                .font(.mono()).foregroundStyle(Color.live)
+                            Button("Stop") { stopRecording() }
+                        } else {
+                            if let sample {
+                                Text(sample.lastPathComponent.hasPrefix("Synapse-voice-") ? "Microphone recording" : sample.lastPathComponent)
+                                    .lineLimit(1).truncationMode(.middle)
+                                if let seconds { Text(String(format: "%.1f s", seconds)).font(.mono()).foregroundStyle(.secondary) }
+                            }
+                            Button(sample == nil ? "Choose…" : "Change…") { choose() }
+                            Button("Record", systemImage: "mic") { Task { await record() } }
                         }
-                        Button(sample == nil ? "Choose…" : "Change…") { choose() }
                     }
                 }
                 if let seconds, seconds < 3 {
@@ -49,6 +60,7 @@ struct CloneVoiceSheet: View {
             }
             .padding(14)
             .glassEffect(.regular, in: .rect(cornerRadius: 18))
+            .onDisappear { recorder?.stop() }
             if cloning {
                 LiveProgress(label: "Cloning the voice")
             }
@@ -72,9 +84,10 @@ struct CloneVoiceSheet: View {
             return true
         }
         #if DEBUG
-        // `-cloneSample <path>` fills the sheet, and `-cloneConfirm YES` clones it, so the flow can be captured.
+        // `-cloneSample <path>` fills the sheet (`mic` records instead), and `-cloneConfirm YES` clones it, so the flow can be captured.
         .task {
             guard let path = UserDefaults.standard.string(forKey: "cloneSample"), sample == nil else { return }
+            if path == "mic" { await record(); return }
             pick(URL(fileURLWithPath: path))
             if UserDefaults.standard.bool(forKey: "cloneConfirm") {
                 try? await Task.sleep(for: .seconds(1))
@@ -91,9 +104,39 @@ struct CloneVoiceSheet: View {
         if p.runModal() == .OK, let url = p.url { pick(url) }
     }
 
-    private func pick(_ url: URL) {
+    /// Records up to 10 seconds (all PocketTTS reads) to a WAV in the temp folder; Stop ends it sooner.
+    private func record() async {
+        error = nil
+        guard await AVCaptureDevice.requestAccess(for: .audio) else {
+            error = "Synapse can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone."
+            return
+        }
+        let url = FileManager.default.temporaryDirectory.appending(path: "Synapse-voice-\(UUID().uuidString).wav")
+        let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 24000, AVNumberOfChannelsKey: 1,
+                                       AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false]
+        do {
+            let r = try AVAudioRecorder(url: url, settings: settings)
+            guard r.record(forDuration: 10) else { throw CocoaError(.fileWriteUnknown) }
+            recorder = r; recorded = 0
+            if name.isEmpty { name = "My voice" }
+            while r.isRecording {
+                recorded = r.currentTime
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard recorder === r else { return }
+            recorder = nil
+            pick(url, keepName: true)
+        } catch {
+            recorder = nil
+            self.error = "Recording failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func stopRecording() { recorder?.stop() }
+
+    private func pick(_ url: URL, keepName: Bool = false) {
         sample = url; seconds = nil; error = nil
-        if name.isEmpty { name = url.deletingPathExtension().lastPathComponent }
+        if name.isEmpty && !keepName { name = url.deletingPathExtension().lastPathComponent }
         Task {
             let d = try? await AVURLAsset(url: url).load(.duration)
             seconds = d.map(\.seconds).flatMap { $0.isFinite ? $0 : nil }

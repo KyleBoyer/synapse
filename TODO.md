@@ -15,7 +15,7 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [x] Docs: README routes and example. Notices unchanged (FluidAudio was already listed).
 - [x] More models: voices are model-independent now (the clip and its transcript are kept; PocketTTS derives its conditioning on first use). Added Qwen3-TTS 1.7B, VoxCPM2 and Chatterbox Turbo through an mlx-audio sidecar. Verified through Synapse with one cloned voice: similarity Qwen3-TTS 0.85, VoxCPM2 0.80, Chatterbox Turbo 0.63, PocketTTS 0.54; each heard back word for word. Tried and left out: LuxTTS (0.61, slower than realtime) and StyleTTS2 (crashed in FluidAudio's synthesizer).
 - [x] Consent dropped: voices need no consent (the consent routes stay for OpenAI clients that call them); the app's permission box is gone.
-- [ ] Record a sample with the microphone in the clone sheet (today it takes a file)
+- [x] Record a sample with the microphone in the clone sheet: Record captures up to 10 s (24 kHz WAV) and stops on its own or with Stop. Verified in the app: a 10.0 s recording became the sample and enabled Clone Voice.
 - [ ] Stream the mlx-audio models sentence by sentence (today audio arrives per generated segment)
 - [x] Live voice calls with more models: realtime sessions choose the recognizer (`audio.input.transcription.model`: Parakeet EOU streaming, or Whisper / Parakeet v3 per turn through `TurnTranscriber`) and the speech model (`audio.output.model`: any TTS model, stock or cloned voices); Live has a menu for each. Verified: a French call through Parakeet v3 → Qwen3.5 0.8B → VoxCPM2, heard back word for word (VoiceCallModelsE2ETests); RealtimeTests cover the session choices; the OpenAI Realtime SDK check passes.
 
