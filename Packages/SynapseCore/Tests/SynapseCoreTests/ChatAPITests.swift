@@ -230,4 +230,38 @@ final class ChatAPITests: XCTestCase {
             }
         }
     }
+
+    // MARK: Function tools
+
+    func testToolHistoryBecomesMarkupTheModelWrites() throws {
+        let raw = try JSONDecoder().decode([JSONValue].self, from: Data(#"""
+        [{"role":"user","content":"Weather in Paris?"},
+         {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},
+         {"role":"tool","tool_call_id":"call_1","content":"18 C, light rain"}]
+        """#.utf8))
+        let parsed = try ChatParse.chatMessages(raw)
+        XCTAssertEqual(parsed.map(\.0), [.user, .assistant, .user])
+        XCTAssertEqual(parsed[1].1, [.text("<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>")])
+        XCTAssertEqual(parsed[2].1, [.text("<tool_response>\n18 C, light rain\n</tool_response>")])
+
+        let input = try JSONDecoder().decode(JSONValue.self, from: Data(#"""
+        [{"role":"user","content":"Weather in Paris?"},
+         {"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Paris\"}"},
+         {"type":"function_call_output","call_id":"call_1","output":"18 C"}]
+        """#.utf8))
+        let items = try ChatParse.responseMessages(input, instructions: nil)
+        XCTAssertEqual(items.map(\.0), [.user, .assistant, .user])
+        XCTAssertEqual(items[2].1, [.text("<tool_response>\n18 C\n</tool_response>")])
+    }
+
+    func testFunctionToolsInBothShapes() throws {
+        let tools = try JSONDecoder().decode([JSONValue].self, from: Data(#"""
+        [{"type":"function","function":{"name":"a","description":"A.","parameters":{"type":"object"}}},
+         {"type":"function","name":"b","parameters":{"type":"object","properties":{}}}]
+        """#.utf8))
+        XCTAssertEqual(try ChatParse.functionTools(tools, choice: nil).map(\.name), ["a", "b"])
+        XCTAssertEqual(try ChatParse.functionTools(tools, choice: .string("none")), [])
+        let web = try JSONDecoder().decode([JSONValue].self, from: Data(#"[{"type":"web_search"}]"#.utf8))
+        XCTAssertThrowsError(try ChatParse.functionTools(web, choice: nil))
+    }
 }

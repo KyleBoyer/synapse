@@ -128,6 +128,8 @@ enum MLXVLMChat {
         if let t = options.temperature { o["temperature"] = t }
         if let p = options.topP { o["top_p"] = p }
         if promptProgress { o["return_progress"] = true }
+        // Both servers parse calls per model (mlx-vlm's tool parsers, llama.cpp's --jinja templates).
+        if !options.tools.isEmpty { o["tools"] = options.tools.map(\.spec) }
         return try JSONSerialization.data(withJSONObject: o)
     }
 
@@ -161,6 +163,7 @@ enum MLXVLMChat {
                     }
                     var finish = "stop", usage = ChatUsage(promptTokens: 0, completionTokens: 0)
                     var reading = true
+                    var calls: [Int: (name: String, arguments: String)] = [:]   // streamed in pieces, by index
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data:") else { continue }
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
@@ -181,13 +184,23 @@ enum MLXVLMChat {
                             usage = ChatUsage(promptTokens: p, completionTokens: u["completion_tokens"] as? Int ?? 0)
                         }
                         guard let choice = (o["choices"] as? [[String: Any]])?.first else { continue }
-                        let content = (choice["delta"] as? [String: Any])?["content"] as? String
+                        let delta = choice["delta"] as? [String: Any]
+                        let content = delta?["content"] as? String
                         let f = choice["finish_reason"] as? String
-                        if reading, (content?.isEmpty == false) || f != nil { reading = false; c.yield(.progress(.promptDone)) }
+                        let toolCalls = delta?["tool_calls"] as? [[String: Any]] ?? []
+                        if reading, (content?.isEmpty == false) || f != nil || !toolCalls.isEmpty { reading = false; c.yield(.progress(.promptDone)) }
+                        for tc in toolCalls {
+                            let i = tc["index"] as? Int ?? 0, fn = tc["function"] as? [String: Any]
+                            if let n = fn?["name"] as? String { calls[i, default: ("", "")].name += n }
+                            if let a = fn?["arguments"] as? String { calls[i, default: ("", "")].arguments += a }
+                        }
                         if let d = content, !d.isEmpty, !isSpecialToken(d) { c.yield(.delta(d)) }
                         if let f { finish = f }
                     }
-                    c.yield(.done(finishReason: finish, usage: usage))
+                    for i in calls.keys.sorted() where !calls[i]!.name.isEmpty {
+                        c.yield(.toolCall(name: calls[i]!.name, arguments: calls[i]!.arguments.isEmpty ? "{}" : calls[i]!.arguments))
+                    }
+                    c.yield(.done(finishReason: finish == "tool_calls" ? "stop" : finish, usage: usage))
                     c.finish()
                 } catch { c.finish(throwing: error) }
             }

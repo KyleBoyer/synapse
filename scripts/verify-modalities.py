@@ -362,7 +362,112 @@ def image_embeddings():
     check("image-embeddings: an image and its text as one input", len(both.data) == 1 and len(both.data[0].embedding) == 2048)
 
 
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings}
+def tools():
+    """Function tools on every chat route and input/output type, with the official SDK: text, image, video and audio in,
+    spoken replies, Responses, and a GGUF model."""
+    import base64, json, os, subprocess, tempfile
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    fx = os.path.join(os.path.dirname(__file__), "..", "Packages", "SynapseCore", "Tests", "SynapseCoreTests", "Fixtures")
+    def b64(name):
+        return base64.b64encode(open(os.path.join(fx, name), "rb").read()).decode()
+    weather = {"type": "function", "function": {"name": "get_weather", "description": "Current weather for a city.",
+               "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+    record = {"type": "function", "function": {"name": "record_animal", "description": "Record the animal seen in a picture or video.",
+              "parameters": {"type": "object", "properties": {"animal": {"type": "string"}}, "required": ["animal"]}}}
+    note = {"type": "function", "function": {"name": "save_note", "description": "Save a note with what the speaker said.",
+            "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}}
+    result = json.dumps({"city": "Paris", "temperature_c": 18, "sky": "light rain"})
+    ask = [{"role": "user", "content": "What's the weather like in Paris right now?"}]
+
+    # Chat Completions: a call, the result back, a streamed call.
+    r = client.chat.completions.create(model="qwen3.5-2b", messages=ask, tools=[weather], temperature=0)
+    m = r.choices[0].message
+    call = (m.tool_calls or [None])[0]
+    check("tools: chat completions returns a tool call", call is not None and call.function.name == "get_weather"
+          and "paris" in call.function.arguments.lower() and r.choices[0].finish_reason == "tool_calls", f"{m}")
+    if call:
+        r2 = client.chat.completions.create(model="qwen3.5-2b", tools=[weather], temperature=0, messages=ask + [
+            {"role": "assistant", "content": None, "tool_calls": [{"id": call.id, "type": "function",
+             "function": {"name": call.function.name, "arguments": call.function.arguments}}]},
+            {"role": "tool", "tool_call_id": call.id, "content": result}])
+        answer = r2.choices[0].message.content or ""
+        check("tools: chat completions answers from the tool result", "18" in answer or "rain" in answer.lower(), answer)
+    names, args, finish = "", "", None
+    for chunk in client.chat.completions.create(model="qwen3.5-2b", messages=ask, tools=[weather], temperature=0, stream=True):
+        for c in chunk.choices:
+            for tc in c.delta.tool_calls or []:
+                names += tc.function.name or ""; args += tc.function.arguments or ""
+            finish = c.finish_reason or finish
+    check("tools: streamed chat completions tool call", names == "get_weather" and "paris" in args.lower() and finish == "tool_calls",
+          f"{names} {args} {finish}")
+
+    # Responses: a function_call item, the output back, a streamed call.
+    rtool = {"type": "function", "name": "get_weather", "description": "Current weather for a city.", "parameters": weather["function"]["parameters"]}
+    resp = client.responses.create(model="qwen3.5-2b", input="What's the weather like in Paris right now?", tools=[rtool], temperature=0)
+    fc = next((o for o in resp.output if o.type == "function_call"), None)
+    check("tools: responses returns a function_call item", fc is not None and fc.name == "get_weather" and "paris" in fc.arguments.lower(),
+          f"{[o.type for o in resp.output]}")
+    if fc:
+        resp2 = client.responses.create(model="qwen3.5-2b", tools=[rtool], temperature=0, input=[
+            {"role": "user", "content": "What's the weather like in Paris right now?"},
+            {"type": "function_call", "call_id": fc.call_id, "name": fc.name, "arguments": fc.arguments},
+            {"type": "function_call_output", "call_id": fc.call_id, "output": result}])
+        check("tools: responses answers from the function output", "18" in resp2.output_text or "rain" in resp2.output_text.lower(), resp2.output_text)
+    done = None
+    with client.responses.stream(model="qwen3.5-2b", input="What's the weather like in Paris right now?", tools=[rtool], temperature=0) as st:
+        for ev in st:
+            if ev.type == "response.function_call_arguments.done":
+                done = ev
+        final = st.get_final_response()
+    check("tools: streamed responses function call", done is not None and "paris" in done.arguments.lower()
+          and any(o.type == "function_call" for o in final.output), f"{done}")
+
+    # Image and video in: the model looks, then calls a tool with what it saw.
+    look = "Identify the animal, then record it with record_animal."
+    r = client.chat.completions.create(model="qwen3.5-2b", tools=[record], temperature=0, messages=[{"role": "user", "content": [
+        {"type": "text", "text": look}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64("zebra.jpg")}}]}])
+    call = (r.choices[0].message.tool_calls or [None])[0]
+    check("tools: image in, tool call with what it saw", call is not None and "zebra" in call.function.arguments.lower(), f"{r.choices[0].message}")
+    r = client.chat.completions.create(model="qwen3.5-2b", tools=[record], temperature=0, messages=[{"role": "user", "content": [
+        {"type": "text", "text": look}, {"type": "video_url", "video_url": {"url": "data:video/mp4;base64," + b64("zebra.mp4")}}]}])
+    call = (r.choices[0].message.tool_calls or [None])[0]
+    check("tools: video in, tool call with what it saw", call is not None and "zebra" in call.function.arguments.lower(), f"{r.choices[0].message}")
+
+    # Audio in (an mlx-vlm omni model): the model hears, then calls a tool with what it heard.
+    tmp = tempfile.mkdtemp()
+    wav = os.path.join(tmp, "en.wav")
+    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", os.path.join(fx, "en.m4a"), wav], check=True)
+    audio_b64 = base64.b64encode(open(wav, "rb").read()).decode()
+    for model in ["gemma-4-e2b", "lfm3-omni-2b"]:
+        r = client.chat.completions.create(model=model, tools=[note], temperature=0, messages=[{"role": "user", "content": [
+            {"type": "text", "text": "Save what the speaker says with save_note."},
+            {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}}]}])
+        call = (r.choices[0].message.tool_calls or [None])[0]
+        check(f"tools: audio in ({model}), tool call with what it heard", call is not None and "fox" in call.function.arguments.lower(),
+              f"{r.choices[0].message}")
+
+    # Spoken replies: a tool call instead of audio, from TTS and from a model's own voice.
+    for model in ["qwen3.5-2b", "lfm3-omni-2b"]:
+        r = client.chat.completions.create(model=model, modalities=["text", "audio"], audio={"voice": "alloy", "format": "wav"},
+                                           messages=ask, tools=[weather], temperature=0)
+        m = r.choices[0].message
+        call = (m.tool_calls or [None])[0]
+        check(f"tools: spoken reply ({model}) returns a tool call", call is not None and call.function.name == "get_weather"
+              and r.choices[0].finish_reason == "tool_calls", f"{m}")
+
+    # A GGUF model through llama.cpp (added from Hugging Face in the app).
+    gguf = "bartowski/Llama-3.2-1B-Instruct-GGUF"
+    if gguf in [m.id for m in client.models.list()]:
+        r = client.chat.completions.create(model=gguf, tools=[weather], temperature=0,
+                                           messages=[{"role": "user", "content": "Call get_weather for Paris."}])
+        call = (r.choices[0].message.tool_calls or [None])[0]
+        check("tools: GGUF (llama.cpp) tool call", call is not None and call.function.name == "get_weather"
+              and "paris" in call.function.arguments.lower(), f"{r.choices[0].message}")
+
+
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

@@ -13,6 +13,8 @@ enum ChatAudio {
     enum Event: Sendable {
         case transcript(String)
         case audio([Float])
+        /// The model called a tool instead of answering; `arguments` is a JSON object string.
+        case toolCall(name: String, arguments: String)
         case done(finish: String, usage: ChatUsage)
     }
 
@@ -53,12 +55,9 @@ enum ChatAudio {
                                  _ c: AsyncThrowingStream<Event, Error>.Continuation) async throws {
         let voice = try await chat.voice(spec)
         var down: StreamResampler?
-        // shortcut: spoken Chat Completions replies don't carry tool calls, so the voice gets no tools; return calls if needed.
-        var spoken = options
-        spoken.tools = []
-        for try await e in voice.respond(messages, options: spoken) {
+        for try await e in voice.respond(messages, options: options) {
             switch e {
-            case .toolCall: break
+            case .toolCall(let name, let arguments): c.yield(.toolCall(name: name, arguments: arguments))
             case .text(let t): c.yield(.transcript(t))
             case .audio(let a, let r):
                 if down == nil { down = StreamResampler(from: Double(r), to: Double(rate)) }
@@ -90,7 +89,8 @@ enum ChatAudio {
             case .delta(let s):
                 c.yield(.transcript(s))
                 for sentence in splitter.feed(s) { try await say(sentence) }
-            case .toolCall, .progress: break
+            case .toolCall(let name, let arguments): c.yield(.toolCall(name: name, arguments: arguments))
+            case .progress: break
             case .done(let finish, let usage):
                 if let rest = splitter.flush() { try await say(rest) }
                 c.yield(.done(finish: finish, usage: usage))

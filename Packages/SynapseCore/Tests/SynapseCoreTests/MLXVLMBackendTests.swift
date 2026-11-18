@@ -81,6 +81,37 @@ final class MLXVLMBackendTests: XCTestCase {
         }
     }
 
+    /// Servers stream a call in pieces (name, then argument fragments, by index); it arrives whole, before done.
+    func testStreamedToolCallsArriveWhole() async throws {
+        let router = Router()
+        router.post("v1/chat/completions") { _, _ -> Response in
+            let lines = [#"{"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}"#,
+                         #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}}]}"#,
+                         #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]}}]}"#,
+                         #"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#]
+            let text = lines.map { "data: \($0)\n\n" }.joined() + "data: [DONE]\n\n"
+            return Response(status: .ok, headers: [.contentType: "text/event-stream"], body: .init(byteBuffer: ByteBuffer(string: text)))
+        }
+        try await Application(router: router).test(.live) { client in
+            let port = try XCTUnwrap(client.port)
+            var events: [ChatEvent] = []
+            for try await e in MLXVLMChat.stream(base: URL(string: "http://localhost:\(port)")!, body: Data("{}".utf8), onFinish: {}) {
+                if case .progress = e { continue }
+                events.append(e)
+            }
+            XCTAssertEqual(events, [.toolCall(name: "get_weather", arguments: #"{"city":"Paris"}"#),
+                                    .done(finishReason: "stop", usage: ChatUsage(promptTokens: 0, completionTokens: 0))])
+        }
+    }
+
+    func testServerRequestsCarryTools() throws {
+        var options = ChatOptions()
+        options.tools = [ChatTool(name: "get_weather", description: "Weather.", parametersJSON: #"{"type":"object","properties":{"city":{"type":"string"}}}"#)]
+        let body = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: options, model: "m")
+        let tools = (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["tools"] as? [[String: Any]]
+        XCTAssertEqual((tools?.first?["function"] as? [String: Any])?["name"] as? String, "get_weather")
+    }
+
     func testLlamaRequestsAskForPromptProgress() throws {
         let body = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: ChatOptions(), model: "m", promptProgress: true)
         XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["return_progress"] as? Bool, true)

@@ -63,10 +63,11 @@ final class ResponsesImageToolTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    func testRejectsFunctionToolsAndMissingImageModel() async throws {
+    /// Function tools alone go to the chat model (ChatAPITests); mixed with image_generation, the image tool refuses them.
+    func testRejectsFunctionToolsBesideImageGenerationAndMissingImageModel() async throws {
         try await app().test(.router) { client in
             let r = try await client.execute(uri: "/v1/responses", method: .post, headers: [.contentType: "application/json"],
-                                             body: try self.body(["tools": [["type": "function", "name": "x"]]]))
+                                             body: try self.body(["tools": [["type": "image_generation"], ["type": "function", "name": "x"]]]))
             XCTAssertEqual(r.status, .badRequest)
         }
         try await app(downloaded: []).test(.router) { client in

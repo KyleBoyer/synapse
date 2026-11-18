@@ -6,7 +6,8 @@ construct). Speech comes from macOS `say`, resampled to 24 kHz PCM16 and streame
 
   scripts/with-gpu-lock.sh <python> scripts/verify-openai-realtime.py --base-url http://127.0.0.1:19100/v1 --model qwen3.5-0.8b
 """
-import argparse, asyncio, base64, json, os, subprocess, sys, tempfile, time, wave
+import argparse
+import os, asyncio, base64, json, os, subprocess, sys, tempfile, time, wave
 import numpy as np
 from openai import AsyncOpenAI
 from pydantic import TypeAdapter
@@ -229,6 +230,26 @@ async def run(args):
                 check("18" in said or "rain" in said.lower(), f"{label}: the spoken answer uses the result ({said!r})")
             c.close()
             check(not c.errors, f"{label}: events pass strict SDK validation" + ("" if not c.errors else f" {c.errors[:2]}"))
+
+    # 7. A camera frame in a call, then a tool call with what the model saw (the Live camera path).
+    if args.tools_model:
+        record = {"type": "function", "name": "record_animal", "description": "Record the animal seen in a picture.",
+                  "parameters": {"type": "object", "properties": {"animal": {"type": "string"}}, "required": ["animal"]}}
+        zebra = os.path.join(os.path.dirname(__file__), "..", "Packages", "SynapseCore", "Tests", "SynapseCoreTests", "Fixtures", "zebra.jpg")
+        async with client.realtime.connect(model=args.tools_model) as conn:
+            c = Checker(conn)
+            await c.wait("session.created", timeout=10)
+            await conn.send({"type": "session.update", "session": {"type": "realtime", "tools": [record]}})
+            await conn.send({"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [
+                {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(open(zebra, "rb").read()).decode()}]}})
+            await conn.send({"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "Identify the animal, then record it with record_animal."}]}})
+            await conn.send({"type": "response.create"})
+            check(await c.wait("response.done", timeout=300), "camera tools: response done")
+            done = c.of("response.function_call_arguments.done")
+            check(done and "zebra" in done[0]["arguments"].lower(), f"camera tools: record_animal with what it saw ({done[:1]})")
+            c.close()
+            check(not c.errors, "camera tools: events pass strict SDK validation" + ("" if not c.errors else f" {c.errors[:2]}"))
 
     print("\n%d failure(s)" % len(failures))
     return 1 if failures else 0

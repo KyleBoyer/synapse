@@ -55,6 +55,8 @@ struct ChatCompletionRequest: Decodable {
     /// `["text", "audio"]` asks for a spoken reply; `audio` carries `format` and `voice`.
     var modalities: [String]?
     var audio: JSONValue?
+    var tools: [JSONValue]?
+    var tool_choice: JSONValue?
 }
 
 struct ResponsesRequest: Decodable {
@@ -118,8 +120,37 @@ enum ChatParse {
         }
     }
 
+    /// Chat Completions messages, with tool history: an assistant's `tool_calls` and `tool` results are kept as the
+    /// markup the models write calls in (ToolMarkup).
     static func chatMessages(_ raw: [JSONValue]) throws -> [(ChatMessage.Role, [ContentPart])] {
-        try raw.map { (try role($0["role"]?.string), try parts($0["content"])) }
+        try raw.map { m in
+            if m["role"]?.string == "tool" {
+                let text = try parts(m["content"]).compactMap { if case .text(let t) = $0 { t } else { nil } }.joined(separator: "\n")
+                return (.user, [.text(ToolMarkup.response(text))])
+            }
+            var p = try parts(m["content"])
+            for call in m["tool_calls"]?.array ?? [] {
+                guard let name = call["function"]?["name"]?.string else { throw bad("tool_calls entries need function.name.") }
+                p.append(.text(ToolMarkup.call(name: name, argumentsJSON: call["function"]?["arguments"]?.string ?? "{}")))
+            }
+            return (try role(m["role"]?.string), p)
+        }
+    }
+
+    /// Function tools in Chat Completions form ({type, function: {name, description, parameters}}) or Responses form
+    /// ({type, name, description, parameters}); tool_choice "none" turns them off.
+    // shortcut: "required" and a named function are treated as auto (a local model can't be forced to call).
+    static func functionTools(_ tools: [JSONValue]?, choice: JSONValue?) throws -> [ChatTool] {
+        if choice?.string == "none" { return [] }
+        return try (tools ?? []).map { t in
+            guard (t["type"]?.string ?? "function") == "function" else {
+                throw bad("Unsupported tool type '\(t["type"]?.string ?? "")'; only function tools are supported here.")
+            }
+            let fn = t["function"] ?? t
+            guard let name = fn["name"]?.string else { throw bad("Every tool needs a function name.") }
+            return ChatTool(name: name, description: fn["description"]?.string ?? "",
+                            parametersJSON: fn["parameters"].map(encodeJSON) ?? #"{"type":"object","properties":{}}"#)
+        }
     }
 
     /// Responses `input`: a string, or a list of message items ({role, content}) / bare content parts.
@@ -131,6 +162,12 @@ enum ChatParse {
         for item in items {
             if item["role"] != nil {
                 out.append((try role(item["role"]?.string), try parts(item["content"])))
+            } else if item["type"]?.string == "function_call" {
+                guard let name = item["name"]?.string else { throw bad("function_call items need name.") }
+                out.append((.assistant, [.text(ToolMarkup.call(name: name, argumentsJSON: item["arguments"]?.string ?? "{}"))]))
+            } else if item["type"]?.string == "function_call_output" {
+                let output = item["output"]?.string ?? item["output"].map(encodeJSON) ?? ""
+                out.append((.user, [.text(ToolMarkup.response(output))]))
             } else if let type = item["type"]?.string, type != "message" {
                 out.append((.user, try parts(.array([item]))))
             } else {
@@ -199,6 +236,7 @@ struct ChatCompletionWire: Encodable {
         struct Message: Encodable {
             var role = "assistant"; var content: String?; var refusal: String? = nil
             var audio: ChatAudioWire? = nil
+            var tool_calls: [ToolCallWire]? = nil
         }
         var index = 0
         var message: Message
@@ -213,9 +251,26 @@ struct ChatCompletionWire: Encodable {
     var usage: ChatUsageWire
 }
 
+/// A Chat Completions tool call; `index` is set in streamed deltas only.
+struct ToolCallWire: Encodable {
+    struct Function: Encodable { var name: String; var arguments: String }
+    var index: Int? = nil
+    var id: String
+    var type = "function"
+    var function: Function
+
+    static func newID() -> String { "call_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24).lowercased() }
+    init(index: Int? = nil, name: String, arguments: String) {
+        self.index = index; id = Self.newID(); function = Function(name: name, arguments: arguments)
+    }
+}
+
 struct ChatChunkWire: Encodable {
     struct Choice: Encodable {
-        struct Delta: Encodable { var role: String?; var content: String?; var audio: ChatAudioDeltaWire? = nil }
+        struct Delta: Encodable {
+            var role: String?; var content: String?; var audio: ChatAudioDeltaWire? = nil
+            var tool_calls: [ToolCallWire]? = nil
+        }
         var index = 0
         var delta: Delta
         var logprobs: String? = nil
@@ -246,7 +301,7 @@ struct ResponseWire: Encodable {
     var created_at: Int
     var status: String
     var model: String
-    var output: [Message]
+    var output: [ResponseOutputItemWire]
     var output_text: String
     var usage: Usage?
     var incomplete_details: Incomplete?
@@ -272,18 +327,25 @@ private func audioReply(_ p: ChatAudio.Params, id: String, created: Int, spec: M
     let expires = Int(Date().timeIntervalSince1970) + 3600
     guard stream else {
         var transcript = "", samples: [Float] = [], finish = "stop", usage = ChatUsage(promptTokens: 0, completionTokens: 0)
+        var calls: [ToolCallWire] = []
         for try await e in events {
             switch e {
             case .transcript(let t): transcript += t
             case .audio(let a): samples += a
+            case .toolCall(let name, let arguments): calls.append(ToolCallWire(name: name, arguments: arguments))
             case .done(let f, let u): finish = f; usage = u
             }
         }
-        let data = try await ChatAudio.encode(samples, as: p.format, encoder: speech.encoder)
+        // A tool call instead of an answer has nothing to say yet (as OpenAI: audio is null, tool_calls is set).
+        var audio: ChatAudioWire?
+        if !samples.isEmpty || calls.isEmpty {
+            let data = try await ChatAudio.encode(samples, as: p.format, encoder: speech.encoder)
+            audio = .init(id: audioID, data: data.base64EncodedString(), expires_at: expires,
+                          transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         return json(ChatCompletionWire(id: id, created: created, model: spec.id, choices: [
-            .init(message: .init(content: nil, audio: .init(id: audioID, data: data.base64EncodedString(), expires_at: expires,
-                                                             transcript: transcript.trimmingCharacters(in: .whitespacesAndNewlines))),
-                  finish_reason: finish),
+            .init(message: .init(content: nil, audio: audio, tool_calls: calls.isEmpty ? nil : calls),
+                  finish_reason: calls.isEmpty ? finish : "tool_calls"),
         ], usage: ChatUsageWire(usage)))
     }
     return sse { write in
@@ -291,15 +353,19 @@ private func audioReply(_ p: ChatAudio.Params, id: String, created: Int, spec: M
             ChatChunkWire(id: id, created: created, model: spec.id, choices: [.init(delta: delta, finish_reason: finish)])
         }
         try await write(nil, chunk(.init(role: "assistant")))
+        var calls = 0
         for try await e in events {
             switch e {
+            case .toolCall(let name, let arguments):
+                try await write(nil, chunk(.init(tool_calls: [ToolCallWire(index: calls, name: name, arguments: arguments)])))
+                calls += 1
             case .transcript(let t):
                 try await write(nil, chunk(.init(audio: .init(id: audioID, transcript: t))))
             case .audio(let a):
                 try await write(nil, chunk(.init(audio: .init(id: audioID, data: PCM.pcm16LE(from: a).base64EncodedString()))))
             case .done(let finish, let usage):
                 try await write(nil, chunk(.init(audio: .init(id: audioID, expires_at: expires))))
-                try await write(nil, chunk(.init(), finish: finish))
+                try await write(nil, chunk(.init(), finish: calls > 0 ? "tool_calls" : finish))
                 if includeUsage {
                     try await write(nil, ChatChunkWire(id: id, created: created, model: spec.id, choices: [], usage: ChatUsageWire(usage)))
                 }
@@ -328,8 +394,9 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.chatMessages(body.messages))
         try await requireMediaSupport(chat, spec, messages)
-        let options = ChatOptions(maxTokens: body.max_completion_tokens ?? body.max_tokens, temperature: body.temperature,
+        var options = ChatOptions(maxTokens: body.max_completion_tokens ?? body.max_tokens, temperature: body.temperature,
                                   topP: body.top_p, enableThinking: thinking(body.reasoning_effort))
+        options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
         let id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
 
@@ -341,17 +408,19 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
 
         let events = applyStops(try await chat.stream(model: spec, messages: messages, options: options), stopSequences(body.stop))
         guard body.stream == true else {
-            var text = "", finish = "stop"
+            var text = "", finish = "stop", calls: [ToolCallWire] = []
             var usage = ChatUsage(promptTokens: 0, completionTokens: 0)
             for try await e in events {
                 switch e {
                 case .delta(let s): text += s
                 case .done(let f, let u): finish = f; usage = u
-                case .toolCall, .progress: break
+                case .toolCall(let name, let arguments): calls.append(ToolCallWire(name: name, arguments: arguments))
+                case .progress: break
                 }
             }
             return json(ChatCompletionWire(id: id, created: created, model: spec.id, choices: [
-                .init(message: .init(content: text), finish_reason: finish),
+                .init(message: .init(content: text.isEmpty && !calls.isEmpty ? nil : text, tool_calls: calls.isEmpty ? nil : calls),
+                      finish_reason: calls.isEmpty ? finish : "tool_calls"),
             ], usage: ChatUsageWire(usage)))
         }
 
@@ -361,14 +430,18 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                 ChatChunkWire(id: id, created: created, model: spec.id, choices: [.init(delta: delta, finish_reason: finish)])
             }
             try await write(nil, chunk(.init(role: "assistant", content: "")))
+            var calls = 0
             for try await event in events {
                 switch event {
                 case .delta(let s):
                     try await write(nil, chunk(.init(content: s)))
-                case .toolCall, .progress:
+                case .toolCall(let name, let arguments):
+                    try await write(nil, chunk(.init(tool_calls: [ToolCallWire(index: calls, name: name, arguments: arguments)])))
+                    calls += 1
+                case .progress:
                     break
                 case .done(let finish, let usage):
-                    try await write(nil, chunk(.init(), finish: finish))
+                    try await write(nil, chunk(.init(), finish: calls > 0 ? "tool_calls" : finish))
                     if includeUsage {
                         try await write(nil, ChatChunkWire(id: id, created: created, model: spec.id, choices: [], usage: ChatUsageWire(usage)))
                     }
@@ -382,34 +455,46 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/responses", chat: chat, settings: settings) { return proxied }
         let body = try decodeJSON(ResponsesRequest.self, raw)
-        if let tools = body.tools, !tools.isEmpty {
+        if let tools = body.tools, tools.contains(where: { $0["type"]?.string == "image_generation" }) {
             return try await respondWithImageTool(body, tools: tools, chat: chat, images: images)
         }
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.responseMessages(body.input, instructions: body.instructions))
         try await requireMediaSupport(chat, spec, messages)
         let effort = body.reasoning?["effort"]?.string
-        let options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature,
+        var options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature,
                                   topP: body.top_p, enableThinking: thinking(effort))
+        options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
+        let hasTools = !options.tools.isEmpty
         let respID = "resp_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let msgID = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
 
-        @Sendable func response(status: String, text: String, usage: ChatUsage?, finish: String?) -> ResponseWire {
+        /// `keepEmptyMessage`: a streamed response already announced its message item, so it stays even when empty.
+        @Sendable func response(status: String, text: String, usage: ChatUsage?, finish: String?, calls: [FunctionCallWire] = [],
+                                keepEmptyMessage: Bool = false) -> ResponseWire {
             let incomplete = finish == "length"
             let finalStatus = status == "completed" && incomplete ? "incomplete" : status
+            var output: [ResponseOutputItemWire] = []
+            if status != "in_progress" {
+                if !text.isEmpty || calls.isEmpty || keepEmptyMessage {
+                    output.append(.message(.init(id: msgID, status: finalStatus, content: [.init(text: text)])))
+                }
+                output += calls.map { .functionCall($0) }
+            }
             return ResponseWire(
                 id: respID, created_at: created, status: finalStatus, model: spec.id,
-                output: status == "in_progress" ? [] : [.init(id: msgID, status: finalStatus, content: [.init(text: text)])],
-                output_text: text, usage: usage.map(ResponseWire.Usage.init),
+                output: output, output_text: text, usage: usage.map(ResponseWire.Usage.init),
                 incomplete_details: incomplete ? .init(reason: "max_output_tokens") : nil,
                 instructions: body.instructions, max_output_tokens: body.max_output_tokens,
-                temperature: body.temperature, top_p: body.top_p)
+                temperature: body.temperature, top_p: body.top_p,
+                tool_choice: body.tool_choice ?? .string(hasTools ? "auto" : "none"), tools: body.tools ?? [])
         }
 
         guard body.stream == true else {
             let r = try await chat.complete(model: spec, messages: messages, options: options)
-            return json(response(status: "completed", text: r.text, usage: r.usage, finish: r.finishReason))
+            return json(response(status: "completed", text: r.text, usage: r.usage, finish: r.finishReason,
+                                 calls: r.toolCalls.map { FunctionCallWire(name: $0.name, arguments: $0.arguments) }))
         }
 
         let events = try await chat.stream(model: spec, messages: messages, options: options)
@@ -428,22 +513,33 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
             try await event("response.in_progress", ["response": response(status: "in_progress", text: "", usage: nil, finish: nil)])
             try await event("response.output_item.added", ["output_index": 0, "item": AnyEncodableDict(item.mapValues { $0 }).withArray("content")])
             try await event("response.content_part.added", ["item_id": msgID, "output_index": 0, "content_index": 0, "part": part])
-            var text = ""
+            var text = "", calls: [FunctionCallWire] = []
             for try await e in events {
                 switch e {
                 case .delta(let s):
                     text += s
                     try await event("response.output_text.delta", ["item_id": msgID, "output_index": 0, "content_index": 0,
                                                                   "delta": s, "logprobs": [String]()])
-                case .toolCall, .progress:
+                case .toolCall(let name, let arguments):
+                    calls.append(FunctionCallWire(name: name, arguments: arguments))
+                case .progress:
                     break
                 case .done(let finish, let usage):
-                    let final = response(status: "completed", text: text, usage: usage, finish: finish)
+                    let final = response(status: "completed", text: text, usage: usage, finish: finish, calls: calls, keepEmptyMessage: true)
                     try await event("response.output_text.done", ["item_id": msgID, "output_index": 0, "content_index": 0,
                                                                  "text": text, "logprobs": [String]()])
                     try await event("response.content_part.done", ["item_id": msgID, "output_index": 0, "content_index": 0,
                                                                   "part": OutputTextPart(text: text)])
                     try await event("response.output_item.done", ["output_index": 0, "item": final.output[0]])
+                    // Calls follow the message, each announced, its arguments sent, then done.
+                    for (i, call) in calls.enumerated() {
+                        let index = i + 1
+                        try await event("response.output_item.added", ["output_index": index, "item": call.with(status: "in_progress", arguments: "")])
+                        try await event("response.function_call_arguments.delta", ["item_id": call.id, "output_index": index, "delta": call.arguments])
+                        try await event("response.function_call_arguments.done", ["item_id": call.id, "output_index": index,
+                                                                                  "name": call.name, "arguments": call.arguments])
+                        try await event("response.output_item.done", ["output_index": index, "item": call])
+                    }
                     try await event(final.status == "completed" ? "response.completed" : "response.incomplete", ["response": final])
                 }
             }

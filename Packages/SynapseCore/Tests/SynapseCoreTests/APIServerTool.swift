@@ -11,6 +11,8 @@ final class APIServerTool: XCTestCase {
         guard env["SYNAPSE_API_TEST_SERVER"] == "1" else { throw XCTSkip("set SYNAPSE_API_TEST_SERVER=1") }
         let root = env["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
         let store = ModelStore(root: root)
+        // Models added from Hugging Face in the app (GGUF, custom MLX) are served too.
+        if let app = UserDefaults(suiteName: "app.synapse.mac") { Catalog.setCustom(Settings.load(from: app).customModels) }
         let models = ModelManager()
         var initial = Settings()
         initial.voomCheckout = env["SYNAPSE_VOOM_CHECKOUT"]

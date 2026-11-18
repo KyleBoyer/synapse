@@ -46,12 +46,31 @@ struct ImageGenerationCallWire: Encodable, Sendable {
 enum ResponseOutputItemWire: Encodable, Sendable {
     case message(ResponseWire.Message)
     case image(ImageGenerationCallWire)
+    case functionCall(FunctionCallWire)
 
     func encode(to encoder: Encoder) throws {
         switch self {
         case .message(let m): try m.encode(to: encoder)
         case .image(let i): try i.encode(to: encoder)
+        case .functionCall(let f): try f.encode(to: encoder)
         }
+    }
+}
+
+/// A Responses function call output item; the client answers with a function_call_output input item.
+struct FunctionCallWire: Encodable, Sendable {
+    var type = "function_call"
+    var id = "fc_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24).lowercased()
+    var call_id = ToolCallWire.newID()
+    var name: String
+    var arguments: String
+    var status = "completed"
+
+    func with(status: String, arguments: String? = nil) -> FunctionCallWire {
+        var f = self
+        f.status = status
+        if let arguments { f.arguments = arguments }
+        return f
     }
 }
 
