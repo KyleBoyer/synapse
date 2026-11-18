@@ -28,8 +28,18 @@ public func buildRealtimeRouter(services: RealtimeServices, settings: SettingsBo
                 }
                 group.addTask {
                     defer { Task { await session.close() } }
-                    for try await message in inbound.messages(maxSize: 1 << 24) {
-                        if case .text(let text) = message { await session.handle(Data(text.utf8)) }
+                    // Reading never waits on the session: inbound pings are answered while reading, and a model that
+                    // is loading or running slower than real time would otherwise starve them until the client drops.
+                    let (queue, feed) = AsyncStream<Data>.makeStream()
+                    try await withThrowingTaskGroup(of: Void.self) { io in
+                        io.addTask {
+                            defer { feed.finish() }
+                            for try await message in inbound.messages(maxSize: 1 << 24) {
+                                if case .text(let text) = message { feed.yield(Data(text.utf8)) }
+                            }
+                        }
+                        io.addTask { for await data in queue { await session.handle(data) } }
+                        try await io.waitForAll()
                     }
                 }
                 defer { group.cancelAll() }

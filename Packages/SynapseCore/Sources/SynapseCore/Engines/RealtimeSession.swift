@@ -821,10 +821,16 @@ public actor RealtimeSession {
     /// PersonaPlex: the tools model reads the conversation after each user turn and calls a tool when one is needed;
     /// otherwise the duplex model answers on its own and the chat model's text is dropped.
     private func decideTools() {
-        let messages = messagesForResponse(instructions: instructions), tools = chatTools
+        let tools = chatTools
         guard !tools.isEmpty else { return }
+        // The side model only decides; given the call's voice-assistant instructions it answers the question itself
+        // (Qwen3.5 2B invents the weather), and that text is dropped anyway.
+        let messages = [ChatMessage(role: .system, text: Self.toolDecision)] + messagesForResponse(instructions: instructions).filter { $0.role != .system }
         Task { await self.runToolsModel(messages, tools: tools, speak: false) }
     }
+
+    static let toolDecision = "You decide whether the user's last message needs one of the tools. If it does, call the tool. "
+        + "If it does not, reply with the single word: none."
 
     private func deliverDuplexResult(name: String, output: String) async {
         guard let engine = special?.duplex else { return }

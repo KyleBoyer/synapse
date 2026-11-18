@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Starts the opt-in API test server (HTTP + /v1/realtime) on real models and runs the official-SDK check.
 # Needs: SynapseModels with qwen3.5-0.8b, silero-vad, parakeet-eou-120m, pocket-tts; MLX metallib built once
-# via scripts/test-chat-e2e.sh (xcodebuild). Usage: scripts/verify-realtime.sh <python-with-openai[realtime]>
+# via scripts/test-chat-e2e.sh (xcodebuild). Usage: scripts/verify-realtime.sh <python-with-openai[realtime]> [script args]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG="${SYNAPSE_PKG:-$ROOT/Packages/SynapseCore}"
@@ -17,7 +17,7 @@ codesign --force --deep -s - "$BUNDLE" >/dev/null
 "$ROOT/scripts/with-gpu-lock.sh" bash -c '
   swift test --skip-build --filter APIServerTool > "${TMPDIR:-/tmp}/synapse-realtime-server.log" 2>&1 &
   SERVER=$!
-  trap "kill $SERVER 2>/dev/null; pkill -f SynapseCorePackageTests 2>/dev/null || true" EXIT
+  trap "kill $SERVER 2>/dev/null; pkill -f \"SynapseCorePackageTests|APIServerTool/testServe\" 2>/dev/null || true" EXIT
   for i in $(seq 1 120); do curl -fs "http://127.0.0.1:$SYNAPSE_API_TEST_PORT/health" >/dev/null && break; sleep 1; done
-  "'"$PY"'" "'"$ROOT"'/scripts/verify-openai-realtime.py" --base-url "http://127.0.0.1:$SYNAPSE_API_TEST_PORT/v1"
+  "'"$PY"'" "'"$ROOT"'/scripts/verify-openai-realtime.py" --base-url "http://127.0.0.1:$SYNAPSE_API_TEST_PORT/v1" '"${*:2}"'
 '

@@ -89,6 +89,10 @@ def check(cond, msg):
 
 async def run(args):
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    if args.duplex_only:
+        await duplex_tools(client, args)
+        print("\n%d failure(s)" % len(failures))
+        return 1 if failures else 0
 
     # 1. Live transcription
     q = "The quick brown fox jumps over the lazy dog near the river."
@@ -251,6 +255,14 @@ async def run(args):
             c.close()
             check(not c.errors, "camera tools: events pass strict SDK validation" + ("" if not c.errors else f" {c.errors[:2]}"))
 
+    await duplex_tools(client, args)
+    print("\n%d failure(s)" % len(failures))
+    return 1 if failures else 0
+
+
+async def duplex_tools(client, args):
+    weather = {"type": "function", "name": "get_weather", "description": "Current weather for a city.",
+               "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}
     # Full duplex: the model keeps talking while a tool runs; VoiceChat calls natively, PersonaPlex through tools_model.
     for model in [m for m in args.duplex_models.split(",") if m]:
         async with client.realtime.connect(model=model) as conn:
@@ -266,20 +278,29 @@ async def run(args):
             done = c.of("response.function_call_arguments.done")
             check(done and done[0]["name"] == "get_weather" and "paris" in done[0]["arguments"].lower(),
                   f"duplex tools: {model} calls get_weather for Paris ({done[:1]})")
+            if not done:
+                from collections import Counter
+                print("      events:", dict(Counter(e["type"] for _, e in c.events)))
+                print("      heard:", [e.get("transcript") for e in c.of("conversation.item.input_audio_transcription.completed")])
+                print("      said:", "".join(e.get("delta", "") for e in c.of("response.output_audio_transcript.delta"))[:300])
             if done:
                 mark = len(c.events)
                 await conn.send({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": done[0]["call_id"],
                                  "output": json.dumps({"city": "Paris", "temperature_c": 18, "sky": "light rain"})}})
                 await conn.send({"type": "response.create"})
                 await c.send_audio(silence(12), speed=1.0)
-                after = "".join(e.get("delta", "") for _, e in c.events[mark:] if e["type"] == "response.output_audio_transcript.delta")
-                check(any(w in after.lower() for w in ("rain", "18", "eighteen")), f"duplex tools: {model} speaks the result ({after[:160]!r})")
+                # On 16 GB a duplex model can run slower than real time, so wait for what it says, not for the clock.
+                def heard():
+                    return "".join(e.get("delta", "") for _, e in c.events[mark:] if e["type"] == "response.output_audio_transcript.delta")
+                for _ in range(180):
+                    if any(w in heard().lower() for w in ("rain", "18", "eighteen")):
+                        break
+                    await asyncio.sleep(1)
+                after = heard()
+                check(any(w in after.lower() for w in ("rain", "18", "eighteen")), f"duplex tools: {model} speaks the result ({after[:500]!r})")
             check(not [e for e in c.of("error")], f"duplex tools: {model} no error events {c.of('error')[:1]}")
             c.close()
             check(not c.errors, f"duplex tools: {model} events pass strict SDK validation" + ("" if not c.errors else f" {c.errors[:2]}"))
-
-    print("\n%d failure(s)" % len(failures))
-    return 1 if failures else 0
 
 
 if __name__ == "__main__":
@@ -290,4 +311,5 @@ if __name__ == "__main__":
     p.add_argument("--tools-model", default="qwen3.5-2b", help="chat model for the assembled tool-call check (empty to skip)")
     p.add_argument("--omni-model", default="lfm3-omni-2b", help="omni model for the tool-call check (empty to skip)")
     p.add_argument("--duplex-models", default="", help="comma-separated full-duplex models for the tool-call check, e.g. personaplex-7b,voicechat-11b")
+    p.add_argument("--duplex-only", action="store_true", help="run only the full-duplex tool-call check")
     sys.exit(asyncio.run(run(p.parse_args())))
