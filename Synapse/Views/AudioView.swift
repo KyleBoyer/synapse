@@ -275,6 +275,17 @@ struct AudioView: View {
     private var converts: Bool { mode == .edit && spec.map { SpeechService.converters.contains($0.id) } == true }
     @State private var convertVoice = ""
 
+    /// The right column for the current mode (its own builder: inline, it is too much for Swift 6.2's type checker).
+    @ViewBuilder private func sidePanel(_ spec: ModelSpec) -> some View {
+        switch mode {
+        case .speak:
+            readout(spec)
+            if SpeechService.support(spec.id).clones { voicesPanel }
+        case .edit: editReadout(spec)
+        case .compose: composeReadout(spec); composePanel
+        }
+    }
+
     var body: some View {
         Group {
             if specs.isEmpty {
@@ -292,13 +303,8 @@ struct AudioView: View {
                     clipList
                     if let spec {
                         ScrollView {
-                            VStack(spacing: 12) {
-                                if mode == .speak {
-                                    readout(spec)
-                                    if SpeechService.support(spec.id).clones { voicesPanel }
-                                } else if mode == .edit { editReadout(spec) } else { composeReadout(spec); composePanel }
-                            }
-                            .padding(16).frame(maxWidth: .infinity)
+                            VStack(spacing: 12) { sidePanel(spec) }
+                                .padding(16).frame(maxWidth: .infinity)
                         }
                         .frame(width: 320)
                         .scrollClipDisabled()
