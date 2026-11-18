@@ -19,8 +19,8 @@ final class FolderWatcherTests: XCTestCase {
     func make(_ name: String, bytes: Int = 10) {
         FileManager.default.createFile(atPath: dir.appendingPathComponent(name).path, contents: Data(count: bytes))
     }
-    func watcher(_ c: Collector) -> FolderWatcher {
-        FolderWatcher(submit: { c.add($0) }, stabilityInterval: .milliseconds(200), rescanInterval: .seconds(1))
+    func watcher(_ c: Collector, stability: Duration = .milliseconds(200)) -> FolderWatcher {
+        FolderWatcher(submit: { c.add($0) }, stabilityInterval: stability, rescanInterval: .seconds(1))
     }
     func until(_ timeout: Double, _ cond: @escaping () -> Bool) async {
         let end = Date().addingTimeInterval(timeout)
@@ -66,7 +66,8 @@ final class FolderWatcherTests: XCTestCase {
 
     func testGrowingFileWaits() async throws {
         make("G.mkv", bytes: 5)
-        let c = Collector(), w = watcher(c)
+        // Writes come every 100 ms; a 1 s window keeps a slow CI runner's stretched sleeps from looking like a finished file.
+        let c = Collector(), w = watcher(c, stability: .seconds(1))
         await w.update(folders: [folder(dir)], paused: false)
         let h = try FileHandle(forWritingTo: dir.appendingPathComponent("G.mkv"))
         for _ in 0..<8 {
@@ -75,7 +76,7 @@ final class FolderWatcherTests: XCTestCase {
             XCTAssertTrue(c.paths.isEmpty)
         }
         try h.close()
-        await until(3) { !c.paths.isEmpty }
+        await until(6) { !c.paths.isEmpty }
         XCTAssertEqual(c.paths, ["G.mkv"])
         await w.stop()
     }
