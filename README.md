@@ -64,7 +64,7 @@ Every screenshot below is a real run on the 16 GB Mac mini.
 
 ## Quick start
 
-1. Download `Synapse-<version>.zip` from [the latest release](https://github.com/KyleBoyer/synapse/releases/latest), unzip it, and move `Synapse.app` to `/Applications`. Releases are signed with a Developer ID and notarized by Apple.
+1. Download `Synapse-<version>.dmg` from [the latest release](https://github.com/KyleBoyer/synapse/releases/latest), open it, and drag Synapse onto the Applications folder. Releases are signed with a Developer ID and notarized by Apple, and Synapse updates itself from then on (Sparkle; **Synapse ▸ Check for Updates…** checks now).
 2. Open Synapse, go to **Models**, and download a model. `Qwen3.5 2B` (1.6 GB) is a good first chat model; `Parakeet v3` is a good first transcriber.
 3. Press **Try in Chat**, or point any OpenAI or Anthropic client at `http://127.0.0.1:9000`.
 
@@ -368,8 +368,8 @@ With the app running and `qwen3.5-0.8b` downloaded, `scripts/verify-openai-api.p
 
 Run the **Release** workflow from the Actions tab (`gh workflow run release.yml -f bump=patch`) and choose a bump:
 
-- `none`: builds, tests and signs, then attaches the zip to the workflow run. Nothing is committed, tagged or published.
-- `patch`, `minor`, `major`: bumps `MARKETING_VERSION` (and the build number) in `project.yml`, builds, tests, signs and notarizes, then commits `Release vX.Y.Z`, tags it, and publishes a GitHub Release with the zip. It runs only from the default branch, and nothing is pushed if any step before it fails.
+- `none`: builds, tests and signs, then attaches the DMG, zip and appcast to the workflow run. Nothing is committed, tagged or published.
+- `patch`, `minor`, `major`: bumps `MARKETING_VERSION` (and the build number) in `project.yml`, builds, tests, signs and notarizes, then commits `Release vX.Y.Z`, tags it, and publishes a GitHub Release with the DMG (for people), the zip and `appcast.xml` (for Sparkle; the app's feed is the latest release's `appcast.xml`). It runs only from the default branch, and nothing is pushed if any step before it fails.
 
 Without secrets the app is ad-hoc signed. For Developer ID signing and notarization (paid Apple Developer account), set these repository secrets:
 
@@ -378,6 +378,7 @@ Without secrets the app is ad-hoc signed. For Developer ID signing and notarizat
 - `APPLE_ID`
 - `APPLE_TEAM_ID`
 - `APPLE_APP_PASSWORD` (app-specific password)
+- `SPARKLE_ED_PRIVATE_KEY`: signs updates. It pairs with `SUPublicEDKey` in `Synapse/Info.plist`; the maintainer's copy is in the login Keychain (`generate_keys --account synapse -x <file>` exports it). Losing it means existing installs can't verify new updates.
 
 </details>
 

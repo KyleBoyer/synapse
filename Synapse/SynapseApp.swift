@@ -85,6 +85,7 @@ struct SynapseApp: App {
         }
         .commands {
             CommandGroup(replacing: .appSettings) { SettingsCommand().environment(state) }
+            CommandGroup(after: .appInfo) { CheckForUpdatesCommand().environment(state) }
         }
         MenuBarExtra("Synapse", systemImage: "waveform") {
             MenuBarView().environment(state)

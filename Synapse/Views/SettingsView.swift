@@ -150,6 +150,13 @@ struct SettingsView: View {
     private var aboutPanel: some View {
         Panel("About") {
             PanelRow("Synapse") { Text(Synapse.version).font(.mono(.callout)) }
+            PanelRow("Check for updates automatically") {
+                @Bindable var updates = state.updates
+                HStack(spacing: 10) {
+                    Button("Check Now") { updates.check() }.buttonStyle(.glass)
+                    Toggle("Check for updates automatically", isOn: $updates.automatic).toggleStyle(.switch).labelsHidden()
+                }
+            }
             if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md") {
                 PanelRow("Licenses") { Button("Third-Party Notices") { NSWorkspace.shared.open(url) }.buttonStyle(.glass) }
             }

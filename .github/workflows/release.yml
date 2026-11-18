@@ -72,6 +72,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: scripts/sign-and-package.sh build/Build/Products/Release/Synapse.app "${{ steps.version.outputs.artifact }}"
 
       - name: Upload build
@@ -79,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Synapse-${{ steps.version.outputs.artifact }}
-          path: dist/*.zip
+          path: dist/*
           if-no-files-found: error
 
       # Only after the build, tests and signing pass: commit the bump, tag it, publish.
@@ -97,7 +98,7 @@ jobs:
           git push --atomic origin "HEAD:refs/heads/$GITHUB_REF_NAME" "refs/tags/v$VERSION"
           FLAGS=(--title "Synapse v$VERSION" --generate-notes --verify-tag)
           if [[ "$SIGNED" != "1" ]]; then
-            echo 'Unsigned build: after unzipping run `xattr -dr com.apple.quarantine /Applications/Synapse.app`, or right-click the app and choose Open.' > notes.md
+            echo 'Unsigned build: after copying run `xattr -dr com.apple.quarantine /Applications/Synapse.app`, or right-click the app and choose Open.' > notes.md
             FLAGS+=(--notes-file notes.md)
           fi
-          gh release create "v$VERSION" dist/*.zip "${FLAGS[@]}"
+          gh release create "v$VERSION" dist/Synapse-*.dmg dist/Synapse-*.zip dist/appcast.xml "${FLAGS[@]}"

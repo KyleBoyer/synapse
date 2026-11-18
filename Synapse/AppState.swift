@@ -21,6 +21,7 @@ final class AppState {
     var memoryOvercommitted = false
     /// Settings is a sheet over the main window, opened from ⌘, the menu bar extra, or in-app links.
     var showingSettings = false
+    let updates = UpdateCenter()
     /// "Try in <pane>" from Models: the pane selects this model when it appears, then clears it.
     struct TryRequest: Equatable { let pane: Pane; let modelID: String }
     var tryRequest: TryRequest?

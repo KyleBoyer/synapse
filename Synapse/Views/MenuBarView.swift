@@ -22,6 +22,7 @@ struct MenuBarView: View {
             NSApp.activate()
             state.showingSettings = true
         }
+        Button("Check for Updates…") { state.updates.check() }
         Toggle("Pause Watching", isOn: Binding(
             get: { state.settings.watchingPaused },
             set: { state.settings.watchingPaused = $0 }))
