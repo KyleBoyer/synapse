@@ -286,7 +286,9 @@ struct AudioView: View {
         }
     }
 
-    var body: some View {
+    var body: some View { observed }
+
+    private var content: some View {
         Group {
             if specs.isEmpty {
                 if mode == .speak {
@@ -334,6 +336,11 @@ struct AudioView: View {
                 }
             }
         }
+    }
+
+    /// Lifecycle and data hooks, split from `content` so Swift 6.2's type checker handles each half.
+    private var observed: some View {
+        content
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
         .sheet(isPresented: $cloning) {
             CloneVoiceSheet { v in
