@@ -19,6 +19,14 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [ ] Stream the mlx-audio models sentence by sentence (today audio arrives per generated segment)
 - [x] Live voice calls with more models: realtime sessions choose the recognizer (`audio.input.transcription.model`: Parakeet EOU streaming, or Whisper / Parakeet v3 per turn through `TurnTranscriber`) and the speech model (`audio.output.model`: any TTS model, stock or cloned voices); Live has a menu for each. Verified: a French call through Parakeet v3 → Qwen3.5 0.8B → VoxCPM2, heard back word for word (VoiceCallModelsE2ETests); RealtimeTests cover the session choices; the OpenAI Realtime SDK check passes.
 
+## Tool calls in voice calls
+
+Realtime sessions accept `tools` and echo them but never call them.
+
+- [ ] Assembled path: pass session tools to the chat model; send `response.function_call_arguments.delta/done` and a `function_call` item; take `function_call_output` items back and continue the response
+- [ ] Live: show tool calls in the transcript
+- [ ] Verify with the OpenAI Realtime SDK (a function the model must call)
+
 ## Image (+text) embeddings (done)
 
 Image and text in one vector space, for image search and image-to-text matching.
