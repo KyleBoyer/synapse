@@ -83,17 +83,17 @@ public final class OmniVoice: @unchecked Sendable {
 
     func respond(_ messages: [ChatMessage], options: ChatOptions) -> AsyncThrowingStream<VoiceEvent, Error> {
         let id = UUID().uuidString
-        let finished = Mutex(false)
+        let finished = DoneFlag()
         return AsyncThrowingStream { c in
             let task = Task {
                 do {
                     try await gate.run { try await self.run(id, messages, options) { c.yield($0) } }
                     c.finish()
                 } catch { c.finish(throwing: error) }
-                finished.withLock { $0 = true }
+                finished.done.withLock { $0 = true }
             }
             c.onTermination = { [weak self] _ in
-                guard !finished.withLock({ $0 }) else { return }
+                guard !finished.done.withLock({ $0 }) else { return }
                 // Barge-in: the sidecar stops at its next check and still sends `done`, which `run` waits for.
                 self?.send(["cancel": id])
                 _ = task

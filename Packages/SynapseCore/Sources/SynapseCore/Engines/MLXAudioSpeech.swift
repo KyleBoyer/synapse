@@ -34,7 +34,7 @@ final class MLXAudioSpeech: @unchecked Sendable {
 
     private func stream(_ req: [String: Any]) -> AsyncThrowingStream<[Float], Error> {
         let id = UUID().uuidString
-        let finished = Mutex(false)
+        let finished = DoneFlag()
         let line: Data
         do { line = try PythonSidecar.line(req, id: id) } catch { return AsyncThrowingStream { $0.finish(throwing: error) } }
         return AsyncThrowingStream { c in
@@ -51,10 +51,10 @@ final class MLXAudioSpeech: @unchecked Sendable {
                     }
                     c.finish()
                 } catch { c.finish(throwing: error) }
-                finished.withLock { $0 = true }
+                finished.done.withLock { $0 = true }
             }
             c.onTermination = { [sidecar] _ in
-                guard !finished.withLock({ $0 }) else { return }
+                guard !finished.done.withLock({ $0 }) else { return }
                 sidecar.send(["cancel": id])   // the sidecar stops at its next chunk and still sends `done`
                 _ = task
             }

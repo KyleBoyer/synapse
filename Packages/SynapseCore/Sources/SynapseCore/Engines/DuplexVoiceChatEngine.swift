@@ -3,6 +3,10 @@ import VoiceChat
 
 /// Nemotron VoiceChat 11B (16 kHz in, 22.05 kHz out, 80 ms frames). `userText` events carry the new part of the
 /// streaming user transcript; `assistantText` the model's text tokens; `audio` is the continuous output stream (silence while idle).
+// The actor below is the only user of its model and serializes every call, so handing it to the model's own
+// async methods is safe; Swift 6.2 cannot see that and rejects the send.
+extension VoiceChatModel: @retroactive @unchecked Sendable {}
+
 public actor DuplexVoiceChatEngine: DuplexSpeechEngine {
     public nonisolated var inputSampleRate: Int { VoiceChatSession.inputSampleRate }
     public nonisolated var outputSampleRate: Int { VoiceChatSession.outputSampleRate }

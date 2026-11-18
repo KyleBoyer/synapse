@@ -37,6 +37,9 @@ public actor GPUGate {
     }
 }
 
+/// A flag shared by a stream's task and its termination handler (Swift 6.2 rejects a `Mutex` local captured by both).
+final class DoneFlag: Sendable { let done = Mutex(false) }
+
 /// Releases a held gate exactly once, from whichever path finishes first.
 final class GateRelease: @unchecked Sendable {
     private let lock = NSLock()
