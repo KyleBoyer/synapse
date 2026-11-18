@@ -207,6 +207,24 @@ final class ComposeModel {
         }
     }
 
+    /// Clean Up with a converting model: the recording re-spoken in a cloned voice.
+    func convert(input: URL, voice: CustomVoice, spec: ModelSpec, state: AppState) {
+        let speech = state.speech
+        error = nil; running = true; elapsed = nil; started = Date()
+        task = Task {
+            defer { running = false }
+            do {
+                let (rate, pcm) = try await speech.convert(model: spec, source: input, voice: voice.id)
+                var samples: [Float] = []
+                for try await f in pcm { samples += f }
+                elapsed = Date().timeIntervalSince(started ?? Date())
+                clips.insert(SpeakModel.Clip(text: "\(input.lastPathComponent) as \(voice.name)", model: spec.id, voice: voice.id,
+                                             samples: samples, rate: rate), at: 0)
+            } catch is CancellationError {
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
     func stop() { task?.cancel(); player.stop(); playing = nil }
 
     func toggle(_ clip: SpeakModel.Clip) {
@@ -239,7 +257,12 @@ struct AudioView: View {
     @State private var seed = "0"
 
     private var specs: [ModelSpec] {
-        switch mode { case .speak: state.downloadedTTSSpecs; case .compose: state.downloadedSoundSpecs; case .edit: state.downloadedEditSpecs }
+        switch mode {
+        case .speak: state.downloadedTTSSpecs
+        case .compose: state.downloadedSoundSpecs
+        // Voice conversion sits with the other audio-to-audio models.
+        case .edit: state.downloadedEditSpecs + state.downloadedTTSSpecs.filter { SpeechService.converters.contains($0.id) }
+        }
     }
     private var selection: Binding<String> {
         switch mode { case .speak: $modelID; case .compose: $soundModelID; case .edit: $editModelID }
@@ -249,6 +272,8 @@ struct AudioView: View {
     private var sounds: ComposeModel { mode == .edit ? editor : composer }
     private var running: Bool { mode == .speak ? model.running : sounds.running }
     private var needsPrompt: Bool { mode == .edit && spec.map(SoundService.needsPrompt) == true }
+    private var converts: Bool { mode == .edit && spec.map { SpeechService.converters.contains($0.id) } == true }
+    @State private var convertVoice = ""
 
     var body: some View {
         Group {
@@ -329,7 +354,8 @@ struct AudioView: View {
         .onChange(of: state.downloadedSoundSpecs.map(\.id), initial: true) { _, ids in
             if !ids.contains(soundModelID) { soundModelID = ids.first ?? "" }
         }
-        .onChange(of: state.downloadedEditSpecs.map(\.id), initial: true) { _, ids in
+        .onChange(of: state.downloadedEditSpecs.map(\.id), initial: true) { _, _ in
+            let ids = (mode == .edit ? specs : state.downloadedEditSpecs).map(\.id)
             if !ids.contains(editModelID) { editModelID = ids.first ?? "" }
         }
         .onChange(of: running) { state.setActive(.audio, running) }
@@ -359,7 +385,8 @@ struct AudioView: View {
         .task(id: state.downloadedEditSpecs.first?.id) {
             guard let path = UserDefaults.standard.string(forKey: "autoEdit"), editor.clips.isEmpty, !editor.running,
                   let s = UserDefaults.standard.string(forKey: "autoEditModel").flatMap(Catalog.spec) ?? state.downloadedEditSpecs.first,
-                  state.downloadedEditSpecs.contains(s) else { return }
+                  state.downloadedEditSpecs.contains(s) || state.downloadedTTSSpecs.contains(s) else { return }
+            customVoices = await state.speech.voices.voices()
             mode = .edit; editModelID = s.id; editInput = URL(fileURLWithPath: path)
             text = UserDefaults.standard.string(forKey: "autoEditPrompt") ?? ""
             submit()
@@ -416,11 +443,11 @@ struct AudioView: View {
         TimelineView(.periodic(from: .now, by: 0.1)) { ctx in
             let c = editor, last = c.clips.first
             let wall = c.running ? c.started.map { ctx.date.timeIntervalSince($0) } : c.elapsed
-            let separate = SoundService.editTask(spec) == .separate
+            let separate = SoundService.editTask(spec) == .separate, converting = SpeechService.converters.contains(spec.id)
             BurnIn(
                 name: spec.displayName, modelID: spec.id,
                 readings: [
-                    Reading(label: "Status", value: c.running ? (separate ? "separating" : "cleaning") : "idle", live: c.running),
+                    Reading(label: "Status", value: c.running ? (converting ? "converting" : separate ? "separating" : "cleaning") : "idle", live: c.running),
                     Reading(label: "Elapsed", value: wall.map { String(format: "%.1f s", $0) } ?? "–", live: c.running),
                     Reading(label: "Audio length", value: last.map { String(format: "%.1f s", $0.seconds) } ?? "–"),
                     Reading(label: "Sample rate", value: last.map { String(format: "%.1f kHz", Double($0.rate) / 1000) } ?? "–"),
@@ -428,7 +455,7 @@ struct AudioView: View {
                 ],
                 history: [], historyMetric: nil,
                 running: c.running,
-                api: "POST /v1/audio/\(separate ? "separate" : "enhance")\nmodel: \(spec.id)")
+                api: "POST /v1/audio/\(converting ? "convert" : separate ? "separate" : "enhance")\nmodel: \(spec.id)")
         }
     }
 
@@ -535,7 +562,12 @@ struct AudioView: View {
     private func submit() {
         if mode == .edit {
             guard let spec, let editInput, !running, !needsPrompt || !trimmed.isEmpty else { return }
-            editor.edit(input: editInput, prompt: needsPrompt ? trimmed : nil, spec: spec, state: state)
+            if converts {
+                guard let v = customVoices.first(where: { $0.id == convertVoice }) ?? customVoices.first else { return }
+                editor.convert(input: editInput, voice: v, spec: spec, state: state)
+            } else {
+                editor.edit(input: editInput, prompt: needsPrompt ? trimmed : nil, spec: spec, state: state)
+            }
             return
         }
         guard let spec, !running, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -563,6 +595,15 @@ struct AudioView: View {
                 } else {
                     Spacer(minLength: 0)
                 }
+                if converts {
+                    if customVoices.isEmpty {
+                        Text("Clone a voice in Speak first").foregroundStyle(.secondary)
+                    } else {
+                        ChoiceMenu(title: "Voice", selection: Binding(get: { customVoices.contains { $0.id == convertVoice } ? convertVoice : customVoices[0].id },
+                                                                      set: { convertVoice = $0 }),
+                                   options: customVoices.map { ($0.id, $0.name) })
+                    }
+                }
             } else {
                 TextField(mode == .speak ? "Text to speak" : "Describe the sound", text: $text, axis: .vertical)
                     .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
@@ -574,9 +615,10 @@ struct AudioView: View {
             if running {
                 Button("Stop", systemImage: "stop.fill") { if mode == .speak { model.stop() } else { sounds.stop() } }.buttonStyle(.glass)
             } else if mode == .edit {
-                Button(spec.map { SoundService.editTask($0) == .separate } == true ? "Separate" : "Clean Up", systemImage: "wand.and.sparkles", action: submit)
+                Button(converts ? "Convert" : spec.map { SoundService.editTask($0) == .separate } == true ? "Separate" : "Clean Up",
+                       systemImage: converts ? "person.wave.2" : "wand.and.sparkles", action: submit)
                     .buttonStyle(.glassProminent).keyboardShortcut(.return, modifiers: .command)
-                    .disabled(spec == nil || editInput == nil || (needsPrompt && trimmed.isEmpty))
+                    .disabled(spec == nil || editInput == nil || (needsPrompt && trimmed.isEmpty) || (converts && customVoices.isEmpty))
             } else {
                 Button(mode == .speak ? "Speak" : "Generate", systemImage: mode == .speak ? "speaker.wave.2.fill" : "music.note", action: submit)
                 .buttonStyle(.glassProminent)

@@ -67,6 +67,60 @@ final class VoiceCloneE2ETests: XCTestCase {
         }
     }
 
+    /// Chatterbox Turbo re-speaks Samantha's recording in Daniel's cloned voice: same words, and the speaker
+    /// embedding moves from Samantha to Daniel.
+    func testChatterboxConvertsARecordingIntoAClonedVoice() async throws {
+        guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let root = ProcessInfo.processInfo.environment["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
+        let store = ModelStore(root: root)
+        guard await store.downloaded.contains("chatterbox-turbo") else { throw XCTSkip("chatterbox-turbo not downloaded") }
+        let decoder = AudioDecoder(ffmpegURL: try TestSupport.ffmpeg())
+        var settings = Settings()
+        settings.defaultModelID = "parakeet-v3"
+        let queue = JobQueue(store: store, decoder: decoder, settings: SettingsBox(settings))
+        let speech = SpeechService(store: store, models: ModelManager(), transcribe: SpeechService.transcriber(queue))
+        let work = try TestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: work) }
+        func say(_ voice: String, _ text: String) throws -> URL {
+            let url = work.appending(path: "\(voice).aiff")
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+            p.arguments = ["-v", voice, "-o", url.path, text]
+            try p.run(); p.waitUntilExit()
+            return url
+        }
+        let daniel = try say("Daniel", "Good evening. I have been walking along the coast all afternoon, and the weather turned out far better than the forecast suggested.")
+        let samantha = try say("Samantha", "The quick brown fox jumps over the lazy dog by the river.")
+        let voice = try await speech.createVoice(name: "Daniel", sample: daniel)
+        defer { Task { _ = await speech.voices.deleteVoice(voice.id) } }
+
+        let start = Date()
+        let (rate, pcm) = try await speech.convert(model: try XCTUnwrap(Catalog.spec("chatterbox-turbo")), source: samantha, voice: voice.id)
+        var out: [Float] = []
+        for try await f in pcm { out += f }
+        let converted = work.appending(path: "converted.wav")
+        try PCM.wav16(out, rate: rate).write(to: converted)
+
+        let diarizer = DiarizerManager()
+        diarizer.initialize(models: try await DiarizerModels.downloadIfNeeded(to: FileManager.default.temporaryDirectory.appending(path: "synapse-speaker-embedding")))
+        func embedding(_ url: URL) async throws -> [Float] {
+            let dir = work.appending(path: UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let wav = try await decoder.decodeToWAV(.media(url), into: dir)
+            return try diarizer.extractSpeakerEmbedding(from: PCM.floats(fromPCM16LE: try Data(contentsOf: wav).dropFirst(44)))
+        }
+        func cos(_ a: [Float], _ b: [Float]) -> Float {
+            zip(a, b).map(*).reduce(0, +) / (sqrt(a.map { $0 * $0 }.reduce(0, +)) * sqrt(b.map { $0 * $0 }.reduce(0, +)))
+        }
+        let e = try await embedding(converted)
+        let toDaniel = cos(e, try await embedding(daniel)), toSamantha = cos(e, try await embedding(samantha))
+        let heard = await queue.run(JobRequest(input: .media(converted), origin: .api)).transcript?.text ?? ""
+        print(String(format: "[convert] %.1f s for %.1f s of audio; like Daniel %.2f, like Samantha %.2f; heard: %@",
+                     Date().timeIntervalSince(start), Double(out.count) / Double(rate), toDaniel, toSamantha, heard))
+        XCTAssertTrue(heard.lowercased().contains("fox"), heard)
+        XCTAssertGreaterThan(toDaniel, toSamantha)
+    }
+
     /// The mlx-audio models speak a paragraph sentence by sentence: the first sentence arrives well before the end.
     func testMLXAudioModelsStreamSentenceBySentence() async throws {
         guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }

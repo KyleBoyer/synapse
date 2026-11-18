@@ -56,7 +56,7 @@ Noise removal, music stem separation, voice conversion.
 - [x] Enhance: `POST /v1/audio/enhance` with DeepFilterNet 3 (default) and NemotronLabs RE-USE. Verified: steady noise under speech drops 51 dB (DeepFilterNet, 1.2 s) and 45 dB (RE-USE, 6.6 s), words heard back intact (AudioEditE2ETests, and with the official SDK).
 - [x] Separate: `POST /v1/audio/separate` returns named tracks: SAM-Audio small with a `prompt` (`target`, `residual`), DialogueSidon without one (`speaker_1`, `speaker_2`). Verified: SAM-Audio pulls speech out from under a loud tone (19 s); DialogueSidon gives each of two speakers their own track, word for word. Mel-RoFormer left out (no `generate()` in mlx-audio 0.6.6; SAM-Audio with "vocals" covers stems).
 - [x] Pane: Audio → Clean Up (choose or drop a recording; a prompt field appears for SAM-Audio; each track is a playable, saveable clip). Verified in the app with DeepFilterNet.
-- [ ] Voice conversion: wait for a model in mlx-audio or FluidAudio
+- [x] Voice conversion: Chatterbox Turbo's speech tokenizer and S3Gen decoder (what upstream ChatterboxVC does) in the mlx-audio sidecar; `POST /v1/audio/convert` (a recording plus a cloned voice id) and Audio → Clean Up with Chatterbox Turbo and a Voice menu. Verified: Samantha's recording as Daniel's cloned voice in 3.7 s for 3.4 s of audio; speaker similarity to Daniel 0.43, to Samantha 0.10; words heard back; the SDK check passes; app capture.
 
 ## Image → image
 

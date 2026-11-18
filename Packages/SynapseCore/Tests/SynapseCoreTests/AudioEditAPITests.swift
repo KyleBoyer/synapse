@@ -59,6 +59,18 @@ final class AudioEditAPITests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// Conversion needs a cloned voice id and a downloaded converting model.
+    func testConvertNeedsAVoiceAndTheModel() async throws {
+        try await app(downloaded: []).test(.router) { c in
+            try await self.post(c, "/v1/audio/convert", [:]) { r in XCTAssertEqual(r.status, .badRequest) }
+            try await self.post(c, "/v1/audio/convert", ["voice": "voice_x"]) { r in
+                XCTAssertEqual(r.status, .serviceUnavailable)
+                XCTAssertTrue(String(buffer: r.body).contains("not downloaded"))
+            }
+            try await self.post(c, "/v1/audio/convert", ["voice": "voice_x", "model": "no-such-model"]) { r in XCTAssertEqual(r.status, .badRequest) }
+        }
+    }
+
     /// A prompt picks SAM-Audio (target and residual); no prompt picks DialogueSidon (two speakers).
     func testSeparatePicksTheModelByPrompt() async throws {
         try await app(downloaded: ["sam-audio-small", "dialoguesidon"]).test(.router) { c in

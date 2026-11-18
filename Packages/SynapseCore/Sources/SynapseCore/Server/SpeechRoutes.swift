@@ -64,4 +64,40 @@ func addSpeechRoutes(to g: RouterGroup<SynapseContext>, speech: SpeechService) {
         }
         return Response(status: .ok, headers: [.contentType: format.contentType], body: body)
     }
+
+    // Voice conversion (ours): a recording re-spoken in a cloned voice; the words and timing stay.
+    g.post("audio/convert") { req, ctx in
+        let form = try await req.decode(as: ConvertForm.self, context: ctx)
+        guard let voice = nonEmpty(form.voice) else { throw HTTPError(.badRequest, message: "voice is required: the id of a cloned voice (voice_…).") }
+        guard let format = AudioFormat(rawValue: form.response_format ?? "wav") else {
+            throw HTTPError(.badRequest, message: "response_format must be one of \(AudioFormat.allCases.map(\.rawValue).joined(separator: ", ")).")
+        }
+        let id = nonEmpty(form.model) ?? "chatterbox-turbo"
+        guard let model = Catalog.spec(id) else { throw HTTPError(.badRequest, message: ResolveError.unknownModel(id).localizedDescription) }
+        guard await speech.isDownloaded(model.id) else {
+            throw HTTPError(.serviceUnavailable, message: "\(model.displayName) is not downloaded. Download it in Models to convert voices.")
+        }
+        // Collected before answering, so a failure part way is an error status rather than a cut-off file.
+        var samples: [Float] = [], rate = 0
+        do {
+            try await withUpload(form.file) { url in
+                let (r, pcm) = try await speech.convert(model: model, source: url, voice: voice)
+                rate = r
+                for try await frame in pcm { samples += frame }
+            }
+        } catch let e as SpeechError { throw HTTPError(.badRequest, message: e.localizedDescription) }
+        let all = samples
+        var out = Data()
+        for try await chunk in speech.encoder.encode(AsyncThrowingStream { c in c.yield(all); c.finish() }, sampleRate: rate, as: format) {
+            out.append(chunk)
+        }
+        return Response(status: .ok, headers: [.contentType: format.contentType], body: .init(byteBuffer: ByteBuffer(data: out)))
+    }
+}
+
+private struct ConvertForm: Decodable {
+    var file: File
+    var voice: String?
+    var model: String?
+    var response_format: String?
 }

@@ -127,6 +127,46 @@ public actor SpeechService {
         return (engine.sampleRate, pcm)
     }
 
+    public func isDownloaded(_ id: String) async -> Bool { await store.downloaded.contains(id) }
+
+    /// Models that re-speak a recording in another voice.
+    public static let converters: Set<String> = ["chatterbox-turbo"]
+
+    /// `source` (any format ffmpeg reads) re-spoken in the cloned voice `voice` by a model that converts. The words
+    /// and timing come from the recording; only the voice changes.
+    public func convert(model: ModelSpec, source: URL, voice: String) async throws
+        -> (sampleRate: Int, pcm: AsyncThrowingStream<[Float], Error>) {
+        guard Self.converters.contains(model.id) else {
+            throw SpeechError.voice("\(model.displayName) does not convert voices; use chatterbox-turbo.")
+        }
+        guard let ref = await voices.reference(voice) else { throw SpeechError.voice("Unknown voice '\(voice)'. Clone one first.") }
+        let engine = try await tts(model)
+        guard let converter = ((engine as? ClonedVoices)?.base ?? engine) as? any VoiceConverting else {
+            throw SpeechError.voice("\(model.displayName) does not convert voices.")
+        }
+        let dir = FileManager.default.temporaryDirectory.appending(path: "synapse-convert-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // The speech tokenizer reads 16 kHz.
+        let wav: URL
+        do { wav = try await decoder.decodeToWAV(.media(source), into: dir, sampleRate: 16000) } catch {
+            try? FileManager.default.removeItem(at: dir)
+            throw SpeechError.voice("The recording could not be read: \(error.localizedDescription)")
+        }
+        let source = converter.convert(source: wav, reference: ref)
+        let pcm = AsyncThrowingStream<[Float], Error> { c in
+            let task = Task {
+                defer { try? FileManager.default.removeItem(at: dir) }
+                do {
+                    for try await frame in source { c.yield(frame) }
+                    c.finish()
+                } catch { c.finish(throwing: error) }
+                _ = engine
+            }
+            c.onTermination = { _ in task.cancel() }
+        }
+        return (engine.sampleRate, pcm)
+    }
+
     /// A known PocketTTS voice or a cloned voice id, else nil (the engine default; OpenAI names like alloy land here).
     public static func voice(_ requested: String?) -> String? {
         requested.flatMap { pocketVoices.contains($0) || $0.hasPrefix("voice_") ? $0 : nil }

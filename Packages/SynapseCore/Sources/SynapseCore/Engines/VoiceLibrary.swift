@@ -109,6 +109,15 @@ public actor VoiceLibrary {
 }
 
 /// A TTS engine that speaks in the voice of a reference clip.
+/// Speech re-spoken in another voice (Chatterbox's speech tokens and decoder).
+protocol VoiceConverting: Sendable {
+    func convert(source: URL, reference: VoiceReference) -> AsyncThrowingStream<[Float], Error>
+}
+
+extension ModelLease: VoiceConverting where T: VoiceConverting {
+    func convert(source: URL, reference: VoiceReference) -> AsyncThrowingStream<[Float], Error> { value.convert(source: source, reference: reference) }
+}
+
 protocol ReferenceVoiceTTS: RealtimeTTS {
     func synthesize(_ text: String, reference: VoiceReference, speed: Double) -> AsyncThrowingStream<[Float], Error>
 }

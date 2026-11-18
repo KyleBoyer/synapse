@@ -427,6 +427,20 @@ def audio_edit():
         text = heard(base64.b64decode(body["tracks"][names.index("target")]["audio"]))
         check("audio-edit: the target track is the speech", "fox" in text, repr(text))
 
+    # Voice conversion: the recording above, re-spoken in a voice cloned through the SDK (needs chatterbox-turbo).
+    ref = os.path.join(tmp, "daniel.wav")
+    subprocess.run(["say", "-v", "Daniel", "-o", ref, "--data-format=LEI16@24000", "Good evening. I have been walking along the coast "
+                    "all afternoon, and the weather turned out far better than the forecast suggested."], check=True)
+    v = client.audio.voices.create(name="Daniel", audio_sample=open(ref, "rb"), consent="none")
+    try:
+        r = post("convert", wav(voice), voice=v.id, model="chatterbox-turbo")
+        text = heard(r.content) if r.status_code == 200 else r.text[:200]
+        check("audio-edit: convert re-speaks the recording in the cloned voice", r.status_code == 200 and r.content[:4] == b"RIFF" and "fox" in text.lower(),
+              f"{r.status_code} {text!r}")
+    finally:
+        urllib.request.urlopen(urllib.request.Request(f"{HOST}/v1/audio/voices/{v.id}", method="DELETE",
+                                                      headers={"Authorization": f"Bearer {KEY}"}), timeout=30).read()
+
 
 def tools():
     """Function tools on every chat route and input/output type, with the official SDK: text, image, video and audio in,

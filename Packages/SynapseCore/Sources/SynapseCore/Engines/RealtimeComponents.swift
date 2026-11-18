@@ -222,7 +222,7 @@ extension PocketStreamingTTS: ReferenceVoiceTTS {
     }
 }
 
-extension MLXAudioSpeech: RealtimeTTS, ReferenceVoiceTTS {
+extension MLXAudioSpeech: RealtimeTTS, ReferenceVoiceTTS, VoiceConverting {
     /// Without a reference, the model's own voice (Qwen3-TTS Base has none; SpeechService refuses that first).
     func synthesize(_ text: String, voice: String?, speed: Double) -> AsyncThrowingStream<[Float], Error> {
         synthesize(text, reference: nil, speed: speed)

@@ -19,12 +19,21 @@ final class MLXAudioSpeech: @unchecked Sendable {
 
     /// Speech for `text`, in the voice of `reference` when given. Audio streams as the model produces it.
     func synthesize(_ text: String, reference: VoiceReference?, speed: Double) -> AsyncThrowingStream<[Float], Error> {
-        let id = UUID().uuidString
         var req: [String: Any] = ["text": text, "speed": speed]
         if let reference {
             req["ref_audio"] = reference.sample.path
             if let t = reference.transcript { req["ref_text"] = t }
         }
+        return stream(req)
+    }
+
+    /// `source` (a 16 kHz WAV of someone speaking) re-spoken in the voice of `reference`, piece by piece.
+    func convert(source: URL, reference: VoiceReference) -> AsyncThrowingStream<[Float], Error> {
+        stream(["source": source.path, "ref_audio": reference.sample.path])
+    }
+
+    private func stream(_ req: [String: Any]) -> AsyncThrowingStream<[Float], Error> {
+        let id = UUID().uuidString
         let finished = Mutex(false)
         let line: Data
         do { line = try PythonSidecar.line(req, id: id) } catch { return AsyncThrowingStream { $0.finish(throwing: error) } }
@@ -56,7 +65,7 @@ final class MLXAudioSpeech: @unchecked Sendable {
 }
 
 /// The mlx-audio speech sidecar (see PythonSidecar for the protocol). Requests: {"id", "text", "speed", "ref_audio"?:
-/// path, "ref_text"?} or {"cancel": id}. Ready line: {"ready", "sample_rate"}. Replies: {"id", "audio": base64 float32
+/// path, "ref_text"?}, {"id", "source": 16 kHz WAV path, "ref_audio": path} (voice conversion), or {"cancel": id}. Ready line: {"ready", "sample_rate"}. Replies: {"id", "audio": base64 float32
 /// LE} per chunk, then {"id", "done": true}.
 enum MLXAudioSpeechScript {
     static let source = PythonSidecar.prelude + #"""
@@ -93,6 +102,30 @@ def sentences(text):
             out.append(p)
     return out or [text]
 
+def convert(req, rid):
+    """Chatterbox's voice conversion: the source's speech tokens, rendered by S3Gen in the reference's voice (what
+    upstream ChatterboxVC does). Pieces of 20 s keep the tokenizer within its window."""
+    if getattr(model, "_s3tokenizer", None) is None or not hasattr(model, "s3gen"):
+        raise ValueError("This model does not convert voices; use chatterbox-turbo.")
+    from mlx_audio.utils import load_audio
+    from mlx_audio.tts.models.chatterbox_turbo.models.s3gen import S3GEN_SIL
+    from mlx_audio.tts.models.chatterbox_turbo.models.s3tokenizer import log_mel_spectrogram
+    model.prepare_conditionals(req["ref_audio"])
+    wav = np.array(load_audio(req["source"], sample_rate=16000)).reshape(-1)
+    step = 16000 * 20
+    for i in range(0, wav.size, step):
+        piece = wav[i:i + step]
+        if rid in cancelled or piece.size < 1600:
+            break
+        mel = log_mel_spectrogram(mx.array(piece))[None]
+        tokens, _ = model._s3tokenizer(mel, mx.array([mel.shape[2]]))
+        tokens = mx.concatenate([tokens.reshape(-1), mx.array([S3GEN_SIL] * 3, dtype=mx.int32)])[None]
+        out, _ = model.s3gen.inference(speech_tokens=tokens, ref_dict=model._conds.gen, n_cfm_timesteps=2)
+        a = np.array(out, dtype=np.float32).reshape(-1)
+        if a.size:
+            reply({"id": rid, "audio": base64.b64encode(a.astype("<f4").tobytes()).decode()})
+        mx.clear_cache()
+
 requests, cancelled = queue.Queue(), set()
 def read():
     for line in sys.stdin:
@@ -112,6 +145,12 @@ while True:
     req = requests.get()
     rid = req["id"]
     try:
+        if req.get("source"):
+            convert(req, rid)
+            reply({"id": rid, "done": True})
+            cancelled.discard(rid)
+            mx.clear_cache()
+            continue
         kwargs = accepted({"ref_audio": req.get("ref_audio"), "ref_text": req.get("ref_text"),
                            "speed": req.get("speed") if req.get("speed") not in (None, 1, 1.0) else None})
         for sentence in sentences(req["text"]):
