@@ -9,6 +9,7 @@
   <a href="https://github.com/KyleBoyer/synapse/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/KyleBoyer/synapse/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-111?logo=apple">
   <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-M1%20and%20later-111">
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-111"></a>
 </p>
 
 <p align="center">
@@ -382,4 +383,4 @@ Without secrets the app is ad-hoc signed. For Developer ID signing and notarizat
 
 ## License and notices
 
-See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the libraries and model licenses Synapse uses.
+Synapse is licensed under the [Apache License 2.0](LICENSE). The models it downloads keep their own licenses, some of them non-commercial. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the libraries and models Synapse uses and their licenses.
