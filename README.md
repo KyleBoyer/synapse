@@ -1,4 +1,4 @@
-<p align="center"><img src="Synapse/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" alt="Synapse app icon"></p>
+<p align="center"><img src="docs/icon.png" width="128" alt="Synapse app icon"></p>
 
 <h1 align="center">Synapse</h1>
 
