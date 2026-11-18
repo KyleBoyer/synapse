@@ -8,7 +8,12 @@ import Foundation
 public struct EmbeddingInput: Sendable, Equatable {
     public var text: String?
     public var image: Data?
-    public init(text: String? = nil, image: Data? = nil) { self.text = text; self.image = image }
+    /// A video, as JPEG frames sampled evenly through it (Qwen3-VL Embedding only).
+    public var videoFrames: [Data] = []
+    public init(text: String? = nil, image: Data? = nil, videoFrames: [Data] = []) {
+        self.text = text; self.image = image; self.videoFrames = videoFrames
+    }
+    var hasMedia: Bool { image != nil || !videoFrames.isEmpty }
     public static func text(_ s: String) -> EmbeddingInput { EmbeddingInput(text: s) }
 }
 
@@ -50,6 +55,7 @@ public actor EmbeddingService {
     /// and text together as one input; SigLIP2 takes one or the other.
     public static let imageModels: Set<String> = ["qwen3-vl-embedding-2b", "siglip2-so400m"]
     public static func takesImages(_ spec: ModelSpec) -> Bool { imageModels.contains(spec.id) }
+    public static func takesVideo(_ spec: ModelSpec) -> Bool { spec.id == "qwen3-vl-embedding-2b" }
 
     private let store: ModelStore
     private let backend: any EmbeddingBackend
@@ -64,10 +70,11 @@ public actor EmbeddingService {
 
     /// With `images`, nil or an alias picks the smallest downloaded image model. (`embed` refuses images for an
     /// explicitly named text model.)
-    public func resolveEmbedding(_ requested: String?, images: Bool = false) async throws -> ModelSpec {
+    public func resolveEmbedding(_ requested: String?, images: Bool = false, video: Bool = false) async throws -> ModelSpec {
         let named = requested.map { !Self.embeddingAliases.contains($0) } ?? false
-        return try await resolve(requested, kind: images ? "image embedding" : "embedding", aliases: Self.embeddingAliases) {
-            $0.isEmbedding && (named || !images || Self.takesImages($0))
+        let kind = video ? "video embedding" : images ? "image embedding" : "embedding"
+        return try await resolve(requested, kind: kind, aliases: Self.embeddingAliases) {
+            $0.isEmbedding && (named || ((!images || Self.takesImages($0)) && (!video || Self.takesVideo($0))))
         }
     }
 
@@ -96,9 +103,15 @@ public actor EmbeddingService {
 
     public func embed(model spec: ModelSpec, inputs: [EmbeddingInput], dimensions: Int? = nil) async throws -> EmbeddingResult {
         guard !inputs.isEmpty else { throw EmbeddingError.badInput("input must not be empty.") }
-        guard inputs.allSatisfy({ $0.text != nil || $0.image != nil }) else { throw EmbeddingError.badInput("Each input needs text or an image.") }
-        if inputs.contains(where: { $0.image != nil }), !Self.takesImages(spec) {
+        guard inputs.allSatisfy({ $0.text != nil || $0.hasMedia }) else { throw EmbeddingError.badInput("Each input needs text, an image or a video.") }
+        if inputs.contains(where: \.hasMedia), !Self.takesImages(spec) {
             throw EmbeddingError.badInput("\(spec.id) embeds text only; for images use qwen3-vl-embedding-2b or siglip2-so400m.")
+        }
+        if inputs.contains(where: { !$0.videoFrames.isEmpty }) {
+            guard Self.takesVideo(spec) else { throw EmbeddingError.badInput("\(spec.id) does not take video; use qwen3-vl-embedding-2b.") }
+            guard !inputs.contains(where: { $0.image != nil && !$0.videoFrames.isEmpty }) else {
+                throw EmbeddingError.badInput("An input takes an image or a video, not both.")
+            }
         }
         guard inputs.count <= Self.maxInputs else { throw EmbeddingError.badInput("At most \(Self.maxInputs) inputs per request.") }
         if let d = dimensions, d < 1 { throw EmbeddingError.badInput("dimensions must be at least 1.") }

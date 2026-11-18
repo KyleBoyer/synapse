@@ -20,6 +20,10 @@ public enum EngineKind: String, Codable, Sendable {
     case gguf
     /// Text-to-speech models that clone voices, run by a managed mlx-audio sidecar; `variant` is the Hugging Face repo id.
     case mlxspeech
+    /// Audio-to-audio models run by mlx-audio: noise removal and source separation; `variant` is the Hugging Face repo id.
+    case audioedit
+    /// Core ML image models run through Vision (depth); `files` names the `.mlpackage` to fetch.
+    case coreml
 }
 
 public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
@@ -53,6 +57,8 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public var isReranker: Bool { engine == .reranker }
     public var isVideoGen: Bool { engine == .videogen }
     public var isAudioGen: Bool { engine == .audiogen }
+    public var isAudioEdit: Bool { engine == .audioedit }
+    public var isDepth: Bool { engine == .coreml }
     /// Models behind `POST /v1/audio/speech`.
     public var isTTS: Bool { SpeechService.preference.contains(id) }
     public var isImage: Bool { engine == .flux2 || engine == .zimage || engine == .mflux }

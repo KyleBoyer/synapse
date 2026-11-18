@@ -113,6 +113,10 @@ print(m.content[0].text)
 | `POST /v1/images/generations` | OpenAI Images: `prompt`, `size`, `n`, `stream` (partial-image SSE). Models: `flux2-klein-4b`, `z-image-turbo`, `qwen-image-2.1-q4`. |
 | `POST /v1/images/edits` | multipart `image` + `prompt` (FLUX.2 klein). |
 | `POST /v1/responses` with `tools: [{"type": "image_generation"}]` | the chat model writes the prompt and the image model draws it. |
+| `POST /v1/images/cutout` | Synapse's own: multipart `image`, `output` (`cutout`, the subject on a transparent background, or `mask`, white where the subject is). Uses macOS Vision's built-in subject lifting; nothing to download. Answers in the images response shape (`data[0].b64_json`, PNG). |
+| `POST /v1/images/depth` | Synapse's own: multipart `image`, `model`. A grayscale PNG the size of the input, near is white (relative depth, stretched to the image's range). Model: `depth-anything-v2-small` (Core ML, 50 MB); about 0.2 s per image once loaded. |
+
+The Images pane has the same three: Generate, Cut Out and Depth.
 
 ### Video in chat
 
@@ -129,7 +133,7 @@ Qwen3.5 models and the omni models (except Gemma 3n) read video. Send a `video_u
 | `chatterbox-turbo` | 0.63 | English. Fastest of the three; fetches its speech tokenizer from Hugging Face on first use. 2 GB. |
 | `pocket-tts` | 0.54 | The default voice engine; streams from the first sentence. Also used by Live voice calls. |
 
-\*Cosine similarity of speaker embeddings between the reference and the clone (1.0 is the same recording; a different speaker scores about 0.1), measured by `VoiceCloneE2ETests`. The mlx-audio models run in a sidecar that keeps the model loaded; their first request also loads it.
+\*Cosine similarity of speaker embeddings between the reference and the clone (1.0 is the same recording; a different speaker scores about 0.1), measured by `VoiceCloneE2ETests`. The mlx-audio models run in a sidecar that keeps the model loaded (their first request also loads it) and speak a long input sentence by sentence, so the first sentence plays while the rest is made.
 
 ```python
 voice = c.audio.voices.create(name="Kyle", audio_sample=open("sample.wav", "rb"), consent="none")  # the SDK requires the field
@@ -143,7 +147,9 @@ c.audio.speech.create(model="qwen3-tts-1.7b", voice={"id": voice.id}, input="Hel
 | `POST /v1/audio/voices` | OpenAI custom voices: multipart `name`, `audio_sample` (up to 10 MiB, any format ffmpeg reads). `consent` is accepted and ignored; `transcript` (Synapse's addition) replaces the automatic transcription. The first 10 seconds are kept; 5 to 10 seconds of one person speaking works best. Returns `{"id": "voice_…", "object": "audio.voice"}`; speak with `voice: {"id": "voice_…"}` and any model that clones. `DELETE /v1/audio/voices/{id}` removes it, and `GET /v1/audio/voices` (Synapse's addition) lists them. Voices from a text prompt are refused. |
 | `POST /v1/audio/generations` | Synapse's own: `prompt`, `seconds` (1 to 120, default 8), `seed`, `response_format` (`wav` default keeps stereo; other formats are mono). Models: `stable-audio-3-small-sfx`, `stable-audio-3-small-music`. |
 | `POST /v1/embeddings` | OpenAI embeddings: `input` (text or a list of texts, up to 256), `encoding_format` (`float` or `base64`, the SDK default), `dimensions`. `text-embedding-3-small`, `-3-large` and `ada-002` mean the default model. Token-array input returns 400; in LangChain set `check_embedding_ctx_length=False`. |
-| `POST /v1/embeddings` with images | `input` items may be `{"image": …}` (a data URL, an http(s) URL or bare base64), `{"text": …}`, or both in one item (Jina's multimodal shape; the official OpenAI SDK passes them through). `qwen3-vl-embedding-2b` (2048 dimensions) puts text, images and image+text pairs in one space; `siglip2-so400m` (1152) embeds text or an image. A request with an image picks an image model by default; text models refuse images. Token usage is reported as 0 for these models. |
+| `POST /v1/embeddings` with images or video | `input` items may be `{"image": …}` (a data URL, an http(s) URL or bare base64), `{"text": …}`, or both in one item (Jina's multimodal shape; the official OpenAI SDK passes them through). `qwen3-vl-embedding-2b` (2048 dimensions) puts text, images and image+text pairs in one space; `siglip2-so400m` (1152) embeds text or an image. `{"video": …}` (Synapse's addition: an MP4 or MOV data URL or http(s) URL, optionally with `text`) is embedded by `qwen3-vl-embedding-2b` from 8 frames spread through the clip. A request with an image picks an image model by default, and one with a video picks Qwen3-VL; text models refuse both. |
+| `POST /v1/audio/enhance` | Synapse's own: multipart `file` (any format ffmpeg reads), `model`, `response_format` (`wav` default). Returns the recording with background noise removed, at 48 kHz mono. Models: `deepfilternet-3` (30 MB, the default), `nemotron-reuse`. |
+| `POST /v1/audio/separate` | Synapse's own: multipart `file`, `model`, `prompt`, `response_format`. Returns `{"model", "tracks": [{"name", "format", "seconds", "audio": base64}]}`. With a `prompt` (what to pull out: "speech", "dog barking", "vocals") the default is `sam-audio-small`, giving `target` and `residual`; without one it is `dialoguesidon`, giving `speaker_1` and `speaker_2` from a two-person recording. Input is mixed to mono. |
 | `POST /v1/rerank` | Cohere and Jina shape: `query`, `documents` (strings or `{"text"}`), `top_n`, `return_documents`. Model: `qwen3-reranker-0.6b`. |
 
 ```python
@@ -154,6 +160,8 @@ v = c.embeddings.create(model="text-embedding-3-small", input=["Paris is the cap
 ```bash
 curl -s localhost:9000/v1/audio/generations -H 'Content-Type: application/json' \
   -d '{"prompt":"rain on a tin roof","seconds":5}' -o rain.wav
+curl -s localhost:9000/v1/audio/enhance -F file=@noisy.m4a -o clean.wav
+curl -s localhost:9000/v1/audio/separate -F file=@street.m4a -F prompt=speech | jq -r '.tracks[0].name' 
 ```
 
 ### Video generation

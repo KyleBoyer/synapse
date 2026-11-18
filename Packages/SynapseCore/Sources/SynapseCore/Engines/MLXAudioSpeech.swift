@@ -60,7 +60,7 @@ final class MLXAudioSpeech: @unchecked Sendable {
 /// LE} per chunk, then {"id", "done": true}.
 enum MLXAudioSpeechScript {
     static let source = PythonSidecar.prelude + #"""
-import base64, inspect, queue
+import base64, inspect, queue, re
 
 try:
     from pathlib import Path
@@ -79,6 +79,19 @@ open_kwargs = any(p.kind == p.VAR_KEYWORD for p in params.values())
 def accepted(kwargs):
     # Models take different options; pass only what this one's generate() declares.
     return {k: v for k, v in kwargs.items() if v is not None and (open_kwargs or k in params)}
+
+def sentences(text):
+    # One generate() per sentence, so the first sentence plays while the rest is made; VoxCPM2 and Qwen3-TTS would
+    # otherwise return a paragraph as one piece. Fragments under 24 characters join the next sentence.
+    out = []
+    for p in (p.strip() for p in re.split(r"(?<=[.!?。！？])\s+|\n+", text)):
+        if not p:
+            continue
+        if out and len(out[-1]) < 24:
+            out[-1] += " " + p
+        else:
+            out.append(p)
+    return out or [text]
 
 requests, cancelled = queue.Queue(), set()
 def read():
@@ -101,14 +114,17 @@ while True:
     try:
         kwargs = accepted({"ref_audio": req.get("ref_audio"), "ref_text": req.get("ref_text"),
                            "speed": req.get("speed") if req.get("speed") not in (None, 1, 1.0) else None})
-        for r in model.generate(text=req["text"], **kwargs):
+        for sentence in sentences(req["text"]):
+            for r in model.generate(text=sentence, **kwargs):
+                if rid in cancelled:
+                    break
+                a = np.array(r.audio, dtype=np.float32).reshape(-1)
+                if int(getattr(r, "sample_rate", rate)) != rate:
+                    raise RuntimeError(f"model changed sample rate to {r.sample_rate}")
+                if a.size:
+                    reply({"id": rid, "audio": base64.b64encode(a.astype("<f4").tobytes()).decode()})
             if rid in cancelled:
                 break
-            a = np.array(r.audio, dtype=np.float32).reshape(-1)
-            if int(getattr(r, "sample_rate", rate)) != rate:
-                raise RuntimeError(f"model changed sample rate to {r.sample_rate}")
-            if a.size:
-                reply({"id": rid, "audio": base64.b64encode(a.astype("<f4").tobytes()).decode()})
         reply({"id": rid, "done": True})
     except Exception as e:
         traceback.print_exc()

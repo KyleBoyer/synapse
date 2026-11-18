@@ -16,7 +16,7 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [x] More models: voices are model-independent now (the clip and its transcript are kept; PocketTTS derives its conditioning on first use). Added Qwen3-TTS 1.7B, VoxCPM2 and Chatterbox Turbo through an mlx-audio sidecar. Verified through Synapse with one cloned voice: similarity Qwen3-TTS 0.85, VoxCPM2 0.80, Chatterbox Turbo 0.63, PocketTTS 0.54; each heard back word for word. Tried and left out: LuxTTS (0.61, slower than realtime) and StyleTTS2 (crashed in FluidAudio's synthesizer).
 - [x] Consent dropped: voices need no consent (the consent routes stay for OpenAI clients that call them); the app's permission box is gone.
 - [x] Record a sample with the microphone in the clone sheet: Record captures up to 10 s (24 kHz WAV) and stops on its own or with Stop. Verified in the app: a 10.0 s recording became the sample and enabled Clone Voice.
-- [ ] Stream the mlx-audio models sentence by sentence (today audio arrives per generated segment)
+- [x] Stream the mlx-audio models sentence by sentence: the sidecar splits the text and generates per sentence. Verified (warm): VoxCPM2 first audio at 4.1 s of 11.1 s, Chatterbox Turbo at 0.9 s of 2.7 s, three chunks each (VoiceCloneE2ETests).
 - [x] Live voice calls with more models: realtime sessions choose the recognizer (`audio.input.transcription.model`: Parakeet EOU streaming, or Whisper / Parakeet v3 per turn through `TurnTranscriber`) and the speech model (`audio.output.model`: any TTS model, stock or cloned voices); Live has a menu for each. Verified: a French call through Parakeet v3 → Qwen3.5 0.8B → VoxCPM2, heard back word for word (VoiceCallModelsE2ETests); RealtimeTests cover the session choices; the OpenAI Realtime SDK check passes.
 
 ## Tool calls everywhere (done)
@@ -33,8 +33,8 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 
 Both full-duplex families take session tools. VoiceChat calls them itself on its function channel; PersonaPlex has no tool head, so a small chat model (`session.tools_model`) decides calls from the transcript and its answer is forced into PersonaPlex's inner monologue, which the model then speaks in its own voice. `response.create` is a no-op in these calls (the model decides when to talk).
 
-- [ ] VoiceChat: session tools into its system prompt, the function channel's JSON as `function_call` events, `function_call_output` back through `injectFunctionResponse`. Built; RealtimeTests cover the session flow. The int8 build (12 GB) stalled on 16 GB: 88 minutes paging at 5% CPU without finishing one exchange. Added the upstream int5 build (`voicechat-11b-int5`, 8.6 GB) to verify here; int8 is for the Mac Studio.
-- [ ] PersonaPlex: tool calls with the personaplex-tool-calling approach (a side model decides calls from the running transcript; the result is forced into the inner monologue so the model speaks it itself). Built; verified on the real model that a forced sentence is spoken in its voice ("It is eighteen degrees with light rain in Paris", heard back by Whisper); RealtimeTests cover the session flow. Still to run: the WebSocket check with a real tools model.
+- [x] VoiceChat: session tools go into its tool-calling system prompt; its function channel becomes `function_call` items and `function_call_output` goes back through `injectFunctionResponse`. Verified with the official Realtime SDK (`verify-openai-realtime.py --duplex-only`): `voicechat-11b-int5` calls get_weather for Paris on its own and says "In Paris right now, it is eighteen degrees with light rain". The int8 build stalls on 16 GB (88 minutes paging without finishing one exchange); int5 (8.6 GB, added) runs at about 4.4× slower than real time here, so int8 is for the Mac Studio.
+- [x] PersonaPlex: a tools model (`session.tools_model`, Qwen3.5 2B verified) reads each finished user turn with a decide-only instruction and calls the tool; after the result it writes one sentence, which is forced into PersonaPlex's inner monologue so PersonaPlex says it in its own voice. Verified with the official Realtime SDK: get_weather for Paris, then "The weather in Paris right now is 18…" spoken by PersonaPlex. Given the call's voice-assistant instructions instead, Qwen3.5 2B answered the question itself, hence the decision instruction.
 
 ## Image (+text) embeddings (done)
 
@@ -45,22 +45,27 @@ Image and text in one vector space, for image search and image-to-text matching.
 - [x] API: `/v1/embeddings` takes `{"image"}` / `{"text"}` items (Jina's shape); images pick an image model by default; text models refuse them. Verified with the official OpenAI SDK (`verify-modalities.py --only image-embeddings`).
 - [x] App: Embed pane takes image documents (add or drop) and an image query; image rows show thumbnails; the reranker is skipped for images with a note; SigLIP2's text/image scale gap is explained when results mix both.
 - [x] Verify: EmbeddingE2ETests through Synapse. Qwen3-VL: zebra→"a zebra" 0.48 vs "a penguin" 0.08; penguin→"a penguin" 0.37 vs 0.13; image+text item nearer its image (0.77 vs 0.25). SigLIP2: 0.16 vs 0.05 and 0.15 vs 0.04. App capture: "a striped animal" ranks the zebra first and the penguin last.
-- [ ] Video inputs for Qwen3-VL Embedding (the model takes them; Synapse sends text and images only)
-- [ ] Token counts for the image models (usage is 0 today)
+- [x] Video inputs for Qwen3-VL Embedding: `{"video": …}` items (MP4/MOV data or http URL) are embedded from 8 evenly spaced frames (mlx-embeddings 0.1.0 turns Qwen3-VL's own video processor off). Verified: zebra.mp4 → "a zebra" 0.63, "a penguin" 0.18, with the official SDK too.
+- [x] Token counts for the image models: Qwen3-VL from its attention mask, SigLIP2 from its tokenizer plus 729 patches per image. Verified: usage 585 / 1184 tokens in EmbeddingE2ETests and through the SDK.
 
 ## Audio → audio
 
 Noise removal, music stem separation, voice conversion.
 
-- [ ] Research models (enhancement, source separation, voice conversion)
-- [ ] API shape and pane
+- [x] Research: mlx-audio 0.6.6 (already Synapse's speech runtime) has speech enhancement (DeepFilterNet 30 MB, NemotronLabs RE-USE 40 MB, MossFormer2 SE 48 kHz 570 MB), text-prompted source separation (SAM-Audio small 2.4 GB / base 5 GB / large 12 GB), vocal/instrumental stems (Mel-RoFormer), and two-speaker separation with restoration (DialogueSidon, 0.9 GB bf16). No voice conversion model in this release.
+- [x] Enhance: `POST /v1/audio/enhance` with DeepFilterNet 3 (default) and NemotronLabs RE-USE. Verified: steady noise under speech drops 51 dB (DeepFilterNet, 1.2 s) and 45 dB (RE-USE, 6.6 s), words heard back intact (AudioEditE2ETests, and with the official SDK).
+- [x] Separate: `POST /v1/audio/separate` returns named tracks: SAM-Audio small with a `prompt` (`target`, `residual`), DialogueSidon without one (`speaker_1`, `speaker_2`). Verified: SAM-Audio pulls speech out from under a loud tone (19 s); DialogueSidon gives each of two speakers their own track, word for word. Mel-RoFormer left out (no `generate()` in mlx-audio 0.6.6; SAM-Audio with "vocals" covers stems).
+- [x] Pane: Audio → Clean Up (choose or drop a recording; a prompt field appears for SAM-Audio; each track is a playable, saveable clip). Verified in the app with DeepFilterNet.
+- [ ] Voice conversion: wait for a model in mlx-audio or FluidAudio
 
 ## Image → image
 
 Upscaling, background removal, segmentation, depth.
 
-- [ ] Research models
-- [ ] API shape and pane
+- [x] Research: background removal and subject masks are built into macOS Vision (`VNGenerateForegroundInstanceMaskRequest`, no download); depth from Apple's Core ML Depth Anything V2 small (`apple/coreml-depth-anything-v2-small`); BRIA RMBG 2.0 is non-commercial. No Core ML or MLX Real-ESRGAN is published; upscaling would need a conversion or a diffusion upscaler (Qwen-Image-Edit LoRAs, heavy).
+- [x] Background removal and subject masks (Vision): `POST /v1/images/cutout` and Images → Cut Out. Verified: the zebra lifted in 0.43 s on a transparent background (48% coverage), mask at input size; SDK check passes.
+- [x] Depth maps (Depth Anything V2 small, Core ML, 50 MB): `POST /v1/images/depth` and Images → Depth. Verified: the zebra is near (0.52) and the sky far (0.01), 0.2 s per image warm; app capture in light mode.
+- [ ] Upscaling: pick an approach
 
 ## Video → video
 

@@ -26,15 +26,56 @@ func addSoundRoutes(to g: RouterGroup<SynapseContext>, sound: SoundService) {
         let spec: ModelSpec
         do { spec = try await sound.resolve(nonEmpty(p.model)) } catch { throw HTTPError(.badRequest, message: error.localizedDescription) }
         let clip = try await sound.generate(model: spec, prompt: prompt, seconds: seconds, seed: p.seed)
-        // WAV keeps the generator's stereo file; other formats go through the encoder, which takes mono.
-        // shortcut: non-WAV formats are mono mixes; pass stereo through AudioEncoder if clients want stereo MP3.
-        if format == .wav {
-            return Response(status: .ok, headers: [.contentType: format.contentType], body: .init(byteBuffer: ByteBuffer(data: clip.wav)))
+        return Response(status: .ok, headers: [.contentType: format.contentType],
+                        body: .init(byteBuffer: ByteBuffer(data: try await sound.encoded(clip, as: format))))
+    }
+
+    // Audio to audio (ours): a recording in, the cleaned recording out.
+    g.post("audio/enhance") { req, ctx in
+        let (form, format) = try await editForm(req, ctx)
+        let tracks = try await runEdit(sound, form, task: .enhance)
+        return Response(status: .ok, headers: [.contentType: format.contentType],
+                        body: .init(byteBuffer: ByteBuffer(data: try await sound.encoded(tracks.1[0].clip, as: format))))
+    }
+
+    // A recording in, named tracks out as base64 (several files do not fit one audio response).
+    g.post("audio/separate") { req, ctx in
+        let (form, format) = try await editForm(req, ctx)
+        let (spec, tracks) = try await runEdit(sound, form, task: .separate)
+        var out: [SeparatedTrack] = []
+        for t in tracks {
+            out.append(SeparatedTrack(name: t.name, format: format.rawValue, seconds: (t.clip.seconds * 100).rounded() / 100,
+                                      audio: try await sound.encoded(t.clip, as: format).base64EncodedString()))
         }
-        let mono = clip.mono
-        let pcm = AsyncThrowingStream<[Float], Error> { c in c.yield(mono); c.finish() }
-        var out = Data()
-        for try await chunk in sound.encoder.encode(pcm, sampleRate: clip.sampleRate, as: format) { out.append(chunk) }
-        return Response(status: .ok, headers: [.contentType: format.contentType], body: .init(byteBuffer: ByteBuffer(data: out)))
+        return json(SeparationResponse(model: spec.id, tracks: out))
+    }
+}
+
+private struct SeparatedTrack: Encodable { var name, format: String; var seconds: Double; var audio: String }
+private struct SeparationResponse: Encodable { var model: String; var tracks: [SeparatedTrack] }
+
+private struct AudioEditForm: Decodable {
+    var file: File
+    var model: String?
+    var prompt: String?
+    var response_format: String?
+}
+
+private func editForm(_ req: Request, _ ctx: SynapseContext) async throws -> (AudioEditForm, AudioFormat) {
+    let form = try await req.decode(as: AudioEditForm.self, context: ctx)
+    guard let format = AudioFormat(rawValue: form.response_format ?? "wav") else {
+        throw HTTPError(.badRequest, message: "response_format must be one of \(AudioFormat.allCases.map(\.rawValue).joined(separator: ", ")).")
+    }
+    return (form, format)
+}
+
+private func runEdit(_ sound: SoundService, _ form: AudioEditForm, task: AudioEditTask) async throws -> (ModelSpec, [AudioTrack]) {
+    let prompt = nonEmpty(form.prompt)
+    do {
+        let spec = try await sound.resolveEdit(nonEmpty(form.model), task: task, prompt: prompt)
+        return (spec, try await withUpload(form.file) { try await sound.edit(model: spec, input: $0, prompt: prompt) })
+    } catch let e as SoundError {
+        if case .noEditModel = e { throw HTTPError(.serviceUnavailable, message: e.localizedDescription) }
+        throw HTTPError(.badRequest, message: e.localizedDescription)
     }
 }

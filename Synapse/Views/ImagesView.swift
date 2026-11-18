@@ -24,6 +24,8 @@ struct ImagesView: View {
     }
     private static let sizes = ["1024x1024", "1024x768", "768x1024", "1536x1024", "1024x1536", "512x512"]
 
+    enum Mode: String, CaseIterable { case generate = "Generate", cutout = "Cut Out", depth = "Depth" }
+    @State private var mode = Mode.generate
     @State private var modelID = ""
     @State private var prompt = ""
     @State private var negative = ""
@@ -50,7 +52,9 @@ struct ImagesView: View {
     var body: some View {
         let specs = state.downloadedImageSpecs
         Group {
-            if specs.isEmpty {
+            if mode != .generate {
+                ImageToolsView(tool: mode == .depth ? .depth : .cutout).id(mode)
+            } else if specs.isEmpty {
                 ContentUnavailableView("No image models", systemImage: "photo.on.rectangle.angled",
                                        description: Text("Download FLUX.2 klein, Z-Image Turbo or Qwen-Image in Models."))
             } else {
@@ -68,11 +72,18 @@ struct ImagesView: View {
                 .safeAreaInset(edge: .bottom) { promptBar.padding([.horizontal, .bottom], 16) }
             }
         }
-        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.images) { modelID = s.id } }
+        .onChange(of: state.tryRequest, initial: true) {
+            guard let s = state.takeTry(.images) else { return }
+            if s.isDepth { mode = .depth } else { mode = .generate; modelID = s.id }
+        }
         .navigationTitle("Images")
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Mode", selection: $mode) { ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden().disabled(running)
+            }
             ToolbarItemGroup {
-                if !specs.isEmpty {
+                if mode == .generate, !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                         .id(modelID)   // the toolbar measures the menu once; a new identity re-measures it for the chosen name
                 }
@@ -84,7 +95,9 @@ struct ImagesView: View {
         }
         .onChange(of: running) { state.setActive(.images, running) }
         #if DEBUG
-        // `-autoImagePrompt "..."` (with `-imageModel <id>`) generates once after launch, for captures.
+        // `-imageMode "Cut Out"|Depth` opens a tool mode; `-autoImagePrompt "..."` (with `-imageModel <id>`) generates once
+        // after launch, for captures.
+        .task { if let m = UserDefaults.standard.string(forKey: "imageMode").flatMap(Mode.init(rawValue:)) { mode = m } }
         .task(id: modelID) {
             guard let p = UserDefaults.standard.string(forKey: "autoImagePrompt"), !p.isEmpty, history.isEmpty, !running, !modelID.isEmpty else { return }
             if let m = UserDefaults.standard.string(forKey: "imageModel"), m != modelID, specs.contains(where: { $0.id == m }) { modelID = m; return }

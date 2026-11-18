@@ -7,7 +7,7 @@ public enum ImageEngines {
         case .flux2: return try await Flux2ImageEngine(spec: spec, folder: folder)
         case .zimage: return try await ZImageEngine(spec: spec, folder: folder)
         case .mflux: return try await MFluxImageEngine(spec: spec, folder: folder)
-        case .whisper, .parakeet, .mlx, .speech, .duplex, .embedding, .reranker, .videogen, .audiogen, .mlxvlm, .gguf, .mlxspeech: throw ResolveError.wrongKind(spec.id)
+        case .whisper, .parakeet, .mlx, .speech, .duplex, .embedding, .reranker, .videogen, .audiogen, .mlxvlm, .gguf, .mlxspeech, .audioedit, .coreml: throw ResolveError.wrongKind(spec.id)
         }
     }
 }

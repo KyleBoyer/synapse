@@ -9,7 +9,7 @@ public enum HFDownloader {
         let files = try JSONDecoder().decode([Entry].self, from: data).filter {
             // Named files are taken whatever their type (a GGUF quantization); otherwise the model-file filter applies.
             $0.type == "file" && (only.isEmpty ? wanted($0.path, exclude: exclude) : only.contains(where: $0.path.hasPrefix)
-                && (wanted($0.path, exclude: exclude) || $0.path.hasSuffix(".gguf")))
+                && (wanted($0.path, exclude: exclude) || $0.path.hasSuffix(".gguf") || $0.path.contains(".mlpackage/")))
         }
         // A whole model needs weights; a few borrowed folders (a tokenizer) need not have any.
         guard !only.isEmpty || files.contains(where: { $0.path.hasSuffix(".safetensors") }) else {

@@ -67,6 +67,34 @@ final class VoiceCloneE2ETests: XCTestCase {
         }
     }
 
+    /// The mlx-audio models speak a paragraph sentence by sentence: the first sentence arrives well before the end.
+    func testMLXAudioModelsStreamSentenceBySentence() async throws {
+        guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let root = ProcessInfo.processInfo.environment["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot
+        let store = ModelStore(root: root)
+        let speech = SpeechService(store: store, models: ModelManager())
+        let text = "The quick brown fox jumps over the lazy dog. It ran down to the river before noon. Then it slept in the warm sun all afternoon."
+        // Qwen3-TTS speaks only cloned voices; the other two have a default voice.
+        let ids = ["voxcpm2", "chatterbox-turbo"].filter(await store.downloaded.contains)
+        XCTAssertFalse(ids.isEmpty)
+        for id in ids {
+            // Warm: the first request also starts the sidecar and loads the model.
+            for try await _ in try await speech.synthesize(model: try XCTUnwrap(Catalog.spec(id)), text: "Hello.", voice: nil, speed: 1).pcm {}
+            let start = Date()
+            let (rate, pcm) = try await speech.synthesize(model: try XCTUnwrap(Catalog.spec(id)), text: text, voice: nil, speed: 1)
+            var chunks = 0, samples = 0, first = 0.0
+            for try await c in pcm where !c.isEmpty {
+                if chunks == 0 { first = Date().timeIntervalSince(start) }
+                chunks += 1; samples += c.count
+            }
+            let total = Date().timeIntervalSince(start)
+            print(String(format: "[stream] %@: %d chunks, first audio %.1f s of %.1f s, %.1f s of audio", id, chunks, first, total,
+                         Double(samples) / Double(rate)))
+            XCTAssertGreaterThanOrEqual(chunks, 3, id)
+            XCTAssertLessThan(first, total * 0.6, id)
+        }
+    }
+
     func testClonedVoiceSoundsLikeTheReferenceAndSaysTheText() async throws {
         guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
         let root = ProcessInfo.processInfo.environment["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot

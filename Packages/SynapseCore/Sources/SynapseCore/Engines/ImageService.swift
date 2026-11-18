@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import Vision
 
 public struct ImageRequest: Sendable, Equatable {
     public var prompt: String
@@ -76,6 +77,35 @@ public actor ImageService {
 
     public init(store: ModelStore, models: ModelManager, engineFactory: @escaping EngineFactory) {
         self.store = store; self.models = models; self.engineFactory = engineFactory
+    }
+
+    // MARK: Image to image without generation
+
+    /// The subject cut out (or its mask), by macOS Vision; no model to download.
+    public nonisolated func cutout(_ image: Data, output: ImageTools.Cutout) async throws -> Data {
+        try await Task.detached { try ImageTools.cutout(image, output: output) }.value
+    }
+
+    private var depthModel: (id: String, model: VNCoreMLModel)?
+
+    /// A depth map the size of the input (near is white). nil picks the downloaded depth model.
+    public func depth(_ image: Data, model requested: String?) async throws -> (ModelSpec, Data) {
+        let downloaded = await store.downloaded
+        let spec: ModelSpec
+        if let id = requested, !id.isEmpty {
+            guard let s = Catalog.spec(id), s.isDepth else { throw ResolveError.wrongKind(id) }
+            guard downloaded.contains(id) else { throw ResolveError.notDownloaded(id) }
+            spec = s
+        } else {
+            guard let s = Catalog.all.first(where: { $0.isDepth && downloaded.contains($0.id) }) else { throw ImageToolError.noDepthModel }
+            spec = s
+        }
+        if depthModel?.id != spec.id {
+            guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+            depthModel = (spec.id, try ImageTools.loadDepthModel(folder: folder))
+        }
+        let model = depthModel!.model
+        return (spec, try await Task.detached { try ImageTools.depth(image, model: model) }.value)
     }
 
     /// nil picks the smallest downloaded image model that can do the job.

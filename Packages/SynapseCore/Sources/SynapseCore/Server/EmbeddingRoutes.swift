@@ -65,7 +65,8 @@ func addEmbeddingRoutes(to g: RouterGroup<SynapseContext>, embeddings: Embedding
             throw HTTPError(.badRequest, message: "encoding_format must be float or base64.")
         }
         do {
-            let spec = try await embeddings.resolveEmbedding(body.model, images: inputs.contains { $0.image != nil })
+            let spec = try await embeddings.resolveEmbedding(body.model, images: inputs.contains(where: \.hasMedia),
+                                                             video: inputs.contains { !$0.videoFrames.isEmpty })
             let r = try await embeddings.embed(model: spec, inputs: inputs, dimensions: body.dimensions)
             let items = r.vectors.enumerated().map { i, v in
                 EmbeddingWire.Item(index: i, embedding: format == "base64" ? .base64(base64Floats(v)) : .floats(v))
@@ -106,10 +107,11 @@ func addEmbeddingRoutes(to g: RouterGroup<SynapseContext>, embeddings: Embedding
 }
 
 /// Strings, or objects with `text`, `image`, or both (Jina's multimodal shape; the pair is one input, embedded as one
-/// vector by models that take it). `image` is a data URL, an http(s) URL, or bare base64. Token-id arrays (what
+/// vector by models that take it). `image` is a data URL, an http(s) URL, or bare base64. `video` (ours) is an MP4 or
+/// MOV data URL or http(s) URL; it is embedded from 8 frames spread through it. Token-id arrays (what
 /// LangChain sends by default) are refused with how to turn them off.
 func embeddingInputs(_ v: JSONValue) async throws -> [EmbeddingInput] {
-    let shape = "input must be a string, or an array of strings and {\"text\"} / {\"image\"} objects."
+    let shape = "input must be a string, or an array of strings and {\"text\"} / {\"image\"} / {\"video\"} objects."
     if let s = v.string { return [.text(s)] }
     guard let items = v.array else { throw HTTPError(.badRequest, message: shape) }
     var out: [EmbeddingInput] = []
@@ -118,11 +120,17 @@ func embeddingInputs(_ v: JSONValue) async throws -> [EmbeddingInput] {
         if item.number != nil || item.array != nil {
             throw HTTPError(.badRequest, message: "Token-array input is not supported; send text. In LangChain set check_embedding_ctx_length=False.")
         }
-        let text = item["text"]?.string, image = item["image"]?.string
-        guard text != nil || image != nil else { throw HTTPError(.badRequest, message: shape) }
+        let text = item["text"]?.string, image = item["image"]?.string, video = item["video"]?.string
+        guard text != nil || image != nil || video != nil else { throw HTTPError(.badRequest, message: shape) }
         var bytes: Data?
         if let image { bytes = try await embeddingImage(image) }
-        out.append(EmbeddingInput(text: text, image: bytes))
+        var frames: [Data] = []
+        if let video {
+            let file = try await MediaFiles.loadVideo(video)
+            defer { try? FileManager.default.removeItem(at: file) }
+            frames = try await VideoFile.frames(of: file, count: 8)
+        }
+        out.append(EmbeddingInput(text: text, image: bytes, videoFrames: frames))
     }
     return out
 }

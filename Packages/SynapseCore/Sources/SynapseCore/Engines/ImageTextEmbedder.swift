@@ -28,27 +28,38 @@ enum ImageTextEmbedder {
                 try image.write(to: f)
                 item["image"] = f.path
             }
+            if !input.videoFrames.isEmpty {
+                // shortcut: mlx-embeddings 0.1.0 turns Qwen3-VL's video processor off, so a video goes in as its frames
+                // (several images in one input); send real video when a release enables it.
+                var paths: [String] = []
+                for (j, frame) in input.videoFrames.enumerated() {
+                    let f = dir.appending(path: "\(i)-\(j).jpg")
+                    try frame.write(to: f)
+                    paths.append(f.path)
+                }
+                item["image"] = paths
+            }
             items.append(item)
         }
         let id = UUID().uuidString
         let line = try PythonSidecar.line(["items": items], id: id)
-        let vectors = Mutex<[[Float]]>([])
+        let vectors = Mutex<[[Float]]>([]), tokens = Mutex(0)
         await GPUGate.shared.acquire()
         let gpu = GateRelease()
         defer { gpu() }
         try await lease.value.exchange(line, id: id) { r in
             guard let b = r["vectors"] as? String, let d = Data(base64Encoded: b), let dims = r["dims"] as? Int, dims > 0 else { return }
+            tokens.withLock { $0 = r["tokens"] as? Int ?? 0 }
             let flat = d.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
             vectors.withLock { v in v = stride(from: 0, to: flat.count, by: dims).map { Array(flat[$0..<min($0 + dims, flat.count)]) } }
         }
         let out = vectors.withLock { $0 }
         guard out.count == inputs.count else { throw EmbeddingError.badInput("The model returned \(out.count) vectors for \(inputs.count) inputs.") }
-        // shortcut: mlx-embeddings does not report token counts, so usage is 0; count with the processor if a client needs it.
-        return EmbeddingResult(vectors: out, promptTokens: 0)
+        return EmbeddingResult(vectors: out, promptTokens: tokens.withLock { $0 })
     }
 
-    /// Request: {"id", "items": [{"text"?, "image"?: path}]}. Ready: {"ready", "kind"}. Reply: {"id", "dims",
-    /// "vectors": base64 float32 LE, unit length, row per item, "done": true}.
+    /// Request: {"id", "items": [{"text"?, "image"?: path or [paths] (video frames, Qwen3-VL)}]}. Ready: {"ready", "kind"}. Reply: {"id", "dims",
+    /// "vectors": base64 float32 LE, unit length, row per item, "tokens", "done": true}.
     static let script = PythonSidecar.prelude + #"""
 import base64, tempfile
 try:
@@ -57,7 +68,8 @@ try:
     import mlx.core as mx
     from mlx_embeddings import load, generate
     model, proc = load(sys.argv[1])
-    kind = json.load(open(Path(sys.argv[1]) / "config.json")).get("model_type")
+    config = json.load(open(Path(sys.argv[1]) / "config.json"))
+    kind = config.get("model_type")
 except Exception as e:
     traceback.print_exc()
     reply({"fatal": f"Could not load the embedding model: {e}"})
@@ -76,10 +88,21 @@ def blank_image():
 def unit(v):
     return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-12)
 
+def siglip_tokens(items):
+    # mlx-embeddings reports no usage: text tokens from the tokenizer, plus one per image patch.
+    tok = getattr(proc, "tokenizer", proc)
+    vision = config.get("vision_config", {})
+    patches = (vision.get("image_size", 384) // vision.get("patch_size", 16)) ** 2
+    return sum(len(tok(it["text"])["input_ids"]) if "image" not in it else patches for it in items)
+
 def embed(items):
+    """Vectors (row per item) and the prompt tokens they took."""
     if kind == "qwen3_vl":
         rows = [{k: v for k, v in it.items() if k in ("text", "image")} for it in items]
-        return np.array(model.process(rows, proc), dtype=np.float32)
+        # model.embed() without discarding the inputs, so the attention mask gives the token count.
+        inputs = proc.prepare_embedding_inputs(rows)
+        out = model(**inputs).text_embeds
+        return np.array(out, dtype=np.float32), int(np.array(inputs["attention_mask"]).sum())
     if any("text" in it and "image" in it for it in items):
         raise ValueError("SigLIP2 embeds text or an image, not both as one input; use qwen3-vl-embedding-2b for that.")
     texts = [it["text"] for it in items if "image" not in it]
@@ -92,7 +115,7 @@ def embed(items):
             rows.append(iv[i]); i += 1
         else:
             rows.append(tv[t]); t += 1
-    return np.stack(rows)
+    return np.stack(rows), siglip_tokens(items)
 
 reply({"ready": True, "kind": kind})
 for line in sys.stdin:
@@ -103,8 +126,10 @@ for line in sys.stdin:
     rid = req.get("id")
     try:
         items = req["items"]
-        vecs = unit(embed(items).reshape(len(items), -1))
-        reply({"id": rid, "dims": int(vecs.shape[1]), "vectors": base64.b64encode(vecs.astype("<f4").tobytes()).decode(), "done": True})
+        vecs, tokens = embed(items)
+        vecs = unit(vecs.reshape(len(items), -1))
+        reply({"id": rid, "dims": int(vecs.shape[1]), "vectors": base64.b64encode(vecs.astype("<f4").tobytes()).decode(),
+               "tokens": int(tokens), "done": True})
     except Exception as e:
         traceback.print_exc()
         reply({"id": rid, "error": str(e)})

@@ -5,13 +5,14 @@ import NIOCore
 import XCTest
 @testable import SynapseCore
 
-/// Vectors derived from the input so routes can be checked without a model: [count of "a", count of "b", 1, image bytes].
+/// Vectors derived from the input so routes can be checked without a model: [count of "a", count of "b", 1, image bytes
+/// or video frames].
 private struct FakeEmbeddingBackend: EmbeddingBackend {
     func embed(_ spec: ModelSpec, folder: URL, inputs: [EmbeddingInput]) async throws -> EmbeddingResult {
         let vectors = inputs.map { i in
             let t = i.text ?? ""
             return EmbeddingService.normalized([Float(t.filter { $0 == "a" }.count), Float(t.filter { $0 == "b" }.count), 1,
-                                                Float(i.image?.count ?? 0)])
+                                                Float(i.image?.count ?? i.videoFrames.count)])
         }
         return EmbeddingResult(vectors: vectors, promptTokens: inputs.reduce(0) { $0 + ($1.text?.count ?? 0) })
     }
@@ -112,6 +113,24 @@ final class EmbeddingAPITests: XCTestCase, @unchecked Sendable {
         }
         try await makeApp().test(.router) { c in
             try await self.post(c, "/v1/embeddings", #"{"input":[{"image":"\#(png)"}]}"#) { r, _ in XCTAssertEqual(r.status, .serviceUnavailable) }
+        }
+    }
+
+    /// A video becomes 8 frames and picks the one model that takes video; SigLIP2 refuses it.
+    func testVideoInputsBecomeFramesForQwen3VL() async throws {
+        let mp4 = try Data(contentsOf: TestSupport.fixture("zebra.mp4")).base64EncodedString()
+        try await makeApp(downloaded: ["siglip2-so400m", "qwen3-vl-embedding-2b"]).test(.router) { c in
+            try await self.post(c, "/v1/embeddings", #"{"input":[{"video":"data:video/mp4;base64,\#(mp4)","text":"a"}]}"#) { r, o in
+                XCTAssertEqual(r.status, .ok, "\(o)")
+                XCTAssertEqual(o["model"] as? String, "qwen3-vl-embedding-2b")
+                let data = o["data"] as? [[String: Any]] ?? []
+                XCTAssertEqual(self.floats(data.first?["embedding"]), EmbeddingService.normalized([1, 0, 1, 8]))
+            }
+            try await self.post(c, "/v1/embeddings", #"{"model":"siglip2-so400m","input":[{"video":"data:video/mp4;base64,\#(mp4)"}]}"#) { r, o in
+                XCTAssertEqual(r.status, .badRequest)
+                XCTAssertTrue("\(o)".contains("does not take video"))
+            }
+            try await self.post(c, "/v1/embeddings", #"{"input":[{"video":"data:image/png;base64,AAAA"}]}"#) { r, _ in XCTAssertEqual(r.status, .badRequest) }
         }
     }
 

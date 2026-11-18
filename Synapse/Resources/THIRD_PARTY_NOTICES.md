@@ -71,3 +71,8 @@ Models are downloaded by the user at runtime and are not part of the app bundle.
 - **LFM3 Omni 2B** (Liquid AI), LFM Open License v1.0. https://huggingface.co/LiquidAI/LFM3-Omni-2B
 - **MiniCPM-o 4.5**, Apache License 2.0. https://huggingface.co/openbmb/MiniCPM-o-4_5
 - **Qwen3-Omni 30B-A3B** (MLX conversion by mlx-community), Apache License 2.0. https://huggingface.co/Qwen
+- **DeepFilterNet 3** (MLX conversion by mlx-community), MIT License. https://github.com/Rikorose/DeepFilterNet
+- **NVIDIA NemotronLabs RE-USE**, OpenMDW License 1.1. https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE
+- **DialogueSidon** (MLX conversion by mlx-community), Creative Commons Attribution-NonCommercial 4.0 (CC-BY-NC-4.0). https://huggingface.co/mlx-community/DialogueSidon-bf16
+- **SAM-Audio small** (Meta, MLX conversion by mlx-community), SAM License; it loads Google's T5-base text encoder (Apache License 2.0) on first use. https://huggingface.co/facebook/sam-audio-small
+- **Depth Anything V2 small** (Core ML conversion by Apple), Apache License 2.0. https://huggingface.co/apple/coreml-depth-anything-v2-small

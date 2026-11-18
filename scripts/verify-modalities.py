@@ -360,6 +360,72 @@ def image_embeddings():
     check("image-embeddings: an image picks an image model by default", r.model in ("qwen3-vl-embedding-2b", "siglip2-so400m"), r.model)
     both = client.embeddings.create(model="qwen3-vl-embedding-2b", input=[{"image": data_url("zebra.jpg", "image/jpeg"), "text": "a zebra"}])
     check("image-embeddings: an image and its text as one input", len(both.data) == 1 and len(both.data[0].embedding) == 2048)
+    check("image-embeddings: usage counts the prompt tokens", both.usage.prompt_tokens > 0, f"{both.usage}")
+    r = client.embeddings.create(model="text-embedding-3-small", input=[{"video": data_url("zebra.mp4", "video/mp4")}, "a zebra", "a penguin"])
+    v = np.array([d.embedding for d in r.data])
+    check("image-embeddings: a video picks Qwen3-VL and lands nearest its caption", r.model == "qwen3-vl-embedding-2b" and v[0] @ v[1] > v[0] @ v[2],
+          f"{r.model}, zebra {v[0] @ v[1]:.2f}, penguin {v[0] @ v[2]:.2f}")
+
+
+def audio_edit():
+    """Noise removal and separation (needs deepfilternet-3 and sam-audio-small, plus a transcription model)."""
+    import base64, io, json, os, subprocess, tempfile, urllib.error, urllib.request, wave
+    import numpy as np
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    tmp = tempfile.mkdtemp()
+    aiff = os.path.join(tmp, "say.wav")
+    subprocess.run(["say", "-v", "Samantha", "-o", aiff, "--data-format=LEI16@48000",
+                    "The quick brown fox jumps over the lazy dog by the river."], check=True)
+    with wave.open(aiff) as w:
+        voice = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32) / 32768
+    voice = np.concatenate([np.zeros(48000, np.float32), voice])
+    def wav(x):
+        b = io.BytesIO()
+        with wave.open(b, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000)
+            w.writeframes((np.clip(x, -1, 1) * 32767).astype("<i2").tobytes())
+        return b.getvalue()
+    def heard(data):
+        return client.audio.transcriptions.create(model="whisper-1", file=("a.wav", data)).text.lower()
+    class Reply:
+        def __init__(self, status, ctype, content):
+            self.status_code, self.headers, self.content = status, {"content-type": ctype}, content
+            self.text = content.decode(errors="replace")
+        def json(self):
+            return json.loads(self.content)
+    def post(path, data, **fields):
+        parts = [f'--XyZ\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields.items()]
+        parts.append(b'--XyZ\r\nContent-Disposition: form-data; name="file"; filename="in.wav"\r\nContent-Type: audio/wav\r\n\r\n' + data + b"\r\n--XyZ--\r\n")
+        req = urllib.request.Request(f"{HOST}/v1/audio/{path}", data=b"".join(parts), method="POST",
+                                     headers={"Authorization": f"Bearer {KEY}", "Content-Type": "multipart/form-data; boundary=XyZ"})
+        try:
+            with urllib.request.urlopen(req, timeout=900) as r:
+                return Reply(r.status, r.headers.get("Content-Type"), r.read())
+        except urllib.error.HTTPError as e:
+            return Reply(e.code, e.headers.get("Content-Type"), e.read())
+
+    noisy = wav(voice + np.random.default_rng(0).uniform(-0.08, 0.08, voice.size).astype(np.float32))
+    r = post("enhance", noisy)
+    ok = r.status_code == 200 and r.content[:4] == b"RIFF"
+    check("audio-edit: enhance returns a WAV", ok, f"{r.status_code} {r.headers.get('content-type')}")
+    if ok:
+        with wave.open(io.BytesIO(r.content)) as w:
+            out = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32) / 32768
+        lead_in, lead_out = np.sqrt(np.mean(voice[:38000] ** 2 + 0.08 ** 2 / 3)), np.sqrt(np.mean(out[:38000] ** 2))
+        text = heard(r.content)
+        check("audio-edit: enhance removes the noise and keeps the words", lead_out < lead_in / 4 and "fox" in text,
+              f"lead-in rms {lead_in:.4f} -> {lead_out:.4f}; {text!r}")
+
+    mix = wav(voice + 0.3 * np.sin(2 * np.pi * 220 * np.arange(voice.size) / 48000).astype(np.float32))
+    r = post("separate", mix, prompt="speech")
+    body = r.json() if r.status_code == 200 else {}
+    names = [t["name"] for t in body.get("tracks", [])]
+    check("audio-edit: separate with a prompt gives target and residual", names == ["residual", "target"], f"{r.status_code} {body.get('model')} {names or r.text[:200]}")
+    if "target" in names:
+        text = heard(base64.b64decode(body["tracks"][names.index("target")]["audio"]))
+        check("audio-edit: the target track is the speech", "fox" in text, repr(text))
 
 
 def tools():
@@ -467,7 +533,34 @@ def tools():
               and "paris" in call.function.arguments.lower(), f"{r.choices[0].message}")
 
 
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools}
+def image_tools():
+    """Cut-outs (macOS Vision, nothing to download) and depth maps (needs depth-anything-v2-small)."""
+    import base64, io, json, os, urllib.error, urllib.request
+    from PIL import Image
+
+    zebra = open(os.path.join(os.path.dirname(__file__), "..", "Packages", "SynapseCore", "Tests", "SynapseCoreTests", "Fixtures", "zebra.jpg"), "rb").read()
+    def post(path, **fields):
+        parts = [f'--XyZ\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields.items()]
+        parts.append(b'--XyZ\r\nContent-Disposition: form-data; name="image"; filename="zebra.jpg"\r\nContent-Type: image/jpeg\r\n\r\n' + zebra + b"\r\n--XyZ--\r\n")
+        req = urllib.request.Request(f"{HOST}/v1/images/{path}", data=b"".join(parts), method="POST",
+                                     headers={"Authorization": f"Bearer {KEY}", "Content-Type": "multipart/form-data; boundary=XyZ"})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            body = json.loads(r.read())
+        return body, Image.open(io.BytesIO(base64.b64decode(body["data"][0]["b64_json"])))
+    body, cut = post("cutout")
+    alpha = cut.getchannel("A") if cut.mode == "RGBA" else None
+    covered = sum(alpha.histogram()[128:]) / (cut.width * cut.height) if alpha else 0
+    check("image-tools: cutout is a transparent PNG with the subject kept", body["background"] == "transparent" and 0.1 < covered < 0.9,
+          f"{cut.mode} {cut.size}, subject covers {covered:.0%}")
+    _, mask = post("cutout", output="mask")
+    check("image-tools: mask is grayscale at the input size", mask.mode == "L" and mask.size == (448, 448), f"{mask.mode} {mask.size}")
+    _, depth = post("depth")
+    top_right, middle = depth.crop((400, 0, 448, 48)), depth.crop((150, 200, 250, 300))
+    near, far = sum(middle.getdata()) / (100 * 100), sum(top_right.getdata()) / (48 * 48)
+    check("image-tools: depth puts the zebra in front of the sky", depth.mode == "L" and near > far + 50, f"zebra {near:.0f}, sky {far:.0f}")
+
+
+SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

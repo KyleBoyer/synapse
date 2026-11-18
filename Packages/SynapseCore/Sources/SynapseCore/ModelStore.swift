@@ -108,7 +108,7 @@ public actor ModelStore {
 
     private static func partialFolder(_ spec: ModelSpec, root: URL) -> URL {
         switch spec.engine {
-        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .videogen, .audiogen, .mlxvlm, .mlxspeech: return mlxFolder(spec, root: root)
+        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .videogen, .audiogen, .mlxvlm, .mlxspeech, .audioedit, .coreml: return mlxFolder(spec, root: root)
         case .gguf: return root.appending(path: "gguf/\(spec.variant)", directoryHint: .isDirectory)
         case .speech: return SpeechModels.folder(spec, root: root)
         case .duplex: return DuplexModels.folder(spec, root: root)
@@ -130,6 +130,10 @@ public actor ModelStore {
             return try await SpeechModels.download(spec, root: root, progress: progress)
         case .duplex:
             return try await DuplexModels.download(spec, root: root, token: token, progress: progress)
+        case .coreml:
+            // Core ML repos publish one package per precision; only the named one is fetched.
+            return try await HFDownloader.download(repo: spec.variant, to: partialFolder(spec, root: root), only: spec.files ?? [],
+                                                   token: token, progress: progress)
         case .gguf:
             // A GGUF repo holds many quantizations; only the chosen file (and any vision projector) is fetched.
             guard let files = spec.files, !files.isEmpty else { throw ResolveError.wrongKind(spec.id) }
@@ -137,7 +141,7 @@ public actor ModelStore {
                                                    token: token, progress: progress)
         case .videogen:
             return try await VideoEngines.download(spec, to: mlxFolder(spec, root: root), root: root, token: token, progress: progress)
-        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .audiogen, .mlxvlm, .mlxspeech:
+        case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .audiogen, .mlxvlm, .mlxspeech, .audioedit:
             // FLUX also publishes a duplicate monolithic transformer beside its diffusers components.
             let exclude = spec.engine == .flux2 ? ["flux-2-klein-4b.safetensors", "flux-2-klein-9b.safetensors"] : []
             if spec.id == "flux2-klein-9b" {

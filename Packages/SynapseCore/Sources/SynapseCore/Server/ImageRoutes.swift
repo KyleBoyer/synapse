@@ -1,3 +1,4 @@
+import CoreImage
 import Foundation
 import HTTPTypes
 import Hummingbird
@@ -64,6 +65,12 @@ private struct ImagesResponse: Encodable {
     var output_format: String, size: String, quality: String
     var background = "opaque"
     var usage = ImageUsage()
+}
+
+private func toolResponse(_ png: Data, background: String) -> ImagesResponse {
+    let size = CIImage(data: png).map { "\(Int($0.extent.width))x\(Int($0.extent.height))" } ?? "auto"
+    return ImagesResponse(created: Int(Date().timeIntervalSince1970), data: [ImageItem(b64_json: png.base64EncodedString())],
+                          output_format: "png", size: size, quality: "auto", background: background)
 }
 
 private struct ImageEvent: Encodable {
@@ -155,6 +162,27 @@ func addImageRoutes(to g: RouterGroup<SynapseContext>, images: ImageService, fil
         guard !inputs.isEmpty else { throw badRequest("image is required.") }
         return try await runImages(ImageParams(form: fields), images: images, cache: cache, req: req, ctx: ctx,
                                    inputs: inputs, mask: files.first { $0.name == "mask" }?.data, edit: true)
+    }
+    // Image to image without generation (Synapse's own): multipart `image`; the result in the images response shape.
+    g.post("images/cutout") { req, ctx in
+        let (fields, files) = try await parseMultipart(req, ctx)
+        guard let image = files.first?.data else { throw badRequest("image is required.") }
+        guard let output = ImageTools.Cutout(rawValue: fields["output"] ?? "cutout") else { throw badRequest("output must be cutout or mask.") }
+        do {
+            let png = try await images.cutout(image, output: output)
+            return json(toolResponse(png, background: output == .cutout ? "transparent" : "opaque"))
+        } catch let e as ImageToolError { throw badRequest(e.localizedDescription) }
+    }
+    g.post("images/depth") { req, ctx in
+        let (fields, files) = try await parseMultipart(req, ctx)
+        guard let image = files.first?.data else { throw badRequest("image is required.") }
+        do {
+            let (_, png) = try await images.depth(image, model: nonEmpty(fields["model"]))
+            return json(toolResponse(png, background: "opaque"))
+        } catch ImageToolError.noDepthModel {
+            throw HTTPError(.serviceUnavailable, message: ImageToolError.noDepthModel.localizedDescription)
+        } catch let e as ImageToolError { throw badRequest(e.localizedDescription) }
+        catch let e as ResolveError { throw badRequest(e.localizedDescription) }
     }
     g.get("images/files/:name") { _, ctx in
         guard let name = ctx.parameters.get("name"), let f = await cache.get(name) else {

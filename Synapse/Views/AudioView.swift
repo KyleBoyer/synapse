@@ -187,6 +187,26 @@ final class ComposeModel {
         }
     }
 
+    /// Clean Up mode: a recording through a noise-removal or separation model; each output track becomes a clip.
+    func edit(input: URL, prompt: String?, spec: ModelSpec, state: AppState) {
+        let sound = state.sound
+        error = nil; running = true; elapsed = nil; started = Date()
+        task = Task {
+            defer { running = false }
+            do {
+                let tracks = try await sound.edit(model: spec, input: input, prompt: prompt)
+                elapsed = Date().timeIntervalSince(started ?? Date())
+                let what = prompt ?? (SoundService.editTask(spec) == .enhance ? "noise removed" : "separated")
+                for t in tracks.reversed() {
+                    let title = t.name == "audio" ? input.lastPathComponent : "\(input.lastPathComponent): \(t.name.replacingOccurrences(of: "_", with: " "))"
+                    clips.insert(SpeakModel.Clip(text: title,
+                                                 model: spec.id, voice: what, samples: t.clip.mono, rate: t.clip.sampleRate, wav: t.clip.wav), at: 0)
+                }
+            } catch is CancellationError {
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
     func stop() { task?.cancel(); player.stop(); playing = nil }
 
     func toggle(_ clip: SpeakModel.Clip) {
@@ -199,7 +219,7 @@ final class ComposeModel {
 
 struct AudioView: View {
     @Environment(AppState.self) private var state
-    enum Mode: String, CaseIterable { case speak = "Speak", compose = "Compose" }
+    enum Mode: String, CaseIterable { case speak = "Speak", compose = "Compose", edit = "Clean Up" }
 
     @State private var mode = Mode.speak
     @State private var modelID = ""
@@ -211,20 +231,33 @@ struct AudioView: View {
     @State private var text = ""
     @State private var model = SpeakModel()
     @State private var composer = ComposeModel()
+    @State private var editor = ComposeModel()
+    @State private var editModelID = ""
+    @State private var editInput: URL?
     @State private var length = 8.0
     @State private var randomSeed = true
     @State private var seed = "0"
 
-    private var specs: [ModelSpec] { mode == .speak ? state.downloadedTTSSpecs : state.downloadedSoundSpecs }
-    private var selection: Binding<String> { mode == .speak ? $modelID : $soundModelID }
+    private var specs: [ModelSpec] {
+        switch mode { case .speak: state.downloadedTTSSpecs; case .compose: state.downloadedSoundSpecs; case .edit: state.downloadedEditSpecs }
+    }
+    private var selection: Binding<String> {
+        switch mode { case .speak: $modelID; case .compose: $soundModelID; case .edit: $editModelID }
+    }
     private var spec: ModelSpec? { Catalog.spec(selection.wrappedValue) }
-    private var running: Bool { mode == .speak ? model.running : composer.running }
+    /// Compose and Clean Up share one clip model shape; each mode keeps its own clips.
+    private var sounds: ComposeModel { mode == .edit ? editor : composer }
+    private var running: Bool { mode == .speak ? model.running : sounds.running }
+    private var needsPrompt: Bool { mode == .edit && spec.map(SoundService.needsPrompt) == true }
 
     var body: some View {
         Group {
             if specs.isEmpty {
                 if mode == .speak {
                     ContentUnavailableView("No speech models", systemImage: "speaker.wave.2", description: Text("Download PocketTTS in Models."))
+                } else if mode == .edit {
+                    ContentUnavailableView("No cleanup models", systemImage: "waveform.badge.magnifyingglass",
+                                           description: Text("Download DeepFilterNet 3 to remove noise, or SAM-Audio small to pull one sound out of a recording, in Models."))
                 } else {
                     ContentUnavailableView("No sound models", systemImage: "music.note",
                                            description: Text("Download Stable Audio 3 SFX or Music in Models."))
@@ -238,7 +271,7 @@ struct AudioView: View {
                                 if mode == .speak {
                                     readout(spec)
                                     if SpeechService.support(spec.id).clones { voicesPanel }
-                                } else { composeReadout(spec); composePanel }
+                                } else if mode == .edit { editReadout(spec) } else { composeReadout(spec); composePanel }
                             }
                             .padding(16).frame(maxWidth: .infinity)
                         }
@@ -249,7 +282,15 @@ struct AudioView: View {
                 .safeAreaInset(edge: .bottom) { bar.padding([.horizontal, .bottom], 16) }
             }
         }
-        .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.audio) { if s.isAudioGen { mode = .compose; soundModelID = s.id } else { mode = .speak; modelID = s.id } } }
+        .onChange(of: state.tryRequest, initial: true) {
+            guard let s = state.takeTry(.audio) else { return }
+            if s.isAudioGen { mode = .compose; soundModelID = s.id } else if s.isAudioEdit { mode = .edit; editModelID = s.id } else { mode = .speak; modelID = s.id }
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard mode == .edit else { return false }
+            _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in editInput = url } } }
+            return true
+        }
         .navigationTitle("Audio")
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -288,6 +329,9 @@ struct AudioView: View {
         .onChange(of: state.downloadedSoundSpecs.map(\.id), initial: true) { _, ids in
             if !ids.contains(soundModelID) { soundModelID = ids.first ?? "" }
         }
+        .onChange(of: state.downloadedEditSpecs.map(\.id), initial: true) { _, ids in
+            if !ids.contains(editModelID) { editModelID = ids.first ?? "" }
+        }
         .onChange(of: running) { state.setActive(.audio, running) }
         // Keep the voice valid for the chosen model (a cloned voice survives a switch between cloning models).
         .onChange(of: voiceOptions.map(\.0), initial: true) { _, ids in
@@ -310,6 +354,15 @@ struct AudioView: View {
                   let s = state.downloadedSoundSpecs.first else { return }
             mode = .compose; soundModelID = s.id; text = t
             composer.generate(prompt: t, spec: s, seconds: 3, seed: nil, state: state)
+        }
+        // `-autoEdit <path>` runs Clean Up on that file (with `-autoEditModel <id>` and `-autoEditPrompt "..."`).
+        .task(id: state.downloadedEditSpecs.first?.id) {
+            guard let path = UserDefaults.standard.string(forKey: "autoEdit"), editor.clips.isEmpty, !editor.running,
+                  let s = UserDefaults.standard.string(forKey: "autoEditModel").flatMap(Catalog.spec) ?? state.downloadedEditSpecs.first,
+                  state.downloadedEditSpecs.contains(s) else { return }
+            mode = .edit; editModelID = s.id; editInput = URL(fileURLWithPath: path)
+            text = UserDefaults.standard.string(forKey: "autoEditPrompt") ?? ""
+            submit()
         }
         #endif
     }
@@ -356,6 +409,26 @@ struct AudioView: View {
                 history: state.metrics.history(spec.id, .soundSpeed), historyMetric: .soundSpeed,
                 running: c.running,
                 api: "POST /v1/audio/generations\nmodel: \(spec.id)")
+        }
+    }
+
+    private func editReadout(_ spec: ModelSpec) -> some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { ctx in
+            let c = editor, last = c.clips.first
+            let wall = c.running ? c.started.map { ctx.date.timeIntervalSince($0) } : c.elapsed
+            let separate = SoundService.editTask(spec) == .separate
+            BurnIn(
+                name: spec.displayName, modelID: spec.id,
+                readings: [
+                    Reading(label: "Status", value: c.running ? (separate ? "separating" : "cleaning") : "idle", live: c.running),
+                    Reading(label: "Elapsed", value: wall.map { String(format: "%.1f s", $0) } ?? "–", live: c.running),
+                    Reading(label: "Audio length", value: last.map { String(format: "%.1f s", $0.seconds) } ?? "–"),
+                    Reading(label: "Sample rate", value: last.map { String(format: "%.1f kHz", Double($0.rate) / 1000) } ?? "–"),
+                    Reading(label: "Memory", value: spec.recommendedRAMGB.map { "\($0) GB needed" } ?? "small"),
+                ],
+                history: [], historyMetric: nil,
+                running: c.running,
+                api: "POST /v1/audio/\(separate ? "separate" : "enhance")\nmodel: \(spec.id)")
         }
     }
 
@@ -421,9 +494,9 @@ struct AudioView: View {
 
     @ViewBuilder private var clipList: some View {
         let speak = mode == .speak
-        let clips = speak ? model.clips : composer.clips
-        let playing = speak ? model.playing : composer.playing
-        let error = speak ? model.error : composer.error
+        let clips = speak ? model.clips : sounds.clips
+        let playing = speak ? model.playing : sounds.playing
+        let error = speak ? model.error : sounds.error
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
@@ -432,7 +505,9 @@ struct AudioView: View {
                         Text("\(spec.displayName) speaks only in cloned voices. Clone one with Clone Voice… to start.")
                             .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                     } else {
-                        Text(speak ? "Type something below and press Return." : "Describe a sound or a piece of music and press Return.")
+                        Text(speak ? "Type something below and press Return."
+                             : mode == .edit ? "Choose or drop a recording, then press Clean Up."
+                             : "Describe a sound or a piece of music and press Return.")
                             .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                     }
                 }
@@ -445,7 +520,7 @@ struct AudioView: View {
                         }
                         Spacer(minLength: 12)
                         Button(playing == clip.id ? "Stop" : "Play", systemImage: playing == clip.id ? "stop.fill" : "play.fill") {
-                            if speak { model.toggle(clip) } else { composer.toggle(clip) }
+                            if speak { model.toggle(clip) } else { sounds.toggle(clip) }
                         }
                         Button("Save…", systemImage: "square.and.arrow.down") { save(clip) }
                     }
@@ -458,6 +533,11 @@ struct AudioView: View {
     }
 
     private func submit() {
+        if mode == .edit {
+            guard let spec, let editInput, !running, !needsPrompt || !trimmed.isEmpty else { return }
+            editor.edit(input: editInput, prompt: needsPrompt ? trimmed : nil, spec: spec, state: state)
+            return
+        }
         guard let spec, !running, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         if mode == .speak {
             guard voiceOptions.contains(where: { $0.0 == voice }) else { return }
@@ -468,16 +548,35 @@ struct AudioView: View {
         text = ""
     }
 
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     private var bar: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField(mode == .speak ? "Text to speak" : "Describe the sound", text: $text, axis: .vertical)
-                .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
-                .onSubmit(submit).composerKeys()
+            if mode == .edit {
+                Button(editInput == nil ? "Choose Recording…" : "Change…", systemImage: "waveform") { chooseRecording() }.buttonStyle(.glass)
+                if let editInput {
+                    Text(editInput.lastPathComponent).lineLimit(1).truncationMode(.middle).font(.title3)
+                }
+                if needsPrompt {
+                    TextField("Sound to keep, like speech or dog barking", text: $text).textFieldStyle(.plain).font(.title3)
+                        .onSubmit(submit)
+                } else {
+                    Spacer(minLength: 0)
+                }
+            } else {
+                TextField(mode == .speak ? "Text to speak" : "Describe the sound", text: $text, axis: .vertical)
+                    .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
+                    .onSubmit(submit).composerKeys()
+            }
             if mode == .speak, voiceOptions.count > 1 {
                 ChoiceMenu(title: "Voice", selection: $voice, options: voiceOptions)
             }
             if running {
-                Button("Stop", systemImage: "stop.fill") { if mode == .speak { model.stop() } else { composer.stop() } }.buttonStyle(.glass)
+                Button("Stop", systemImage: "stop.fill") { if mode == .speak { model.stop() } else { sounds.stop() } }.buttonStyle(.glass)
+            } else if mode == .edit {
+                Button(spec.map { SoundService.editTask($0) == .separate } == true ? "Separate" : "Clean Up", systemImage: "wand.and.sparkles", action: submit)
+                    .buttonStyle(.glassProminent).keyboardShortcut(.return, modifiers: .command)
+                    .disabled(spec == nil || editInput == nil || (needsPrompt && trimmed.isEmpty))
             } else {
                 Button(mode == .speak ? "Speak" : "Generate", systemImage: mode == .speak ? "speaker.wave.2.fill" : "music.note", action: submit)
                 .buttonStyle(.glassProminent)
@@ -488,13 +587,19 @@ struct AudioView: View {
         .glassBar()
     }
 
+    private func chooseRecording() {
+        let p = NSOpenPanel()
+        p.allowedContentTypes = [.audio, .movie]
+        if p.runModal() == .OK, let url = p.url { editInput = url }
+    }
+
     private func save(_ clip: SpeakModel.Clip) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.wav]
         panel.nameFieldStringValue = mode == .speak ? "speech.wav" : "sound.wav"
         if panel.runModal() == .OK, let url = panel.url {
             do { try SpeakModel.writeWAV(clip, to: url) } catch {
-                if mode == .speak { model.error = error.localizedDescription } else { composer.error = error.localizedDescription }
+                if mode == .speak { model.error = error.localizedDescription } else { sounds.error = error.localizedDescription }
             }
         }
     }

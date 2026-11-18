@@ -143,6 +143,8 @@ final class AppState {
     var downloadedEmbeddingSpecs: [ModelSpec] { readySpecs.filter(\.isEmbedding) }
     var downloadedRerankerSpecs: [ModelSpec] { readySpecs.filter(\.isReranker) }
     var downloadedVideoSpecs: [ModelSpec] { readySpecs.filter(\.isVideoGen) }
+    var downloadedEditSpecs: [ModelSpec] { readySpecs.filter(\.isAudioEdit) }
+    var downloadedDepthSpecs: [ModelSpec] { readySpecs.filter(\.isDepth) }
     var downloadedSoundSpecs: [ModelSpec] { SoundEngines.mock ? Catalog.all.filter(\.isAudioGen) : readySpecs.filter(\.isAudioGen) }
     var diarizerReady: Bool { if case .ready = modelStates["speaker-diarizer"] { return true }; return false }
     func isReady(_ id: String) -> Bool { if case .ready = modelStates[id] { return true }; return false }

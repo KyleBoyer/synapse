@@ -53,6 +53,8 @@ final class EmbeddingE2ETests: XCTestCase {
             let r = try await svc.embed(model: spec, inputs: [EmbeddingInput(image: zebra), EmbeddingInput(image: penguin)]
                                         + captions.map(EmbeddingInput.text) + ([query] + docs).map(EmbeddingInput.text))
             let v = r.vectors
+            print("[embed-image] \(id): \(r.promptTokens) prompt tokens")
+            XCTAssertGreaterThan(r.promptTokens, 8, "\(id) reports usage")
             let row = { (i: Int) in (2..<5).map { EmbeddingService.cosine(v[i], v[$0]) } }
             print(String(format: "[embed-image] %@: %.1f s, dim %d; zebra→captions %@; penguin→captions %@", id, Date().timeIntervalSince(start),
                          v[0].count, row(0).map { String(format: "%.2f", $0) }.joined(separator: " "),
@@ -70,6 +72,24 @@ final class EmbeddingE2ETests: XCTestCase {
                 XCTAssertGreaterThan(EmbeddingService.cosine(both, v[0]), EmbeddingService.cosine(both, v[1]))
             }
         }
+    }
+
+    /// Qwen3-VL embeds a video (as 8 frames) nearest its caption.
+    func testQwen3VLEmbedsAVideo() async throws {
+        let (svc, store) = try service()
+        guard await store.downloaded.contains("qwen3-vl-embedding-2b") else { throw XCTSkip("qwen3-vl-embedding-2b not downloaded") }
+        let spec = try await svc.resolveEmbedding(nil, video: true)
+        let frames = try await VideoFile.frames(of: TestSupport.fixture("zebra.mp4"), count: 8)
+        XCTAssertEqual(frames.count, 8)
+        let start = Date()
+        let captions = ["a zebra", "a penguin", "a red sports car"]
+        let r = try await svc.embed(model: spec, inputs: [EmbeddingInput(videoFrames: frames)] + captions.map(EmbeddingInput.text))
+        let v = r.vectors
+        print("[embed-video] \(r.promptTokens) prompt tokens")
+        let sims = (1...3).map { EmbeddingService.cosine(v[0], v[$0]) }
+        print(String(format: "[embed-video] %@: %.1f s; video→captions %@", spec.id, Date().timeIntervalSince(start),
+                     sims.map { String(format: "%.2f", $0) }.joined(separator: " ")))
+        XCTAssertEqual(sims.enumerated().max { $0.element < $1.element }?.offset, 0)
     }
 
     func testRerankerPutsParisFirst() async throws {

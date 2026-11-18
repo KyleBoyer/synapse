@@ -28,6 +28,8 @@ struct ModelFacts: Sendable {
         case .reranker: return "reranker"
         case .videogen: return "video"
         case .audiogen: return "sound"
+        case .coreml: return "depth"
+        case .audioedit: return SoundService.editTask(spec) == .separate ? "separation" : "enhancement"
         case .duplex: return "speech-to-speech"
         case .speech: return spec.isTTS ? "speech" : spec.id == "speaker-diarizer" ? "diarization" : "realtime"
         case .mlxspeech: return "speech"
@@ -43,6 +45,9 @@ struct ModelFacts: Sendable {
         case "reranker": ["/v1/rerank"]
         case "video": ["/v1/videos"]
         case "sound": ["/v1/audio/generations"]
+        case "enhancement": ["/v1/audio/enhance"]
+        case "depth": ["/v1/images/depth"]
+        case "separation": ["/v1/audio/separate"]
         case "speech": ["/v1/audio/speech", "/v1/realtime"]
         case "diarization": ["/v1/audio/transcriptions"]
         default: ["/v1/realtime"]

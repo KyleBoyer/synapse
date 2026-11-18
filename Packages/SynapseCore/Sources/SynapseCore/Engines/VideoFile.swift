@@ -34,6 +34,22 @@ public enum VideoFile {
         if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }
 
+    /// `count` frames spread evenly through the video (the middle of each equal slice), as JPEG.
+    public static func frames(of url: URL, count: Int, maxSide: CGFloat = 448) async throws -> [Data] {
+        let asset = AVURLAsset(url: url)
+        let seconds = try await asset.load(.duration).seconds
+        let gen = AVAssetImageGenerator(asset: asset)
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: maxSide, height: maxSide)
+        let ctx = CIContext(), sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        var out: [Data] = []
+        for i in 0..<count {
+            let t = CMTime(seconds: seconds * (Double(i) + 0.5) / Double(count), preferredTimescale: 600)
+            if let d = ctx.jpegRepresentation(of: CIImage(cgImage: try await gen.image(at: t).image), colorSpace: sRGB) { out.append(d) }
+        }
+        return out
+    }
+
     /// The first frame as JPEG.
     public static func thumbnail(of url: URL, maxSide: CGFloat = 512) async -> Data? {
         let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
