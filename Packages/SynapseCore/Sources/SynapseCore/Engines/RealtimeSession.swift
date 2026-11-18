@@ -545,8 +545,11 @@ public actor RealtimeSession {
         do {
             if omniVoice == nil { omniVoice = try await services.voice(spec) }
             var messages = messagesForResponse(instructions: instructions)
-            if let u = lastUtterance, items.last(where: { $0.role == "user" && !$0.text.isEmpty })?.id == u.id,
-               let i = messages.lastIndex(where: { $0.role == .user }) {
+            // The model hears the latest spoken turn instead of its transcript. That turn may sit before a tool result
+            // (the answer after a call), so it is found by its text, not taken to be the last user message; MiniCPM-o
+            // also speaks in that voice, so it must be there.
+            if let u = lastUtterance, let said = items.last(where: { $0.id == u.id })?.text, !said.isEmpty,
+               let i = messages.lastIndex(where: { $0.role == .user && $0.text == said }) {
                 messages[i].audios = [u.wav]
                 messages[i].text = ""
             }

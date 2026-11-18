@@ -25,7 +25,7 @@ threading.Thread(target=watch, daemon=True).start()
 
 import mlx.core as mx
 import numpy as np
-from mlx_vlm import load
+from mlx_vlm import load, stream_generate
 from mlx_vlm.prompt_utils import apply_chat_template
 from mlx_vlm.utils import prepare_inputs, should_add_special_tokens
 from mlx_vlm.generate.common import generation_stream, wired_limit
@@ -95,6 +95,34 @@ def parse_tool_calls(text):
                 args[key.strip()] = value
         calls.append({"name": name.strip(), "arguments": json.dumps(args)})
     return calls
+
+def parse_json_tool_calls(text):
+    """The Qwen-style calls MiniCPM-o writes: <tool_call>{"name": ..., "arguments": {...}}</tool_call>."""
+    calls = []
+    for body in re.findall(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.S):
+        try:
+            c = json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(c, dict) and c.get("name"):
+            args = c.get("arguments", {})
+            calls.append({"name": c["name"], "arguments": args if isinstance(args, str) else json.dumps(args)})
+    return calls
+
+def probe_tools_text(req, images, audios):
+    """Models without a slot stream (MiniCPM-o) make their spoken reply in one call that cannot stop for a tool, so a
+    short text-only pass decides first, as probe_tools does for LFM3. A leading <think> block is skipped."""
+    prompt = apply_chat_template(processor, model.config, req["messages"], num_images=len(images), num_audios=len(audios),
+                                 tools=req["tools"])
+    text = ""
+    for chunk in stream_generate(model, processor, prompt, image=images or None, audio=audios or None, max_tokens=400):
+        text += chunk.text
+        head = re.sub(r"^\s*<think>.*?</think>", "", text, flags=re.S).lstrip()
+        if text.lstrip().startswith("<think>") and "</think>" not in text:
+            continue
+        if head and not (TOOL.startswith(head) or head.startswith(TOOL)):
+            return None
+    return parse_tool_calls(text) or parse_json_tool_calls(text) or None
 
 def probe_tools(req, images, audios):
     """In speech mode LFM3 answers instead of calling a tool, so a text-only pass decides first. A reply that does not
@@ -168,6 +196,12 @@ def stream_joint(req, prompt, images, audios):
 def whole(req, prompt, images, audios):
     """Models without a slot stream (MiniCPM-o): generate the reply, then send it in one piece."""
     rid = req["id"]
+    if req.get("tools"):
+        calls = probe_tools_text(req, images, audios)
+        if calls:
+            reply({"id": rid, "tool_calls": calls})
+            reply({"id": rid, "done": True, "cancelled": False, "prompt_tokens": 0, "generation_tokens": 0})
+            return
     kwargs = {"max_tokens": int(req.get("max_tokens") or 512)}
     if req.get("temperature") is not None:
         kwargs["temperature"] = float(req["temperature"])

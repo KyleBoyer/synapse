@@ -14,8 +14,9 @@ final class VoiceCallToolsE2ETests: XCTestCase {
         let weather: [String: Any] = ["type": "function", "name": "get_weather", "description": "Current weather for a city.",
                                       "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]
         // Qwen3.5 0.8B calls tools only with no system prompt, which a voice call always has; 2B and up decide themselves.
-        for (model, question) in [("qwen3.5-2b", "What's the weather like in Paris right now?"),
-                                  ("lfm3-omni-2b", "What's the weather like in Paris right now?")] {
+        // SYNAPSE_TOOLS_MODELS picks the models (minicpm-o-4.5 is another omni voice).
+        let ids = (ProcessInfo.processInfo.environment["SYNAPSE_TOOLS_MODELS"] ?? "qwen3.5-2b,lfm3-omni-2b").split(separator: ",").map(String.init)
+        for (model, question) in ids.map({ ($0, "What's the weather like in Paris right now?") }) {
             let s = RealtimeSession(model: model, services: services)
             func send(_ o: [String: Any]) async { await s.handle(try! JSONSerialization.data(withJSONObject: o)) }
             var it = s.events.makeAsyncIterator()
@@ -32,10 +33,29 @@ final class VoiceCallToolsE2ETests: XCTestCase {
             }
             await send(["type": "session.update", "session": ["type": "realtime", "tools": [weather],
                         "instructions": "You are a voice assistant. Use tools when they help. Answer in one short sentence."]])
-            await send(["type": "conversation.item.create", "item": ["type": "message", "role": "user",
-                        "content": [["type": "input_text", "text": question]]]])
-            let start = Date()
-            await send(["type": "response.create"])
+            let start: Date
+            if model == "minicpm-o-4.5" {
+                // MiniCPM-o speaks in the caller's voice, so it needs to hear the question, as in a real call: spoken
+                // audio in, and server turn detection starts the response.
+                let aiff = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).aiff")
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+                p.arguments = ["-v", "Samantha", "-o", aiff.path, question]
+                try p.run(); p.waitUntilExit()
+                let dir = try TestSupport.tempDir()
+                let wav = try await AudioDecoder(ffmpegURL: try TestSupport.ffmpeg()).decodeToWAV(.media(aiff), into: dir, sampleRate: 24000)
+                let pcm = try Data(contentsOf: wav).dropFirst(44) + Data(count: 24000 * 2 * 2)   // then 2 s of silence
+                start = Date()
+                for chunk in stride(from: 0, to: pcm.count, by: 9600) {
+                    let piece = pcm[pcm.startIndex + chunk..<pcm.startIndex + min(chunk + 9600, pcm.count)]
+                    await send(["type": "input_audio_buffer.append", "audio": Data(piece).base64EncodedString()])
+                }
+            } else {
+                await send(["type": "conversation.item.create", "item": ["type": "message", "role": "user",
+                            "content": [["type": "input_text", "text": question]]]])
+                start = Date()
+                await send(["type": "response.create"])
+            }
             let first = await response()
             let call = first.first { $0["type"] as? String == "response.function_call_arguments.done" }
             print(String(format: "[tools] %@: call %@ %@ after %.1f s", model, call?["name"] as? String ?? "none",

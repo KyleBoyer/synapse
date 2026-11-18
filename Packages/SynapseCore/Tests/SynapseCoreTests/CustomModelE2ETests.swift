@@ -75,6 +75,38 @@ final class CustomModelE2ETests: XCTestCase {
         await models.unloadAllIdle()
     }
 
+    /// A vision GGUF: the projector (mmproj) is fetched with the weights and passed to llama.cpp, so an image question
+    /// is answered. Gemma 3 4B Q4_K_M plus its projector, about 3.3 GB (downloaded under SYNAPSE_SCRATCH when set).
+    func testVisionGGUFAnswersAboutAnImage() async throws {
+        guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let report = try await HFModelInspector.inspect("https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF", token: nil)
+        print("[gguf-vision] \(report.model.files ?? []) \(report.model.approxMB) MB")
+        XCTAssertTrue((report.model.files ?? []).contains { $0.lowercased().contains("mmproj") }, "the projector is chosen")
+        let root = try ProcessInfo.processInfo.environment["SYNAPSE_SCRATCH"].map { URL(fileURLWithPath: $0).appending(path: "gguf-vision") }
+            ?? TestSupport.tempDir()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { Catalog.setCustom([]) }
+        if !FileManager.default.fileExists(atPath: root.appending(path: "manifest.json").path) {
+            try JSONEncoder().encode([String: String]()).write(to: root.appending(path: "manifest.json"))
+        }
+        Catalog.setCustom([report.model])
+        let store = ModelStore(root: root)
+        if await !store.downloaded.contains(report.model.id) { _ = try await store.download(report.model.id, token: nil) { _ in } }
+        let models = ModelManager()
+        let chat = ChatService(store: store, models: models)
+        let spec = try XCTUnwrap(Catalog.spec(report.model.id))
+        let zebra = try Data(contentsOf: TestSupport.fixture("zebra.jpg"))
+        var answer = ""
+        let start = Date()
+        for try await e in try await chat.stream(model: spec, messages: [ChatMessage(role: .user, text: "What animal is in this picture? Answer with one word.", images: [zebra])],
+                                                 options: ChatOptions(maxTokens: 10, temperature: 0)) {
+            if case .delta(let d) = e { answer += d }
+        }
+        print(String(format: "[gguf-vision] %.1f s: %@", Date().timeIntervalSince(start), answer))
+        XCTAssertTrue(answer.lowercased().contains("zebra"), answer)
+        await models.unloadAllIdle()
+    }
+
     func testRealReposAreClassified() async throws {
         guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
         let omni = try await HFModelInspector.inspect("LiquidAI/LFM3-Omni-2B", token: nil)

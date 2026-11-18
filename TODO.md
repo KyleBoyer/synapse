@@ -27,7 +27,8 @@ Speak in the voice of a short reference clip, from the API and the Audio pane.
 - [x] Function tools on Chat Completions (tool_calls, tool messages, streamed deltas) and Responses (function_call items and events, function_call_output inputs), and for spoken Chat Completions replies (tool_calls with audio null).
 - [x] Tools for mlx-vlm and GGUF chat models: requests carry `tools` and the servers' streamed `tool_calls` are assembled.
 - [x] Verified across input and output types with real models and the official SDKs (`verify-modalities.py --only tools`, `verify-openai-realtime.py`): text, image, video (Qwen3.5 2B), audio in (Gemma 4 E2B, LFM3), spoken replies (Qwen3.5 2B + TTS, LFM3's own voice), a GGUF model (Llama 3.2 1B), Responses, and a realtime call that sees a camera frame then calls record_animal("zebra").
-- [ ] MiniCPM-o in the omni path (its whole-reply generation ignores tools)
+- [x] MiniCPM-o in the omni path: a text-only pass decides first (Qwen-style `<tool_call>` JSON, after any `<think>`), as LFM3's does; follow-up answers now carry the caller's last utterance even after a tool result (MiniCPM-o speaks in that voice and failed without it). Verified (VoiceCallToolsE2ETests, spoken question): get_weather for Paris after 10.3 s, then "It's 18°C in Paris, with light rain currently falling" in 6.9 s of speech; LFM3 still passes.
+- [x] GGUF vision: the projector (mmproj) is fetched and passed to llama.cpp. Verified: Gemma 3 4B Q4_K_M answers "Zebra" about zebra.jpg in 5.3 s (CustomModelE2ETests).
 
 ## Tool calls in full-duplex calls
 
