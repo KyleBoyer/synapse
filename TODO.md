@@ -82,5 +82,6 @@ Editing, restyling, upscaling. Heavy on 16 GB; may be Mac Studio only.
 - [x] CI on every push (build + unit tests on macos-26) and a Release workflow (bump none/patch/minor/major).
 - [x] v0.1.1: Developer ID signed, notarized and stapled; Gatekeeper reports "Notarized Developer ID".
 - [x] v0.1.2: Sparkle updates (appcast.xml on each release, EdDSA-signed) and a drag-to-Applications DMG; earlier releases removed so every published build can update itself.
+- [x] v0.1.3: the DMG opens on a drawn background with an arrow from Synapse to Applications (dmgbuild, scripts/dmg).
 - [x] App icon is an Icon Composer `.icon`, so macOS 26 no longer draws it inside a grey plate.
 - [x] README rebuilt around real screenshots from the 16 GB Mac mini (docs/screenshots).
