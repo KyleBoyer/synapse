@@ -46,6 +46,20 @@ final class LiveAudio: @unchecked Sendable {
     private var scheduled = 0          // samples handed to the player and not yet played
     private var epoch = 0              // bumped by flush, so callbacks from dropped buffers are ignored
 
+    /// Full duplex: a reply is held until its transcript reaches the end of a sentence or clause (or the model pauses),
+    /// then played whole, so it is heard a phrase at a time instead of a few words between gaps. The model's text
+    /// leads its voice by a few frames, so a phrase is released `phraseTail` after its punctuation arrives.
+    var phraseMode: Bool {
+        get { lock.withLock { phraseOn } }
+        set { lock.withLock { phraseOn = newValue; held = []; releaseAt = nil; quiet = 0 } }
+    }
+    private static let phraseTail = 7680, phrasePause = 14400, minClause = 36000, maxPhrase = 360000   // 320 ms, 0.6 s, 1.5 s, 15 s
+    private var phraseOn = false
+    private var held: [Float] = []
+    private var releaseAt: Int?        // held count at which the ended phrase is complete
+    private var quiet = 0              // trailing near-silent samples in `held`
+    private var drain: DispatchWorkItem?
+
     private init(_ config: Config) { self.config = config }
 
     @MainActor static var isOpen: Bool { current != nil }
@@ -82,6 +96,7 @@ final class LiveAudio: @unchecked Sendable {
     /// The call is over: stop feeding it and drop its queued audio. The devices stay open (see `current`).
     @MainActor func release() {
         lock.withLock { onChunk = nil; onLevel = nil }
+        phraseMode = false
         flush()
         attached = false
         Self.scheduleRelease()
@@ -193,15 +208,61 @@ final class LiveAudio: @unchecked Sendable {
     func play(pcm16: Data) {
         let floats = pcm16.withUnsafeBytes { raw in raw.bindMemory(to: Int16.self).map { Float(Int16(littleEndian: $0)) / 32768 } }
         lock.lock(); defer { lock.unlock() }
+        if phraseOn { hold(floats); return }
         queued += floats
         if !playing && queued.count < prebuffer { return }
         playing = true
         schedule(queued); queued = []
     }
 
+    /// The transcript reached the end of a sentence (`strong`) or a clause (a comma): play that phrase once its last
+    /// words have arrived. A comma counts only after a long stretch, so short clauses stay with their sentence.
+    func phraseEnded(strong: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        guard phraseOn, strong || held.count >= Self.minClause else { return }
+        releaseAt = held.count + Self.phraseTail
+    }
+
+    /// Phrase mode, under `lock`.
+    private func hold(_ f: [Float]) {
+        let rms = f.isEmpty ? 0 : (f.reduce(0) { $0 + $1 * $1 } / Float(f.count)).squareRoot()
+        let silent = rms < 0.005
+        if held.isEmpty && silent { schedule(f); return }   // idle: silence passes straight through
+        held += f
+        quiet = silent ? quiet + f.count : 0
+        if let r = releaseAt, held.count >= r { releaseHeld(); return }
+        if quiet >= Self.phrasePause || held.count >= Self.maxPhrase { releaseHeld(); return }
+        // A model that stops sending audio when it stops talking (VoiceChat) ends its last phrase by going quiet.
+        drain?.cancel()
+        let e = epoch
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lock.withLock { if self.epoch == e, self.phraseOn, !self.held.isEmpty { self.releaseHeld() } }
+        }
+        drain = item
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1, execute: item)
+    }
+
+    #if DEBUG
+    /// Lengths (ms) of the phrases released so far, for -jitterTest.
+    private(set) var releasedMS: [Int] = []
+    #endif
+
+    private func releaseHeld() {
+        #if DEBUG
+        releasedMS.append(held.count * 1000 / 24000)
+        #endif
+        drain?.cancel(); drain = nil
+        schedule(held)
+        held = []; releaseAt = nil; quiet = 0
+    }
+
     /// Barge-in (or a new reply): drop everything scheduled or buffered, and start again from the short buffer.
     func flush() {
-        lock.withLock { queued = []; playing = false; scheduled = 0; epoch += 1; prebuffer = Self.basePrebuffer }
+        lock.withLock {
+            queued = []; playing = false; scheduled = 0; epoch += 1; prebuffer = Self.basePrebuffer
+            held = []; releaseAt = nil; quiet = 0; drain?.cancel(); drain = nil
+        }
         // Outside the lock: stopping calls the dropped buffers' completion handlers, which take it.
         player.stop(); player.play()
     }

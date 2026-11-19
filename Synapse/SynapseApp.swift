@@ -53,6 +53,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     for g in gaps { a.play(pcm16: chunk); try? await Task.sleep(for: .seconds(g)) }
                     fputs("jitterTest: \(label): buffer grew to \(a.currentPrebuffer * 1000 / 24000) ms\n", stderr)
                 }
+                // Phrase mode at 0.3x real time: "Paris is the capital of France." then a pause, then "It is lovely, and big."
+                // (no final punctuation), with the text a few frames ahead of the voice.
+                a.phraseMode = true
+                let voice = Data((0..<1920).flatMap { i -> [UInt8] in let v = Int16(Double(8000) * sin(Double(i) / 6)); return [UInt8(truncatingIfNeeded: v), UInt8(truncatingIfNeeded: v >> 8)] })
+                let quiet = Data(count: 1920 * 2)
+                func frames(_ n: Int, _ d: Data, punctAt: Int? = nil) async {
+                    for i in 0..<n {
+                        if i == punctAt { a.phraseEnded(strong: true) }
+                        a.play(pcm16: d); try? await Task.sleep(for: .seconds(0.08 / 0.3))
+                    }
+                }
+                await frames(5, quiet)
+                await frames(30, voice, punctAt: 27)   // 2.4 s sentence; its period arrives 3 frames before its voice ends
+                await frames(12, quiet)                // 1 s pause
+                await frames(20, voice)                // 1.6 s, no punctuation: the 1 s drain or the pause ends it
+                await frames(10, quiet)
+                fputs("jitterTest: phrase mode released \(a.releasedMS) ms\n", stderr)
                 a.release()
                 fputs("jitterTest: done\n", stderr)
             }

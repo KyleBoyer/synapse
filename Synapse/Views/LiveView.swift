@@ -71,6 +71,7 @@ final class LiveModel {
                                       onChunk: { pcm in Task { await s.appendAudio(pcm24k: pcm) } },
                                       onLevel: { l in Task { @MainActor [weak self] in self?.level = l } })
             echoCancel = wantsAEC ? a.echoCancel : nil
+            a.phraseMode = mode == .duplex   // its text runs with its voice; see LiveAudio.phraseEnded
         } catch {
             self.error = "Could not start the microphone: \(error.localizedDescription) Try another microphone or speaker in the options."
             await s.close(); return
@@ -134,7 +135,13 @@ final class LiveModel {
             if let id = e["item_id"] as? String, let d = e["transcript"] as? String { upsert(id, role: "You", text: d, final: true, append: false) }
         case "response.created": muted = false
         case "response.output_audio_transcript.delta", "response.output_text.delta":
-            if let id = e["response_id"] as? String, let d = e["delta"] as? String { upsert(id, role: "Assistant", text: d, final: false, append: true) }
+            if let id = e["response_id"] as? String, let d = e["delta"] as? String {
+                upsert(id, role: "Assistant", text: d, final: false, append: true)
+                if mode == .duplex {
+                    if d.contains(where: { ".!?;:\n".contains($0) }) { audio?.phraseEnded(strong: true) }
+                    else if d.contains(",") { audio?.phraseEnded(strong: false) }
+                }
+            }
         case "response.output_audio.delta":
             if !muted, let b = e["delta"] as? String, let d = Data(base64Encoded: b) { audio?.play(pcm16: d) }
         case "input_audio_buffer.speech_started":
