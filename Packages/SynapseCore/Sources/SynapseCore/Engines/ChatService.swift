@@ -33,6 +33,13 @@ public struct ChatOptions: Sendable, Equatable {
     public var tools: [ChatTool]
     /// Frames sampled evenly across each video (nil = 8).
     public var videoFrames: Int?
+    /// More sampling controls; nil leaves each at the engine's default (top-k and min-p off, no penalties, random seed).
+    public var topK: Int?
+    public var minP: Float?
+    public var seed: UInt64?
+    public var presencePenalty: Float?
+    public var frequencyPenalty: Float?
+    public var repetitionPenalty: Float?
 
     public init(maxTokens: Int? = nil, temperature: Float? = nil, topP: Float? = nil, enableThinking: Bool = false,
                 tools: [ChatTool] = [], videoFrames: Int? = nil) {
@@ -436,6 +443,14 @@ public actor ChatService {
         var p = GenerateParameters(maxTokens: options.maxTokens ?? defaultMaxTokens,
                                    temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
         p.kvCache = precision.configuration
+        // shortcut: penalties see only the tokens fed after a cached prefix; feed the processor the whole prompt if a
+        // long-range penalty context ever matters.
+        if let v = options.topK { p.topK = v }
+        if let v = options.minP { p.minP = v }
+        p.seed = options.seed
+        p.presencePenalty = options.presencePenalty
+        p.frequencyPenalty = options.frequencyPenalty
+        p.repetitionPenalty = options.repetitionPenalty
         return p
     }
 

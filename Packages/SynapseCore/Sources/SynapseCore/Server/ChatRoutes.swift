@@ -41,6 +41,39 @@ enum JSONValue: Codable, Sendable, Equatable {
     subscript(key: String) -> JSONValue? { if case .object(let o) = self { return o[key] }; return nil }
 }
 
+/// Sampling fields beyond temperature and top_p, read from any chat request body. `top_k`, `min_p` and
+/// `repetition_penalty` are extensions OpenAI does not define (llama.cpp and vLLM take the same names);
+/// `repeat_penalty` is LM Studio's spelling.
+struct SamplingFields: Decodable {
+    var seed: Int64?, top_k: Int?, min_p: Float?
+    var presence_penalty: Float?, frequency_penalty: Float?, repetition_penalty: Float?, repeat_penalty: Float?
+
+    /// Decodes and validates, so a bad value is a 400 before any model work.
+    static func read(_ raw: Data) throws -> SamplingFields {
+        let f = try decodeJSON(SamplingFields.self, raw)
+        try f.validate()
+        return f
+    }
+
+    private func validate() throws {
+        func bad(_ m: String) -> HTTPError { HTTPError(.badRequest, message: m) }
+        for (name, v) in [("presence_penalty", presence_penalty), ("frequency_penalty", frequency_penalty)] {
+            if let v, !(-2...2).contains(v) { throw bad("\(name) must be between -2 and 2.") }
+        }
+        let repetition = repetition_penalty ?? repeat_penalty
+        if let r = repetition, r <= 0 { throw bad("repetition_penalty must be greater than 0.") }
+        if let k = top_k, k < 0 { throw bad("top_k must be 0 or more.") }
+        if let p = min_p, !(0...1).contains(p) { throw bad("min_p must be between 0 and 1.") }
+    }
+
+    func apply(to o: inout ChatOptions) {
+        let repetition = repetition_penalty ?? repeat_penalty
+        o.seed = seed.map { UInt64(bitPattern: $0) }
+        o.topK = top_k; o.minP = min_p
+        o.presencePenalty = presence_penalty; o.frequencyPenalty = frequency_penalty; o.repetitionPenalty = repetition
+    }
+}
+
 struct ChatCompletionRequest: Decodable {
     var model: String?
     var messages: [JSONValue]
@@ -398,11 +431,13 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/chat/completions", chat: chat, settings: settings) { return proxied }
         let body = try decodeJSON(ChatCompletionRequest.self, raw)
+        let sampling = try SamplingFields.read(raw)
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.chatMessages(body.messages))
         try await requireMediaSupport(chat, spec, messages)
         var options = ChatOptions(maxTokens: body.max_completion_tokens ?? body.max_tokens, temperature: body.temperature,
                                   topP: body.top_p, enableThinking: thinking(body.reasoning_effort))
+        sampling.apply(to: &options)
         options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
         let id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
@@ -462,6 +497,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/responses", chat: chat, settings: settings) { return proxied }
         let body = try decodeJSON(ResponsesRequest.self, raw)
+        let sampling = try SamplingFields.read(raw)
         if let tools = body.tools, tools.contains(where: { $0["type"]?.string == "image_generation" }) {
             return try await respondWithImageTool(body, tools: tools, chat: chat, images: images)
         }
@@ -471,6 +507,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let effort = body.reasoning?["effort"]?.string
         var options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature,
                                   topP: body.top_p, enableThinking: thinking(effort))
+        sampling.apply(to: &options)
         options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
         let hasTools = !options.tools.isEmpty
         let respID = "resp_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()

@@ -135,6 +135,13 @@ enum MLXVLMChat {
                                 "max_tokens": options.maxTokens ?? ChatService.defaultMaxTokens]
         if let t = options.temperature { o["temperature"] = t }
         if let p = options.topP { o["top_p"] = p }
+        if let v = options.topK { o["top_k"] = v }
+        if let v = options.minP { o["min_p"] = v }
+        if let v = options.seed { o["seed"] = Int64(bitPattern: v) }
+        if let v = options.presencePenalty { o["presence_penalty"] = v }
+        if let v = options.frequencyPenalty { o["frequency_penalty"] = v }
+        // mlx-vlm's name, then llama.cpp's; each server ignores the other's.
+        if let v = options.repetitionPenalty { o["repetition_penalty"] = v; o["repeat_penalty"] = v }
         if promptProgress { o["return_progress"] = true }
         // Both servers parse calls per model (mlx-vlm's tool parsers, llama.cpp's --jinja templates).
         if !options.tools.isEmpty { o["tools"] = options.tools.map(\.spec) }

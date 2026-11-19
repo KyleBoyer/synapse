@@ -83,7 +83,9 @@ func applyStops(_ events: AsyncThrowingStream<ChatEvent, Error>, _ stops: [Strin
 
 func addCompletionsRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
     g.post("completions") { req, ctx in
-        let body = try decodeJSON(CompletionRequest.self, try await rawBody(req, ctx))
+        let raw = try await rawBody(req, ctx)
+        let body = try decodeJSON(CompletionRequest.self, raw)
+        let sampling = try SamplingFields.read(raw)
         let prompts = body.prompt.string.map { [$0] } ?? body.prompt.array?.compactMap(\.string) ?? []
         guard prompts.count == 1, let prompt = prompts.first, !prompt.isEmpty else {
             throw HTTPError(.badRequest, message: "prompt must be one non-empty string (token arrays and batches are not supported).")
@@ -92,7 +94,8 @@ func addCompletionsRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) 
         guard body.suffix == nil else { throw HTTPError(.badRequest, message: "suffix (insertion) is not supported.") }
         let spec = try await resolveChat(chat, body.model)
         // OpenAI's default is 16 tokens, which silently truncates most answers; clients that care send max_tokens.
-        let options = ChatOptions(maxTokens: body.max_tokens ?? 256, temperature: body.temperature, topP: body.top_p)
+        var options = ChatOptions(maxTokens: body.max_tokens ?? 256, temperature: body.temperature, topP: body.top_p)
+        sampling.apply(to: &options)
         let id = "cmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
         let events = applyStops(try await chat.streamText(model: spec, prompt: prompt, options: options), stopSequences(body.stop))

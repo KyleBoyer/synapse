@@ -11,6 +11,7 @@ struct MessagesRequest: Decodable {
     var system: JSONValue?
     var temperature: Float?
     var top_p: Float?
+    var top_k: Int?
     var stop_sequences: [String]?
     var stream: Bool?
     var tools: [JSONValue]?
@@ -247,6 +248,10 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
         let messages = try await ImageFetcher.messages(try AnthropicParse.messages(body))
         let thinking = ["enabled", "adaptive"].contains(body.thinking?["type"]?.string ?? "")
         var options = ChatOptions(maxTokens: body.max_tokens, temperature: body.temperature, topP: body.top_p, enableThinking: thinking)
+        if let k = body.top_k {
+            guard k >= 0 else { throw HTTPError(.badRequest, message: "top_k must be 0 or more.") }
+            options.topK = k
+        }
         options.tools = try AnthropicParse.tools(body)
         return (spec, messages, options)
     }

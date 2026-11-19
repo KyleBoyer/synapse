@@ -640,7 +640,32 @@ def cache():
           f"read {a2.usage.cache_read_input_tokens}, uncached input {a2.usage.input_tokens}")
 
 
-SECTIONS = {"cache": cache, "speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools, "video-transform": video_transform}
+def sampling():
+    """seed makes sampling reproducible on every engine; bad values are 400s."""
+    import openai
+    from openai import OpenAI
+
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY, max_retries=0)
+    listed = {m.id for m in client.models.list().data}
+    prompt = [{"role": "user", "content": "Write one sentence about the sea."}]
+    for model in ("qwen3.5-0.8b", "bartowski/Llama-3.2-1B-Instruct-GGUF", "gemma-3n-e2b"):
+        if model not in listed:
+            print(f"SKIP sampling: {model} not downloaded")
+            continue
+        def say(seed):
+            return client.chat.completions.create(model=model, messages=prompt, max_tokens=30, temperature=0.9,
+                                                  extra_body={"seed": seed, "top_k": 50, "min_p": 0.02}).choices[0].message.content
+        a, b, c = say(11), say(11), say(12)
+        check(f"{model}: same seed, same text", a == b, f"{a!r} / {b!r}")
+        check(f"{model}: other seed, other text", a != c, f"{c!r}")
+    try:
+        client.chat.completions.create(model="qwen3.5-0.8b", messages=prompt, max_tokens=5, presence_penalty=3)
+        check("presence_penalty 3 -> 400", False, "accepted")
+    except openai.BadRequestError as e:
+        check("presence_penalty 3 -> 400", True, str(e)[:80])
+
+
+SECTIONS = {"cache": cache, "sampling": sampling, "speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools, "video-transform": video_transform}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

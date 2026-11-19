@@ -37,7 +37,9 @@ actor LMStudioConversations {
 
 func addLMStudioRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, conversations: LMStudioConversations) {
     g.post("api/v1/chat") { req, ctx in
-        let body = try decodeJSON(LMStudioChatRequest.self, try await rawBody(req, ctx))
+        let raw = try await rawBody(req, ctx)
+        let body = try decodeJSON(LMStudioChatRequest.self, raw)
+        let sampling = try SamplingFields.read(raw)
         if let i = body.integrations, i.array?.isEmpty != true {
             throw HTTPError(.badRequest, message: "Synapse runs models only: integrations (plugins, MCP servers) are not supported.")
         }
@@ -55,8 +57,9 @@ func addLMStudioRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, con
         try await requireMediaSupport(chat, spec, input)
         let messages = history + input
         let thinking = body.reasoning.map { $0.string != "off" && $0.bool != false } ?? false
-        let options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature, topP: body.top_p,
+        var options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature, topP: body.top_p,
                                   enableThinking: thinking)
+        sampling.apply(to: &options)
         let responseID = body.store == false ? nil
             : "resp_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let events = try await chat.stream(model: spec, messages: messages, options: options)
