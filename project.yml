@@ -26,8 +26,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.synapse.mac
         PRODUCT_NAME: Synapse
-        MARKETING_VERSION: "0.1.3"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "0.1.4"
+        CURRENT_PROJECT_VERSION: "5"
         ARCHS: arm64
         GENERATE_INFOPLIST_FILE: YES
         # Sparkle's keys; Xcode merges them with the generated ones.
