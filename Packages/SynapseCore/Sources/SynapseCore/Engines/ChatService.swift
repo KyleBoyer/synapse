@@ -60,7 +60,13 @@ public struct ChatTool: Sendable, Equatable {
 public struct ChatUsage: Sendable, Equatable {
     public var promptTokens: Int
     public var completionTokens: Int
+    /// Prompt tokens read from the prompt cache instead of being processed (part of `promptTokens`).
+    public var cachedTokens: Int
     public var totalTokens: Int { promptTokens + completionTokens }
+
+    public init(promptTokens: Int, completionTokens: Int, cachedTokens: Int = 0) {
+        self.promptTokens = promptTokens; self.completionTokens = completionTokens; self.cachedTokens = cachedTokens
+    }
 }
 
 public enum ChatEvent: Sendable, Equatable {
@@ -114,9 +120,42 @@ public actor ChatService {
     let models: ModelManager
     nonisolated var modelsRoot: URL { store.root }
     static let defaultMaxTokens = 4096
+    /// Memory each loaded model may spend on prompt-cache checkpoints.
+    private var promptCacheBytes: Int
+    private var promptCaches: [String: PromptCache] = [:]
 
-    public init(store: ModelStore, models: ModelManager = ModelManager()) {
-        self.store = store; self.models = models
+    public init(store: ModelStore, models: ModelManager = ModelManager(), promptCacheBytes: Int = ChatService.defaultPromptCacheBytes) {
+        self.store = store; self.models = models; self.promptCacheBytes = promptCacheBytes
+    }
+
+    /// 1.5 GB on Macs with 16 GB or less, 4 GB above that.
+    public static var defaultPromptCacheBytes: Int {
+        ProcessInfo.processInfo.physicalMemory <= 16 << 30 ? 3 << 29 : 4 << 30
+    }
+
+    public func setPromptCacheLimit(_ bytes: Int) async {
+        promptCacheBytes = bytes
+        for c in promptCaches.values { await c.setLimit(bytes) }
+    }
+
+    /// Prompt-cache counters since launch for each model that has one (every request, the API included).
+    public func cacheStats() async -> [String: PromptCacheStats] {
+        var out: [String: PromptCacheStats] = [:]
+        for (id, c) in promptCaches { out[id] = await c.stats }
+        return out
+    }
+
+    /// Drops cached prompts for one model, or for all when `id` is nil. Counters are kept.
+    public func clearCache(_ id: String? = nil) async {
+        for (key, c) in promptCaches where id == nil || key == id { await c.clear() }
+    }
+
+    /// One cache per model id; it lives as long as the service, its entries are dropped when the model unloads.
+    private func promptCache(_ id: String) -> PromptCache {
+        if let c = promptCaches[id] { return c }
+        let c = PromptCache(byteLimit: promptCacheBytes)
+        promptCaches[id] = c
+        return c
     }
 
     /// A model takes video when its snapshot ships a video preprocessor (Qwen3.5 does). mlx-vlm omni models take
@@ -146,15 +185,27 @@ public actor ChatService {
         if spec.engine == .mlxvlm { return Self.timeline { try await self.streamMLXVLM(spec, folder, messages, options, $0) } }
         if spec.engine == .gguf { return Self.timeline { try await self.streamLlama(spec, folder, messages, options, $0) } }
         _ = try Self.userInput(messages, options)
+        // shortcut: requests with images, video or audio skip the prompt cache (prepared pixel tensors cannot be split
+        // at a token boundary); use mlx's appendMediaSuffix path when chat-with-media reuse matters.
+        let cacheable = messages.allSatisfy { $0.images.isEmpty && $0.videos.isEmpty && $0.audios.isEmpty }
         return Self.timeline { progress in
             let lease = try await self.containerLease(for: spec, progress: progress)
             let container = lease.value
-            let input = try Self.userInput(messages, options)
-            let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
-                                            temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
-            return try await self.run(container: container, lease: lease, params: params, tools: input.tools,
-                                      stripThinking: !options.enableThinking, progress: progress) {
-                try await container.prepare(input: input)
+            let cache = cacheable ? await self.promptCache(spec.id) : nil
+            let params = Self.parameters(options)
+            return try await self.run(lease: lease, stripThinking: !options.enableThinking, progress: progress) {
+                try await container.perform { ctx in
+                    let input = try Self.userInput(messages, options)
+                    let tools = input.tools
+                    let context = input.additionalContext
+                    let lm = try await ctx.processor.prepare(input: input)
+                    let tokens = lm.text.tokens.reshaped(-1).asArray(Int32.self).map(Int.init)
+                    // The checkpoint goes where the history ends and the generation prompt begins: every follow-up
+                    // request starts with exactly those tokens, however the reply is re-rendered.
+                    let boundary = (ctx.tokenizer as? TokenizerBridge)?.generationPrompt(context: context)
+                        .flatMap { gp in tokens.count > gp.count && Array(tokens.suffix(gp.count)) == gp ? tokens.count - gp.count : nil }
+                    return try await Self.generate(ctx, lm, tokens: tokens, boundary: boundary, cache: cache, params: params, tools: tools)
+                }
             }
         }
     }
@@ -244,34 +295,76 @@ public actor ChatService {
         return Self.timeline { progress in
             let lease = try await self.containerLease(for: spec, progress: progress)
             let container = lease.value
-            let params = GenerateParameters(maxTokens: options.maxTokens ?? Self.defaultMaxTokens,
-                                            temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
-            return try await self.run(container: container, lease: lease, params: params, tools: nil, stripThinking: false,
-                                      progress: progress) {
-                let tokens = await container.perform { ctx in ctx.tokenizer.encode(text: prompt) }
-                return LMInput(tokens: MLXArray(tokens.map(Int32.init)))
+            let cache = await self.promptCache(spec.id)
+            let params = Self.parameters(options)
+            return try await self.run(lease: lease, stripThinking: false, progress: progress) {
+                try await container.perform { ctx in
+                    let tokens = ctx.tokenizer.encode(text: prompt)
+                    // Raw text has no template, so a longer prompt extends this one directly.
+                    return try await Self.generate(ctx, LMInput(tokens: MLXArray(tokens.map(Int32.init))), tokens: tokens,
+                                                   boundary: tokens.count - 1, cache: cache, params: params, tools: nil)
+                }
             }
         }
     }
 
+    static func parameters(_ options: ChatOptions) -> GenerateParameters {
+        GenerateParameters(maxTokens: options.maxTokens ?? defaultMaxTokens,
+                           temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
+    }
+
+    /// A started generation and how much of its prompt came from the cache.
+    struct Started: Sendable {
+        let generation: AsyncStream<Generation>
+        let promptTokens: Int
+        let cachedTokens: Int
+    }
+
+    /// Prefills through the prompt cache and starts generating. Runs inside `perform`, where the model and the
+    /// non-Sendable KV caches live. `boundary` is where to leave a checkpoint (nil: none).
+    static func generate(_ ctx: ModelContext, _ lm: consuming sending LMInput, tokens: [Int], boundary: Int?,
+                         cache: PromptCache?, params: GenerateParameters,
+                         tools: [[String: any Sendable]]?) async throws -> Started {
+        guard let cache, tokens.count > 1 else {
+            return Started(generation: try MLXLMCommon.generate(input: lm, parameters: params, context: ctx, tools: tools),
+                           promptTokens: tokens.count, cachedTokens: 0)
+        }
+        let hit = await cache.lookup(tokens)
+        let kv = try hit?.cache ?? makePromptCache(model: ctx.model, parameters: params)
+        var state = hit?.state
+        var fed = hit?.reused ?? 0
+        if let boundary, boundary > fed, boundary < tokens.count {
+            // TokenIterator's init prefills its whole input into `kv` (it also samples one token, which is dropped).
+            let it = try TokenIterator(input: LMInput(tokens: MLXArray(tokens[fed..<boundary].map(Int32.init))),
+                                       model: ctx.model, cache: kv, state: state, parameters: params)
+            state = it.state
+            fed = boundary
+            await cache.store(Array(tokens[0..<boundary]), .init(cache: kv.map { $0.copy() }, state: state, reused: boundary))
+        }
+        await cache.record(prompt: tokens.count, cached: hit?.reused ?? 0)
+        let rest = LMInput(tokens: MLXArray(tokens[fed...].map(Int32.init)))
+        return Started(generation: try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params,
+                                                            context: ctx, tools: tools),
+                       promptTokens: tokens.count, cachedTokens: hit?.reused ?? 0)
+    }
+
     /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.
-    private func run(container: ModelContainer, lease: ModelLease<ModelContainer>, params: GenerateParameters,
-                     tools: [[String: any Sendable]]?, stripThinking: Bool, progress: Progress,
-                     input makeInput: () async throws -> sending LMInput) async throws -> AsyncThrowingStream<ChatEvent, Error> {
+    private func run(lease: ModelLease<ModelContainer>, stripThinking: Bool, progress: Progress,
+                     start: () async throws -> Started) async throws -> AsyncThrowingStream<ChatEvent, Error> {
         await GPUGate.shared.acquire()
         let releaseGate = GateRelease()
-        let generation: AsyncStream<Generation>
+        let started: Started
         do {
-            // mlx-swift-lm prefills inside generate(), before it returns the token stream.
+            // Prefill happens inside start(), before it returns the token stream.
             progress(.promptStarted)
-            let lmInput = try await makeInput()
-            generation = try await container.generate(input: lmInput, parameters: params, tools: tools)
+            started = try await start()
             progress(.promptDone)
         } catch {
             releaseGate()
             lease.release()
             throw error
         }
+        let generation = started.generation, promptTokens = started.promptTokens, cachedTokens = started.cachedTokens
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -286,8 +379,9 @@ public actor ChatService {
                         let tail = filter.finish()
                         if !tail.isEmpty { continuation.yield(.delta(tail)) }
                         let reason = info.stopReason == .length ? "length" : "stop"
+                        // info counts only the tokens fed after the cached prefix.
                         continuation.yield(.done(finishReason: reason, usage: ChatUsage(
-                            promptTokens: info.promptTokenCount, completionTokens: info.generationTokenCount)))
+                            promptTokens: promptTokens, completionTokens: info.generationTokenCount, cachedTokens: cachedTokens)))
                     case .toolCall(let call):
                         let args = (try? JSONEncoder().encode(call.function.arguments)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
                         continuation.yield(.toolCall(name: call.function.name, arguments: args))
@@ -364,8 +458,10 @@ public actor ChatService {
 
     private func containerLease(for spec: ModelSpec, progress: @escaping Progress) async throws -> ModelLease<ModelContainer> {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        let cache = promptCache(spec.id)
         return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedResidentBytes,
-                                      measure: { await Self.weightBytes($0) }) { try await Self.timed(progress) {
+                                      measure: { await Self.weightBytes($0) + cache.stats.bytes }) {
+            try await Self.timed(progress) {
             // Vision-language architectures load through MLXVLM; text-only ones (Llama, Mistral, ... added from
             // Hugging Face) are only in MLXLLM's registry.
             let config = (try? Data(contentsOf: folder.appending(path: "config.json")))
@@ -376,7 +472,7 @@ public actor ChatService {
             let container = vlm
                 ? try await VLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
                 : try await LLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader())
-            return (container, unload: {})
+            return (container, unload: { await cache.clear() })
         } }
     }
 }
@@ -427,6 +523,20 @@ struct TransformersTokenizerLoader: MLXLMCommon.TokenizerLoader {
 struct TokenizerBridge: MLXLMCommon.Tokenizer {
     let upstream: any Tokenizers.Tokenizer
     init(_ upstream: any Tokenizers.Tokenizer) { self.upstream = upstream }
+
+    /// The tokens the chat template appends to open the assistant's turn (Qwen3.5 with thinking off:
+    /// `<|im_start|>assistant\n<think>\n\n</think>\n\n`), found by rendering a probe with and without it.
+    /// Nil when the template does not render the probe as prefix plus suffix.
+    func generationPrompt(context: [String: any Sendable]?) -> [Int]? {
+        let probe: [[String: any Sendable]] = [["role": "user", "content": "x"]]
+        guard let with = try? upstream.applyChatTemplate(messages: probe, chatTemplate: nil, addGenerationPrompt: true,
+                                                         truncation: false, maxLength: nil, tools: nil, additionalContext: context),
+              let without = try? upstream.applyChatTemplate(messages: probe, chatTemplate: nil, addGenerationPrompt: false,
+                                                            truncation: false, maxLength: nil, tools: nil, additionalContext: context),
+              with.count > without.count, Array(with.prefix(without.count)) == without
+        else { return nil }
+        return Array(with.dropFirst(without.count))
+    }
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { upstream.encode(text: text, addSpecialTokens: addSpecialTokens) }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { upstream.decode(tokens: tokenIds, skipSpecialTokens: skipSpecialTokens) }
