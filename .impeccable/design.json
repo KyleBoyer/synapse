@@ -212,14 +212,14 @@
       "name": "Audio Attachment Chip",
       "kind": "chip",
       "description": "Chat composer and transcript: an attached audio clip as a capsule with a waveform icon, the file name and its mono length. Audio pane modes (Speak, Compose) sit in a segmented control at the toolbar's center.",
-      "html": "<span class=\"ds-chip\">\u223f en.m4a <b>0:04</b></span>",
+      "html": "<span class=\"ds-chip\">∿ en.m4a <b>0:04</b></span>",
       "css": ".ds-chip{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border-radius:999px;background:rgba(0,0,0,.06);font:14px -apple-system,system-ui}.ds-chip b{font:500 12px ui-monospace,SF Mono,monospace;color:#6e6e73}"
     },
     {
       "name": "Glass Button",
       "kind": "button",
       "refersTo": "button-glass",
-      "description": ".glass secondary action: Stop, Delete\u2026, Unload, Cancel Download.",
+      "description": ".glass secondary action: Stop, Delete…, Unload, Cancel Download.",
       "html": "<button class=\"ds-btn-glass\">Unload</button>",
       "css": ".ds-btn-glass{padding:5px 14px;border-radius:999px;border:1px solid rgba(0,0,0,.08);background:rgba(255,255,255,.6);backdrop-filter:blur(16px);color:#1d1d1f;font:13px -apple-system,system-ui;cursor:pointer}.ds-btn-glass:hover{background:rgba(255,255,255,.8)}.ds-btn-glass:focus-visible{outline:3px solid rgba(91,63,214,.45);outline-offset:2px}"
     },
@@ -254,6 +254,14 @@
       "description": "Settings row in a glass panel: label left, control flush right. Used by the working panes and by the Settings sheet, whose sections are titled 18pt glass panels (Panel) over the main window rather than a separate window.",
       "html": "<div class=\"ds-prow\"><span>Random seed</span><label class=\"ds-switch\"><input type=\"checkbox\" checked><i></i></label></div>",
       "css": ".ds-prow{display:flex;justify-content:space-between;align-items:center;gap:12px;width:260px;font:13px -apple-system,system-ui;color:#1d1d1f}.ds-switch input{display:none}.ds-switch i{display:block;width:32px;height:18px;border-radius:9px;background:rgba(0,0,0,.15);position:relative;transition:background .2s}.ds-switch i::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .2s}.ds-switch input:checked+i{background:#5B3FD6}.ds-switch input:checked+i::after{left:16px}"
+    },
+    {
+      "name": "History Popover",
+      "kind": "custom",
+      "refersTo": "history-popover",
+      "description": "Saved work of one kind, from a toolbar clock button: a search field, a list of titles with mono model and relative date, and a bottom row with a mono count, Delete and Clear All…. Opening an item restores it in the pane; every delete confirms first. Panes whose items show inline use a per-item ellipsis menu (Delete…) and a toolbar Clear History… instead.",
+      "html": "<div class=\"ds-hist\"><input placeholder=\"Search chats\"><div class=\"ds-hrow\"><b>What is 2 + 2?</b><small>qwen3.5-0.8b · 4 minutes ago</small></div><div class=\"ds-hfoot\"><span>1 saved</span><span>Delete · Clear All…</span></div></div>",
+      "css": ".ds-hist{width:300px;border-radius:12px;padding:10px;background:rgba(255,255,255,.7);font:13px -apple-system,system-ui;color:#1d1d1f}.ds-hist input{width:100%;margin-bottom:8px}.ds-hrow{display:flex;flex-direction:column;padding:4px 0}.ds-hrow small{font:11px ui-monospace,monospace;color:#6e6e73}.ds-hfoot{display:flex;justify-content:space-between;border-top:1px solid #ddd;padding-top:8px;font:11px ui-monospace,monospace;color:#6e6e73}"
     }
   ],
   "narrative": {

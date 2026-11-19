@@ -33,6 +33,7 @@ The same models answer on `http://127.0.0.1:9000` in the shapes of the **OpenAI*
 - **Every modality in one place.** Text, images, video and audio in. Text, speech, music, images and video out. Full-duplex voice models that listen while they talk.
 - **A real Mac app, not a web wrapper.** SwiftUI and Liquid Glass, with a live readout on every pane: time to first token, tokens per second, memory, and the exact API call that does the same thing.
 - **Any model from Hugging Face.** Paste a repo name. Synapse checks it, tells you how it would run it, and then runs it in-process on MLX, through mlx-vlm, or as a GGUF on a bundled llama.cpp.
+- **Fast follow-up turns.** A prompt cache reuses the conversation so far, on every engine, so turn two of a long chat or agent session starts in a tenth of the time. Long prompts are saved to disk and stay warm across restarts.
 - **Built for a laptop's memory.** A memory budget, one GPU user at a time, idle unloading, and optional vOOM paging for models larger than RAM. Every screenshot here was taken on a 16 GB M4 Mac mini.
 
 ## See it work
@@ -195,6 +196,53 @@ print(r.output_text)
 **Video in chat.** Qwen3.5 models and the omni models (except Gemma 3n) read video. Send a `video_url` part (Chat Completions) or `input_video` part (Responses) holding an MP4 or MOV as a `data:` URL or an `http(s)` URL, up to 200 MB. Synapse samples 8 frames. File paths and `file://` URLs are refused. A model without video input returns 400.
 
 **Tool calls** work on Chat Completions, Responses, Anthropic Messages and realtime, for every input and output type: text, images, video and audio in (audio through the mlx-vlm models), spoken replies (a call comes back as `tool_calls` with `audio: null`), voice calls with or without the camera, and every chat engine (in-process MLX, mlx-vlm and GGUF through their servers' own tool parsers). Small models call less readily: Qwen3.5 0.8B only without a system prompt; 2B and larger decide on their own.
+
+</details>
+
+<details>
+<summary><b>Running models: prompt cache, KV precision, speculative decoding, sampling, thinking budget, keep warm</b></summary>
+
+**Prompt cache.** Caching is automatic; there is nothing to send. Each chat model keeps the attention state of recent conversations, so a request that starts with an earlier conversation only reads its new part:
+- **In-process MLX models.** Synapse saves the state where the history ends and the generation prompt begins. Every follow-up turn starts with exactly those tokens, so reuse works even on Qwen3.5, whose recurrent layers cannot be rewound.
+- **llama.cpp and mlx-vlm.** These use their own prefix caches (mlx-vlm's is turned on by Synapse).
+- **Disk.** Histories of 1,024 tokens or more are also saved to `<models>/cache` and survive unloads and restarts.
+- **Not cached.** Requests that carry images, video or audio.
+
+Measured on Qwen3.5 0.8B with a 2,300-token system prompt: time to first token on turn 2 went from 1.07 s to 0.11 s, with identical output.
+
+Reuse is reported in each API's usage fields:
+
+| API | Field |
+|---|---|
+| Chat Completions, Completions | `usage.prompt_tokens_details.cached_tokens` |
+| Responses | `usage.input_tokens_details.cached_tokens` |
+| Anthropic Messages | `usage.cache_read_input_tokens` (`input_tokens` counts only the rest). `cache_control` is accepted and not needed. |
+| LM Studio | `stats.cached_tokens` |
+
+Settings → Running models sets the cache memory (1.5 GB per model by default on 16 GB Macs) and the disk limit (10 GB). Each model card shows hit rate, tokens reused, and memory and disk use, counting API requests too.
+
+**KV cache precision.** Settings → Running models offers Full, 8-bit or 4-bit storage for attention keys and values. Longer contexts and more cached prompts fit in memory, at a small quality cost. It applies to MLX (affine quantization), llama.cpp (`q8_0`/`q4_0`) and mlx-vlm (`KV_BITS`). On hybrid models only the attention layers shrink: a Qwen3.5 0.8B checkpoint goes from 48 MB to 35 MB at 8-bit.
+
+**Speculative decoding.** On a model card, Draft model picks a smaller model with the same tokenizer. The draft proposes tokens and the main model checks them in one pass, so output is unchanged. It needs models built only from full attention: Llama, Qwen3 and Mistral qualify; Qwen3.5 (linear attention) and models with sliding windows do not. Measured: Llama 3.2 3B drafted by Llama 3.2 1B decodes at 69 tok/s instead of 50.
+
+**Sampling.** `seed`, `top_k`, `min_p`, `presence_penalty`, `frequency_penalty` and `repetition_penalty` (LM Studio's `repeat_penalty`) work on every chat route and engine; Anthropic Messages takes `top_k`. The same seed reproduces the same text.
+
+**Thinking budget.** `reasoning_effort` and Responses' `reasoning.effort` map as follows: `none` and `minimal` turn thinking off; `low` caps it at 1,024 tokens; `medium` at 4,096; `high` leaves it unlimited. Anthropic's `thinking: {"type": "enabled", "budget_tokens": n}` sets the cap directly. When the cap is reached the model's own `</think>` is inserted. Small Qwen3.5 models often keep reasoning after a forced stop instead of answering cleanly, so a budget trades answer quality for time.
+
+**Keep loaded.** A model card's Keep loaded switch loads that model when Synapse starts and never unloads it for being idle. It still gives way when another model needs the memory.
+
+</details>
+
+<details>
+<summary><b>Saved history</b></summary>
+
+Work done in the app is kept across launches: chats, images, clips, video, Live call transcripts (never audio), dropped transcriptions and Embed comparisons. Requests from API clients are never saved.
+
+- **Chat, Live, Transcribe and Embed.** A History button lists earlier items; open one, delete one or a selection, or clear them all.
+- **Images, Audio and Video.** Earlier items show in the pane, each with Delete, and the toolbar has Clear History.
+- **Settings → History.** Keep history forever, 90, 30 or 7 days, or turn it off. Delete All removes everything.
+
+Files live in `~/Library/Application Support/Synapse/History`.
 
 </details>
 

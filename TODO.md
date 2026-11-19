@@ -2,6 +2,27 @@
 
 New input/output pairings, in the order we plan to build them. Each item moves through: research → build → verify on the 16 GB Mac mini → docs. Check items off as they land and note what was verified.
 
+## Running models (done)
+
+Make repeat requests fast and give clients the knobs the engines already have.
+
+- [x] Prompt cache, in-process MLX: checkpoints at the end of the history (before the generation prompt), so reuse works on Qwen3.5's unrewindable linear attention; Qwen's rope state travels with each. Verified on Qwen3.5 0.8B: replies identical to uncached; turn-2 time to first token 1.07 s → 0.11 s (2,309 of 2,334 tokens reused).
+- [x] Disk tier: histories ≥ 1,024 tokens saved under `<models>/cache`, rewritten only when a conversation grows by a third. Verified: after unload, turn 2 reuses 2,309 tokens from disk with identical output; across an app relaunch too.
+- [x] llama.cpp (slot cache, `--cache-ram`) and mlx-vlm (APC, turned on, retried once if it refuses for memory). Verified: GGUF Llama 3.2 1B reuses 1,684 of 1,697; Gemma 3n 1,996 of 2,017 (2.3 s → 0.11 s prefill), same reply as cold.
+- [x] Cached tokens in every API's usage (OpenAI SDK and Anthropic SDK checked: `verify-modalities.py --only cache`).
+- [x] KV precision Full/8-bit/4-bit on MLX, llama.cpp and mlx-vlm. Verified: 8-bit cached = uncached output; Qwen3.5 0.8B checkpoint 48 → 35 MB. TurboQuant left out (its cache has no `copy()`).
+- [x] Speculative decoding with a draft model, full-attention pairs only (mlx-swift-lm needs trimmable caches; Qwen3.5 has none and its 4-bit weights ship no MTP heads). Verified: Llama 3.2 3B + 1B draft, 50 → 69 tok/s over 3 alternating runs, identical text.
+- [x] Sampling: seed, top_k, min_p, presence/frequency/repetition penalties on every route and engine. Verified: same seed, same text on MLX, GGUF and mlx-vlm.
+- [x] Thinking budget from reasoning effort / `budget_tokens`. Verified: a 64-token budget stops thinking at ~64 tokens; small Qwen3.5 models often keep reasoning after the forced `</think>` (README says so).
+- [x] Keep loaded (pinned models), measured resident memory (the sidebar no longer sums download sizes), model card Running section with prompt-cache metrics from every request, Memory pane cache rows, Settings → Running models.
+- [ ] Prompt cache for requests with images, video or audio (mlx's appendMediaSuffix path).
+- [ ] Acceptance rate for draft-model speculation (mlx-swift-lm reports it only for MTP).
+
+## Saved history (done)
+
+- [x] Chats, images, image tools, video and transforms, speech/sound/cleanup clips, Live call transcripts, GUI transcriptions and Embed comparisons kept in `~/Library/Application Support/Synapse/History`; delete per item, per pane, or all; retention in Settings. API requests are never saved (a unit test guards it). Verified in the app: GUI chat and image restored after relaunch; API chat and image sent alongside not saved.
+- [ ] Older items beyond the newest 50 per gallery pane load on demand.
+
 ## Voice cloning (done)
 
 Speak in the voice of a short reference clip, from the API and the Audio pane.

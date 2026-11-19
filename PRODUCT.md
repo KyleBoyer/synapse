@@ -38,7 +38,9 @@ Everything runs on the Mac, in one native app that is also the server: the same 
 - Some engines are Python tools (mlx-video, mlx-audio, mlx-vlm) installed on first use under the models folder; their models run as separate processes, one per clip or one server per omni model.
 - The dev Mac has 16 GB. LTX-2.3 video (about 96 GB), MiniCPM-o and Qwen3-Omni are verified only with mocks or not at all until they run on a 128 GB Mac Studio.
 - Measured per run, from model-ready: time to first token, decode and prompt rates, transcription speed, denoising step and image time, first audio, speech speed, embedding rate, video time and sound generation speed (the last two include model load, since each clip runs in a fresh process). Also shown: download and job progress, image previews, resident model bytes, the memory budget and over-budget state.
-- One loaded engine per kind; a memory budget unloads idle models; a process-wide GPU gate serializes inference.
+- One loaded engine per kind; a memory budget unloads idle models; a process-wide GPU gate serializes inference. Resident sizes are measured once loaded (weights, peak image memory, or helper-process footprint), estimated before.
+- Running models: a prompt cache on every chat engine (in memory, and on disk for long prompts), KV precision (full, 8-bit, 4-bit), speculative decoding with a draft model (full-attention models only), full sampling controls, a thinking budget, and keep-loaded models. Each chat model card counts its cache hits from every request, the API included.
+- Work done in the panes is saved as history (never API requests) and can be deleted per item, per pane, or all at once.
 - Model ids are user-facing (they are what API clients send), so they stay visible next to display names.
 
 ## Brand Commitments
