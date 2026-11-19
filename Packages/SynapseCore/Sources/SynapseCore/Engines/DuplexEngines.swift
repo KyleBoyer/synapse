@@ -4,6 +4,8 @@ import MLX
 /// Maps duplex/translation ModelSpecs to engines (vendored speech-swift). The URL is the model folder
 /// (`DuplexModels.folder`); loading happens in the engine's init and `unload()` frees the weights.
 public enum DuplexEngines {
+    /// The duplex models that hold a conversation (Hibiki Zero only translates).
+    public static let conversational: Set<String> = ["voicechat-11b", "voicechat-11b-int5", "personaplex-7b"]
     public static let duplex: @Sendable (ModelSpec, URL) async throws -> any DuplexSpeechEngine = { spec, folder in
         switch spec.id {
         case "voicechat-11b", "voicechat-11b-int5": return try await DuplexVoiceChatEngine(folder: folder)

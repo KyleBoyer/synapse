@@ -168,6 +168,10 @@ struct LiveView: View {
     @State private var deviceWatch: AnyObject?
     private let languages = ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "English"]
 
+    /// Needs more memory than this Mac has; it would page to disk and never keep up.
+    private func tooBig(_ spec: ModelSpec) -> Bool {
+        spec.recommendedRAMGB.map { UInt64($0) << 30 > ProcessInfo.processInfo.physicalMemory } ?? false
+    }
     private var needsChat: Bool { mode == .translate || mode == .call }
     /// The session plays audio back (so the speaker choice matters).
     private var plays: Bool { mode == .call || mode == .duplex || (mode == .translate && spoken) }
@@ -244,7 +248,12 @@ struct LiveView: View {
         .onChange(of: recognizers.map(\.0), initial: true) { _, ids in if !ids.contains(recognizer) { recognizer = ids.first ?? "" } }
         .onChange(of: state.downloadedTTSSpecs.map(\.id), initial: true) { _, ids in if !ids.contains(voiceModel) { voiceModel = ids.first ?? "" } }
         .onChange(of: voiceOptions.map(\.0), initial: true) { _, ids in if !ids.contains(voice) { voice = ids.first ?? "" } }
-        .onChange(of: state.downloadedDuplexSpecs.count, initial: true) { if duplexModel.isEmpty { duplexModel = state.downloadedDuplexSpecs.first?.id ?? "" } }
+        .onChange(of: state.downloadedDuplexSpecs.map(\.id), initial: true) { _, ids in
+            if !ids.contains(duplexModel) {
+                let specs = state.downloadedDuplexSpecs
+                duplexModel = (specs.first { !tooBig($0) } ?? specs.first)?.id ?? ""
+            }
+        }
         .onChange(of: model.running) { was, now in
             state.setActive(.live, now)
             if was, !now { saveCall() }
@@ -417,7 +426,9 @@ struct LiveView: View {
             }
             if mode == .duplex {
                 Picker("Duplex model", selection: $duplexModel) {
-                    ForEach(state.downloadedDuplexSpecs) { Text($0.displayName).tag($0.id) }
+                    ForEach(state.downloadedDuplexSpecs) { s in
+                        Text(tooBig(s) ? "\(s.displayName) · needs \(s.recommendedRAMGB ?? 0) GB" : s.displayName).tag(s.id)
+                    }
                 }
                 Label("Experimental. Needs the RAM shown in Models.", systemImage: "flask").font(.callout).foregroundStyle(.orange)
             }

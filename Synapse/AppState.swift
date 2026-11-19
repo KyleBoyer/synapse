@@ -195,7 +195,7 @@ final class AppState {
     var diarizerReady: Bool { if case .ready = modelStates["speaker-diarizer"] { return true }; return false }
     func isReady(_ id: String) -> Bool { if case .ready = modelStates[id] { return true }; return false }
     var downloadedRealtimeBase: Bool { ["parakeet-eou-120m", "silero-vad", "pocket-tts"].allSatisfy { if case .ready = modelStates[$0] { return true }; return false } }
-    var downloadedDuplexSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .duplex } }
+    var downloadedDuplexSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .duplex && DuplexEngines.conversational.contains($0.id) } }
     var downloadedChatSpecs: [ModelSpec] { readySpecs.filter { $0.isChat } }
 
     func refreshResidents() async {
