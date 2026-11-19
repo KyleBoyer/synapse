@@ -39,6 +39,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 fputs("playTest: done\n", stderr)
             }
         }
+        // `-jitterTest YES` feeds Live's player 80 ms chunks as a model would, slower than real time (0.8x) and then at
+        // real time with uneven timing, printing how far the buffer grew.
+        if UserDefaults.standard.bool(forKey: "jitterTest") {
+            Task { @MainActor in
+                let out = UserDefaults.standard.string(forKey: "repOut") ?? ""
+                guard let a = try? await LiveAudio.acquire(.init(input: "", output: out, voiceProcessing: false), onChunk: { _ in }, onLevel: { _ in })
+                else { fputs("jitterTest: open failed\n", stderr); return }
+                let chunk = Data(count: 1920 * 2)
+                for (label, gaps) in [("0.8x real time", [Double](repeating: 0.1, count: 80)),
+                                      ("real time, bursty", (0..<80).map { $0 % 4 == 3 ? 0.2 : 0.04 })] {
+                    a.flush()
+                    for g in gaps { a.play(pcm16: chunk); try? await Task.sleep(for: .seconds(g)) }
+                    fputs("jitterTest: \(label): buffer grew to \(a.currentPrebuffer * 1000 / 24000) ms\n", stderr)
+                }
+                a.release()
+                fputs("jitterTest: done\n", stderr)
+            }
+        }
         // `-liveRepeatTest YES` drives the shared audio link as the panes do: a call (echo cancellation asked for),
         // Stop, another call, a Clone Voice recording, then leaving the panes; prints each step's time.
         if UserDefaults.standard.bool(forKey: "liveRepeatTest") {

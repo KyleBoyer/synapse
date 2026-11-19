@@ -36,9 +36,15 @@ final class LiveAudio: @unchecked Sendable {
     private let player = AVAudioPlayerNode()
     private let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false)!
     private let lock = NSLock()
-    private var queued: [Float] = []   // jitter buffer: held until `prebuffer` samples arrive
+    // Jitter buffer: audio is held until `prebuffer` samples arrive. Each time playback runs dry mid-stream (a model
+    // producing audio slower than real time, or in bursts) the next start waits for a longer stretch, up to 1 s, so
+    // gaps come rarely and whole phrases play together instead of a stutter between tiny pieces.
+    private static let basePrebuffer = 3600, maxPrebuffer = 24000   // 150 ms, 1 s at 24 kHz
+    private var queued: [Float] = []
     private var playing = false
-    private let prebuffer = 3600       // 150 ms
+    private var prebuffer = basePrebuffer
+    private var scheduled = 0          // samples handed to the player and not yet played
+    private var epoch = 0              // bumped by flush, so callbacks from dropped buffers are ignored
 
     private init(_ config: Config) { self.config = config }
 
@@ -193,18 +199,32 @@ final class LiveAudio: @unchecked Sendable {
         schedule(queued); queued = []
     }
 
-    /// Barge-in: drop everything scheduled or buffered.
+    /// Barge-in (or a new reply): drop everything scheduled or buffered, and start again from the short buffer.
     func flush() {
-        lock.lock(); defer { lock.unlock() }
-        queued = []; playing = false
+        lock.withLock { queued = []; playing = false; scheduled = 0; epoch += 1; prebuffer = Self.basePrebuffer }
+        // Outside the lock: stopping calls the dropped buffers' completion handlers, which take it.
         player.stop(); player.play()
     }
+
+    /// The buffer length a reply needs before it starts, after any growth from running dry (for checks).
+    var currentPrebuffer: Int { lock.withLock { prebuffer } }
 
     private func schedule(_ s: [Float]) {
         guard !s.isEmpty, let b = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: AVAudioFrameCount(s.count)) else { return }
         b.frameLength = AVAudioFrameCount(s.count)
         s.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: s.count) }
-        player.scheduleBuffer(b, completionHandler: nil)
+        scheduled += s.count
+        let n = s.count, e = epoch
+        player.scheduleBuffer(b, completionCallbackType: .dataPlayedBack) { [weak self] _ in self?.played(n, epoch: e) }
+    }
+
+    private func played(_ n: Int, epoch e: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard e == epoch else { return }
+        scheduled -= n
+        guard scheduled <= 0, playing, queued.isEmpty else { return }
+        playing = false   // ran dry: buffer a longer stretch before playing again
+        prebuffer = min(prebuffer * 3 / 2, Self.maxPrebuffer)
     }
 
     /// Closes the devices on a background queue: stopping a Bluetooth headset's capture and output blocks for seconds.
