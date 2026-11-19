@@ -228,7 +228,11 @@ enum ImageFetcher {
 
 struct ChatUsageWire: Encodable {
     var prompt_tokens: Int, completion_tokens: Int, total_tokens: Int
-    init(_ u: ChatUsage) { prompt_tokens = u.promptTokens; completion_tokens = u.completionTokens; total_tokens = u.totalTokens }
+    var prompt_tokens_details: [String: Int]
+    init(_ u: ChatUsage) {
+        prompt_tokens = u.promptTokens; completion_tokens = u.completionTokens; total_tokens = u.totalTokens
+        prompt_tokens_details = ["cached_tokens": u.cachedTokens]
+    }
 }
 
 struct ChatCompletionWire: Encodable {
@@ -293,7 +297,10 @@ struct ResponseWire: Encodable {
         var input_tokens: Int, output_tokens: Int, total_tokens: Int
         var input_tokens_details = ["cached_tokens": 0, "cache_write_tokens": 0]
         var output_tokens_details = ["reasoning_tokens": 0]
-        init(_ u: ChatUsage) { input_tokens = u.promptTokens; output_tokens = u.completionTokens; total_tokens = u.totalTokens }
+        init(_ u: ChatUsage) {
+            input_tokens = u.promptTokens; output_tokens = u.completionTokens; total_tokens = u.totalTokens
+            input_tokens_details["cached_tokens"] = u.cachedTokens
+        }
     }
     struct Incomplete: Encodable { var reason: String }
     var id: String

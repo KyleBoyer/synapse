@@ -603,7 +603,31 @@ def video_transform():
         check(f"video-transform: {op} returns an MP4 of every frame", ok, detail)
 
 
-SECTIONS = {"speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools, "video-transform": video_transform}
+def cache():
+    """Prompt cache: a follow-up turn reports the shared history as cached, in OpenAI's and Anthropic's fields."""
+    from anthropic import Anthropic
+    from openai import OpenAI
+
+    system = "\n".join(f"Rule {i}: answer briefly and stay on topic." for i in range(1, 150))
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    msgs = [{"role": "system", "content": system}, {"role": "user", "content": "Name a primary color. One word."}]
+    first = client.chat.completions.create(model="qwen3.5-0.8b", messages=msgs, max_tokens=8, temperature=0)
+    msgs += [{"role": "assistant", "content": first.choices[0].message.content}, {"role": "user", "content": "Another one?"}]
+    second = client.chat.completions.create(model="qwen3.5-0.8b", messages=msgs, max_tokens=8, temperature=0)
+    cached = second.usage.prompt_tokens_details.cached_tokens
+    check("chat completions: follow-up reports cached_tokens", cached > first.usage.prompt_tokens - 20,
+          f"{cached} of {second.usage.prompt_tokens}")
+
+    ant = Anthropic(base_url=HOST, api_key=KEY)
+    turns = [{"role": "user", "content": "Name a fruit. One word."}]
+    a1 = ant.messages.create(model="qwen3.5-0.8b", system=system + "\nBe terse.", messages=turns, max_tokens=8)
+    turns += [{"role": "assistant", "content": a1.content[0].text}, {"role": "user", "content": "Another one?"}]
+    a2 = ant.messages.create(model="qwen3.5-0.8b", system=system + "\nBe terse.", messages=turns, max_tokens=8)
+    check("anthropic: follow-up reports cache_read_input_tokens", a2.usage.cache_read_input_tokens > a1.usage.input_tokens - 20,
+          f"read {a2.usage.cache_read_input_tokens}, uncached input {a2.usage.input_tokens}")
+
+
+SECTIONS = {"cache": cache, "speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools, "video-transform": video_transform}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

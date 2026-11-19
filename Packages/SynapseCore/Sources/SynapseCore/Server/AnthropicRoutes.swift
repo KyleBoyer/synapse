@@ -289,7 +289,9 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
                 case .progress: break
                 case .done(let finish, let u):
                     text(splitter?.finish() ?? ("", ""), final: true)
-                    usage = AnthropicUsage(input_tokens: u.promptTokens, output_tokens: u.completionTokens)
+                    // Anthropic counts cache reads apart from input_tokens; caching here is automatic, so there are no cache writes.
+                    usage = AnthropicUsage(input_tokens: u.promptTokens - u.cachedTokens, output_tokens: u.completionTokens,
+                                           cache_read_input_tokens: u.cachedTokens)
                     if stopSequence == nil {
                         stopReason = asm.hasToolUse ? "tool_use" : finish == "length" ? "max_tokens" : "end_turn"
                     }

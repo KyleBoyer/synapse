@@ -191,6 +191,7 @@ struct LMStudioRun {
         let decode = firstToken.flatMap { f in lastToken.map { seconds($0 - f) } } ?? 0
         var stats: [String: any Encodable & Sendable] = [
             "input_tokens": usage.promptTokens,
+            "cached_tokens": usage.cachedTokens,
             "total_output_tokens": usage.completionTokens,
             // shortcut: one streamed chunk is about one token, so reasoning tokens are counted in chunks.
             "reasoning_output_tokens": min(reasoningChunks, usage.completionTokens),
