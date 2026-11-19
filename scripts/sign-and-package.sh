@@ -76,13 +76,14 @@ done
 ENT="$(codesign -d --entitlements - "$APP" 2>&1)"
 [[ "$ENT" == *audio-input* ]] || { echo "Synapse.app is missing its entitlements" >&2; exit 1; }
 
-# The DMG people download: the app beside an Applications link to drag it onto.
-STAGE="$(mktemp -d)"
-ditto "$APP" "$STAGE/Synapse.app"
-ln -s /Applications "$STAGE/Applications"
+# The DMG people download: the app beside an Applications link on a background with an arrow (scripts/dmg).
+# dmgbuild writes Finder's layout file directly, so it needs no Finder scripting on a headless runner.
+VENV="$(mktemp -d)/venv"
+python3 -m venv "$VENV"
+"$VENV/bin/pip" install --quiet --disable-pip-version-check dmgbuild==1.6.7
 rm -f "$DMG"
-hdiutil create -volname Synapse -srcfolder "$STAGE" -format UDZO -ov "$DMG" >/dev/null
-rm -rf "$STAGE"
+"$VENV/bin/dmgbuild" -s "$ROOT/scripts/dmg/settings.py" -D app="$APP" -D background="$ROOT/scripts/dmg/background.png" Synapse "$DMG"
+rm -rf "$(dirname "$VENV")"
 [[ "$SIGNED" == 1 ]] && codesign --force ${TS[@]+"${TS[@]}"} -s "$IDENTITY" "$DMG"
 
 # One notarization covers the DMG and the app inside it, so both can be stapled.

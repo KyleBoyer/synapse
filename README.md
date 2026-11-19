@@ -371,6 +371,8 @@ Run the **Release** workflow from the Actions tab (`gh workflow run release.yml 
 - `none`: builds, tests and signs, then attaches the DMG, zip and appcast to the workflow run. Nothing is committed, tagged or published.
 - `patch`, `minor`, `major`: bumps `MARKETING_VERSION` (and the build number) in `project.yml`, builds, tests, signs and notarizes, then commits `Release vX.Y.Z`, tags it, and publishes a GitHub Release with the DMG (for people), the zip and `appcast.xml` (for Sparkle; the app's feed is the latest release's `appcast.xml`). It runs only from the default branch, and nothing is pushed if any step before it fails.
 
+The DMG's window (background, arrow, icon positions) is defined in `scripts/dmg`; `swift scripts/dmg/make-background.swift scripts/dmg` redraws the background.
+
 Without secrets the app is ad-hoc signed. For Developer ID signing and notarization (paid Apple Developer account), set these repository secrets:
 
 - `DEVELOPER_ID_CERT_P12` (base64 of the exported .p12)
