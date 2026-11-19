@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 struct ImagesView: View {
     @Environment(AppState.self) private var state
     struct Generation: Identifiable {
-        let id = UUID()
+        var id = UUID()
         let prompt: String
         let model: String
         let images: [Data]
@@ -87,8 +87,19 @@ struct ImagesView: View {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                         .id(modelID)   // the toolbar measures the menu once; a new identity re-measures it for the chosen name
                 }
+                if mode == .generate {
+                    ClearHistoryButton(noun: "image") { state.clearHistory(.image); history = [] }.disabled(history.isEmpty)
+                } else {
+                    // Tools share one kind; each item's model is its tool's name, so only this tool's results go.
+                    ClearHistoryButton(noun: "\(mode.rawValue) result") {
+                        let tool = mode.rawValue
+                        Task { state.deleteHistory(await state.history.list(.imageTool).filter { $0.model == tool }.map(\.id), kind: .imageTool) }
+                    }
+                }
             }
         }
+        .task(id: state.historyRevision) { await loadHistory() }
+
         .task { await state.refreshModels() }
         .onChange(of: specs.map(\.id), initial: true) { _, ids in
             if !ids.contains(modelID) { modelID = ids.first ?? "" }
@@ -192,6 +203,9 @@ struct ImagesView: View {
                             Text(g.prompt).font(.title3).lineLimit(2)
                             Spacer()
                             Text("\(g.model) · \(String(format: "%.1f s", g.seconds))").font(.mono(.caption)).foregroundStyle(.secondary)
+                            DeleteItemMenu(noun: g.images.count == 1 ? "image" : "set of \(g.images.count) images") {
+                                history.removeAll { $0.id == g.id }; state.deleteHistory([g.id], kind: .image)
+                            }
                         }
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
                             ForEach(g.images.indices, id: \.self) { i in tile(g.images[i]) }
@@ -269,6 +283,20 @@ struct ImagesView: View {
         }
     }
 
+    /// Saved generations, oldest first like `history`.
+    // shortcut: only the newest 50 load (their PNGs are held in memory); page older ones in when a long history matters.
+    private func loadHistory() async {
+        guard state.savesHistory else { return }
+        var loaded: [Generation] = []
+        for item in await state.history.list(.image).prefix(50).reversed() {
+            var images: [Data] = []
+            for f in item.files.sorted() { if let d = await state.history.data(item, f) { images.append(d) } }
+            loaded.append(Generation(id: item.id, prompt: item.title, model: item.model, images: images,
+                                     seconds: item.decode([String: Double].self)?["seconds"] ?? 0))
+        }
+        history = loaded
+    }
+
     private func addReferences(_ urls: [URL]) {
         for u in urls { if let d = try? Data(contentsOf: u), NSImage(data: d) != nil { references.append(d) } }
     }
@@ -311,7 +339,11 @@ struct ImagesView: View {
                 if let sps = timing.secondsPerStep {
                     metrics.record(spec.id, .imageTime, sps * Double(progress?.totalSteps ?? timing.steps))
                 }
-                history.append(Generation(prompt: text, model: spec.id, images: out, seconds: total))
+                let g = Generation(prompt: text, model: spec.id, images: out, seconds: total)
+                history.append(g)
+                state.saveHistory(HistoryItem(id: g.id, kind: .image, title: g.prompt, model: g.model,
+                                              payload: (try? JSONEncoder().encode(["seconds": g.seconds])) ?? Data()),
+                                  files: Dictionary(uniqueKeysWithValues: out.enumerated().map { ("image-\($0.offset).png", $0.element) }))
             } catch is CancellationError {
             } catch { self.error = error.localizedDescription }
         }

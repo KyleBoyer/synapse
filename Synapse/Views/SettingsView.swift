@@ -4,6 +4,8 @@ import SynapseCore
 
 /// Settings as a sheet over the main window, built from the same glass panels and rows as the working panes.
 struct SettingsView: View {
+    @State private var historyBytes: Int?
+    @State private var confirmingHistoryDelete = false
     @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
     @AppStorage(WindowLook.appearanceKey) private var appearance: AppAppearance = .system
@@ -29,6 +31,7 @@ struct SettingsView: View {
                         generalPanel
                         memoryPanel
                         runningPanel.id("running")
+                        historyPanel.id("history")
                         subtitlesPanel
                         storagePanel
                         voomPanel
@@ -150,6 +153,37 @@ struct SettingsView: View {
                 Button("Clear Cache") { state.clearPromptCache(nil, disk: true) }.buttonStyle(.glass)
             }
         }
+    }
+
+    /// Work done in the panes (never API requests): how long it stays, and deleting it.
+    private var historyPanel: some View {
+        @Bindable var state = state
+        return Panel("History") {
+            PanelRow("Keep history") {
+                Picker("Keep history", selection: $state.settings.historyDays) {
+                    Text("Forever").tag(Int?.none)
+                    Text("90 days").tag(Int?.some(90))
+                    Text("30 days").tag(Int?.some(30))
+                    Text("7 days").tag(Int?.some(7))
+                    Text("Off").tag(Int?.some(0))
+                }
+                .labelsHidden().fixedSize()
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text(state.savesHistory
+                     ? "Chats, images, clips, calls and transcripts made here are kept, \(historyBytes.map { byteSize($0) } ?? "…") so far. "
+                       + "Requests from API clients are never saved."
+                     : "Nothing new is saved. What was saved before stays until you delete it.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                Button("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([state.history.root]) }.buttonStyle(.glass)
+                Button("Delete All…", role: .destructive) { confirmingHistoryDelete = true }.buttonStyle(.glass)
+            }
+        }
+        .task(id: state.historyRevision) { historyBytes = await state.history.totalBytes() }
+        .confirmationDialog("Delete all history?", isPresented: $confirmingHistoryDelete) {
+            Button("Delete All", role: .destructive) { state.clearHistory(nil) }
+        } message: { Text("Every saved chat, image, clip, call and transcript is deleted. This can't be undone.") }
     }
 
     private var subtitlesPanel: some View {

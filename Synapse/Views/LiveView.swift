@@ -142,6 +142,8 @@ final class LiveModel {
 
 struct LiveView: View {
     @Environment(AppState.self) private var state
+    /// A saved call opened from History (read-only transcript).
+    @State private var pastCall: HistoryItem?
     @State private var model = LiveModel()
     @State private var mode: LiveMode = .captions
     @State private var chatModel = ""
@@ -216,7 +218,9 @@ struct LiveView: View {
                 Picker("Mode", selection: $mode) { ForEach(LiveMode.allCases) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).disabled(model.running)
             }
+            ToolbarItem { HistoryButton(kind: .call, noun: "call") { pastCall = $0 } }
         }
+        .sheet(item: $pastCall) { CallTranscriptSheet(item: $0) }
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
         .onAppear { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: state.downloadedChatSpecs.count) { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
@@ -224,7 +228,10 @@ struct LiveView: View {
         .onChange(of: state.downloadedTTSSpecs.map(\.id), initial: true) { _, ids in if !ids.contains(voiceModel) { voiceModel = ids.first ?? "" } }
         .onChange(of: voiceOptions.map(\.0), initial: true) { _, ids in if !ids.contains(voice) { voice = ids.first ?? "" } }
         .onChange(of: state.downloadedDuplexSpecs.count, initial: true) { if duplexModel.isEmpty { duplexModel = state.downloadedDuplexSpecs.first?.id ?? "" } }
-        .onChange(of: model.running) { state.setActive(.live, model.running) }
+        .onChange(of: model.running) { was, now in
+            state.setActive(.live, now)
+            if was, !now { saveCall() }
+        }
         .onChange(of: model.latency) { if let l = model.latency, !chatModel.isEmpty { state.metrics.record(chatModel, .firstAudio, l) } }
         .onDisappear { if model.running { model.stop() } }
         #if DEBUG
@@ -386,6 +393,17 @@ struct LiveView: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
     }
 
+    /// A finished session, saved as a call: its mode, models and timed lines (never audio).
+    private func saveCall() {
+        let lines = model.lines.filter { !$0.text.isEmpty }
+        guard !lines.isEmpty else { return }
+        let modelName = mode == .duplex ? duplexModel : mode == .call ? chatModel : recognizer
+        let first = lines.first { $0.role == "You" }?.text ?? lines[0].text
+        let record = CallRecord(mode: mode.rawValue, lines: lines.map { .init(role: $0.role, text: $0.text, at: $0.at) })
+        state.saveHistory(HistoryItem(kind: .call, title: "\(mode.rawValue): \(first.prefix(70))", model: modelName,
+                                      createdAt: model.started ?? Date(), payload: (try? JSONEncoder().encode(record)) ?? Data()))
+    }
+
     private var micBar: some View {
         HStack(spacing: 14) {
             Button {
@@ -414,5 +432,57 @@ struct LiveView: View {
                 .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(model.lines.isEmpty).help("Clear")
         }
         .glassBar()
+    }
+}
+
+struct CallRecord: Codable {
+    struct Line: Codable { var role: String; var text: String; var at: Double }
+    var mode: String
+    var lines: [Line]
+}
+
+/// A saved call's transcript, read-only, with Copy.
+struct CallTranscriptSheet: View {
+    let item: HistoryItem
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let record = item.decode(CallRecord.self)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(record?.mode ?? "Call").font(.title2.weight(.bold))
+                    HStack(spacing: 6) {
+                        Text(item.model).font(.mono(.caption))
+                        Text(item.createdAt, format: .dateTime.month().day().hour().minute()).font(.caption)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Copy", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString((record?.lines ?? []).map { "\($0.role): \($0.text)" }.joined(separator: "\n"), forType: .string)
+                }
+                .buttonStyle(.glass)
+                Button("Done") { dismiss() }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array((record?.lines ?? []).enumerated()), id: \.offset) { _, line in
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text(timecode(line.at)).font(.mono(.caption)).foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(line.role.capitalized).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                Text(line.text).textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+                .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 560, height: 520)
     }
 }

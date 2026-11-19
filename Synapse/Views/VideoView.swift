@@ -20,6 +20,9 @@ struct VideoView: View {
     @State private var importing = false
     /// Newest first, as the service reports them.
     @State private var jobs: [VideoJob] = []
+    /// Clips from earlier sessions (and this one's, once their job is gone from the service).
+    @State private var saved: [(item: HistoryItem, saved: Saved, url: URL)] = []
+    struct Saved: Codable { var job: String; var meta: String }
     @State private var error: String?
 
     private var specs: [ModelSpec] {
@@ -65,7 +68,18 @@ struct VideoView: View {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                         .id(modelID)   // the toolbar measures the menu once; a new identity re-measures it for the chosen name
                 }
+                ClearHistoryButton(noun: mode == .generate ? "clip" : "transformed video") {
+                    state.clearHistory(mode == .generate ? .video : .videoTransform)
+                }
             }
+        }
+        .task(id: state.historyRevision) {
+            guard state.savesHistory else { return }
+            var loaded: [(item: HistoryItem, saved: Saved, url: URL)] = []
+            for item in await state.history.list(.video) {
+                if let s = item.decode(Saved.self) { loaded.append((item, s, await state.history.url(item, "clip.mp4"))) }
+            }
+            saved = loaded
         }
         .task {
             await state.refreshModels()
@@ -80,6 +94,11 @@ struct VideoView: View {
                 if let i = jobs.firstIndex(where: { $0.id == j.id }) { jobs[i] = j } else { jobs.insert(j, at: 0) }
                 if j.status == .completed, !VideoEngines.mock, let start = j.startedAt, let end = j.completedAt {
                     state.metrics.record(j.model, .videoTime, end.timeIntervalSince(start))
+                }
+                if j.status == .completed, let file = j.file, state.guiVideoJobs.remove(j.id) != nil {
+                    state.saveHistory(HistoryItem(kind: .video, title: j.prompt, model: j.model,
+                                                  payload: (try? JSONEncoder().encode(Saved(job: j.id, meta: meta(j)))) ?? Data()),
+                                      copy: ["clip.mp4": file])
                 }
             }
         }
@@ -160,6 +179,22 @@ struct VideoView: View {
                     Text("Describe a clip below and press Return.").font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                 }
                 ForEach(jobs) { job in clip(job) }
+                let earlier = saved.filter { s in !jobs.contains { $0.id == s.saved.job } }
+                if !earlier.isEmpty {
+                    Text("Earlier").font(.headline).padding(.top, 8)
+                    ForEach(earlier, id: \.item.id) { s in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(s.item.title).font(.title3).lineLimit(2)
+                                Spacer()
+                                Text(s.saved.meta).font(.mono(.caption)).foregroundStyle(.secondary)
+                                DeleteItemMenu(noun: "clip") { state.deleteHistory([s.item.id], kind: .video) }
+                            }
+                            ClipPlayer(url: s.url).aspectRatio(16 / 9, contentMode: .fit).frame(maxHeight: 460).clipShape(.rect(cornerRadius: 14))
+                                .contextMenu { Button("Save…") { save(s.url) } }
+                        }
+                    }
+                }
             }
             .padding(.horizontal, 24).padding(.vertical, 16)
             .frame(maxWidth: 820, alignment: .leading)
@@ -199,7 +234,12 @@ struct VideoView: View {
             .clipShape(.rect(cornerRadius: 14))
             .contextMenu {
                 if let file = j.file { Button("Save…") { save(file) } }
-                Button("Delete", role: .destructive) { Task { _ = await state.videos.delete(j.id); jobs.removeAll { $0.id == j.id } } }
+                Button("Delete", role: .destructive) {
+                    Task {
+                        _ = await state.videos.delete(j.id); jobs.removeAll { $0.id == j.id }
+                        state.deleteHistory(saved.filter { $0.saved.job == j.id }.map(\.item.id), kind: .video)
+                    }
+                }
             }
             .overlay(alignment: .topTrailing) {
                 if let file = j.file {
@@ -251,7 +291,7 @@ struct VideoView: View {
         let req = VideoRequest(prompt: prompt, width: dims[0], height: dims[1], frames: VideoService.frames(seconds: seconds),
                                seed: randomSeed ? nil : UInt64(seed), inputImage: startImage)
         error = nil; prompt = ""
-        Task { _ = await state.videos.create(model: spec, request: req) }
+        Task { state.guiVideoJobs.insert(await state.videos.create(model: spec, request: req).id) }
     }
 }
 

@@ -47,6 +47,7 @@ struct TranscribeView: View {
             ToolbarSpacer(.fixed)
             ToolbarItemGroup {
                 Button("Choose Files…", systemImage: "plus") { choose() }
+                HistoryButton(kind: .transcript, noun: "transcript") { item in opened = item.decode(TranscriptRecord.self)?.job(item) }
                 Button("Clear Finished", systemImage: "trash") { state.clearFinished() }
                     .disabled(!state.jobs.contains { $0.status.isTerminal })
             }

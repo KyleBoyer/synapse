@@ -55,6 +55,13 @@ final class AppState {
     let sound: SoundService
     let server: ServerController
     let watcher: FolderWatcher
+    /// Work done in the panes, kept across launches. Only GUI code saves here; API requests never do.
+    let history = HistoryStore(root: HistoryStore.defaultRoot)
+    /// Bumped on every save and delete, so panes showing history reload.
+    private(set) var historyRevision = 0
+    /// Video jobs started from the Video pane; only these are saved to history (the service also runs API jobs).
+    var guiVideoJobs = Set<String>()
+    @ObservationIgnored private var lastPrune = Date()
 
     init() {
         let s = Settings.load()
@@ -104,6 +111,12 @@ final class AppState {
             // Diarized runs include speaker labeling, so they are not a transcription speed measurement.
             if let model = snap.modelID, let t = snap.transcript, t.duration > 0, !snap.request.diarize {
                 metrics.record(model, .realtimeSpeed, t.duration / elapsed)
+            }
+            // Only files dropped in Transcribe: API jobs never go to history, and watched folders write their own files.
+            if snap.request.origin == .gui, let t = snap.transcript, case .media(let url) = snap.request.input {
+                let record = TranscriptRecord(source: url.path, task: snap.request.task.rawValue, transcript: t)
+                saveHistory(HistoryItem(id: snap.id, kind: .transcript, title: url.lastPathComponent, model: snap.modelID ?? "",
+                                        payload: (try? JSONEncoder().encode(record)) ?? Data()))
             }
         }
         if let i = jobs.firstIndex(where: { $0.id == snap.id }) { jobs[i] = snap } else { jobs.append(snap) }
@@ -160,11 +173,46 @@ final class AppState {
         diskCache = chat.diskCacheUsage()
         // The server reports running from its own callback, after start() returns, so the status is re-read here.
         serverStatus = await server.status
+        if Date().timeIntervalSince(lastPrune) > 3600 { lastPrune = Date(); pruneHistory() }
     }
 
     /// Prompt-cache counters per chat model since launch, every request included (refreshed with the residents).
     private(set) var cacheStats: [String: PromptCacheStats] = [:]
     private(set) var diskCache: (bytes: Int, entries: Int) = (0, 0)
+
+    // MARK: History
+
+    var savesHistory: Bool { settings.historyDays != 0 }
+
+    /// Saves an item unless history is off. `copy` names files to copy in (videos), by their name in the item.
+    func saveHistory(_ item: HistoryItem, files: [String: Data] = [:], copy: [String: URL] = [:]) {
+        guard savesHistory else { return }
+        var item = item
+        item.files = Array(Set(item.files).union(copy.keys))
+        let history = history
+        Task {
+            do {
+                for (name, url) in copy { try await history.addFile(item, name: name, copying: url) }
+                try await history.save(item, files: files)
+            } catch {
+                startupError = "Could not save to history: \(error.localizedDescription)"
+            }
+            historyRevision += 1
+        }
+    }
+
+    func deleteHistory(_ ids: [UUID], kind: HistoryKind) {
+        Task { await history.delete(ids, kind: kind); historyRevision += 1 }
+    }
+
+    func clearHistory(_ kind: HistoryKind?) {
+        Task { await history.deleteAll(kind); historyRevision += 1 }
+    }
+
+    private func pruneHistory() {
+        let cutoff = settings.historyDays.flatMap { $0 > 0 ? Date().addingTimeInterval(-Double($0) * 86_400) : nil }
+        Task { await history.prune(olderThan: cutoff); historyRevision += 1 }
+    }
 
     /// Loads keep-warm models one at a time, so each finishes before the next takes memory.
     func preload(_ ids: [String]) {
@@ -253,6 +301,7 @@ final class AppState {
         if let old, old.promptCacheGB != s.promptCacheGB { let b = s.promptCacheBytes; Task { await chat.setPromptCacheLimit(b) } }
         if let old, old.diskCacheGB != s.diskCacheGB { let b = s.diskCacheBytes; Task { await chat.setDiskCacheLimit(b) } }
         if old?.kvPrecision != s.kvPrecision { let p = s.kvPrecision; Task { await chat.setKVPrecision(p) } }
+        if old == nil || old?.historyDays != s.historyDays { pruneHistory() }
         if old?.draftModels != s.draftModels {
             let ids = Set(s.draftModels.keys).union(old?.draftModels.keys ?? [:].keys)
             let drafts = s.draftModels
@@ -264,4 +313,18 @@ final class AppState {
     }
 
     func refreshServerStatus() async { serverStatus = await server.status }
+}
+
+/// A saved transcript: the text with its timing, and where the audio was (the file itself is not copied).
+struct TranscriptRecord: Codable {
+    var source: String
+    var task: String
+    var transcript: Transcript
+
+    /// As a finished job, so the transcript sheet shows it like any other.
+    func job(_ item: HistoryItem) -> JobSnapshot {
+        JobSnapshot(id: item.id, request: JobRequest(input: .media(URL(fileURLWithPath: source)), modelID: item.model,
+                                                    task: TaskKind(rawValue: task) ?? .transcribe, origin: .gui),
+                    status: .done, modelID: item.model, transcript: transcript)
+    }
 }

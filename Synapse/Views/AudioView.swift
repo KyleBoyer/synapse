@@ -69,7 +69,7 @@ final class SpeakPlayer {
 @MainActor @Observable
 final class SpeakModel {
     struct Clip: Identifiable {
-        let id = UUID()
+        var id = UUID()
         let text: String
         let model: String
         let voice: String
@@ -153,6 +153,17 @@ final class SpeakModel {
         b.frameLength = AVAudioFrameCount(clip.samples.count)
         clip.samples.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: clip.samples.count) }
         try file.write(from: b)
+    }
+
+    /// A saved clip read back: mono samples for playback, and the file itself so Save… keeps stereo.
+    static func readWAV(_ url: URL) -> (samples: [Float], rate: Int, wav: Data)? {
+        guard let f = try? AVAudioFile(forReading: url),
+              let b = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length)),
+              (try? f.read(into: b)) != nil, let ch = b.floatChannelData, let wav = try? Data(contentsOf: url) else { return nil }
+        let n = Int(b.frameLength), c = Int(b.format.channelCount)
+        var mono = [Float](repeating: 0, count: n)
+        for i in 0..<c { for j in 0..<n { mono[j] += ch[i][j] / Float(c) } }
+        return (mono, Int(f.processingFormat.sampleRate), wav)
     }
 }
 
@@ -250,6 +261,8 @@ struct AudioView: View {
     @State private var model = SpeakModel()
     @State private var composer = ComposeModel()
     @State private var editor = ComposeModel()
+    /// Clips already in history (saved here or loaded from it), so each is written once.
+    @State private var savedClips = Set<UUID>()
     @State private var editModelID = ""
     @State private var editInput: URL?
     @State private var length = 8.0
@@ -334,6 +347,10 @@ struct AudioView: View {
                 if !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: selection, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                 }
+                ClearHistoryButton(noun: mode == .speak ? "speech clip" : mode == .edit ? "cleaned-up clip" : "sound") {
+                    state.clearHistory(historyKind)
+                    switch mode { case .speak: model.clips = []; case .edit: editor.clips = []; default: composer.clips = [] }
+                }
             }
         }
     }
@@ -342,6 +359,10 @@ struct AudioView: View {
     private var observed: some View {
         content
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
+        .task(id: state.historyRevision) { await loadHistory() }
+        .onChange(of: model.clips.map(\.id)) { saveNew(model.clips, kind: .speech) }
+        .onChange(of: composer.clips.map(\.id)) { saveNew(composer.clips, kind: .sound) }
+        .onChange(of: editor.clips.map(\.id)) { saveNew(editor.clips, kind: .audioEdit) }
         .sheet(isPresented: $cloning) {
             CloneVoiceSheet { v in
                 customVoices.append(v); voice = v.id
@@ -563,6 +584,7 @@ struct AudioView: View {
                             if speak { model.toggle(clip) } else { sounds.toggle(clip) }
                         }
                         Button("Save…", systemImage: "square.and.arrow.down") { save(clip) }
+                        DeleteItemMenu(noun: "clip") { delete(clip) }
                     }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
                 }
@@ -646,6 +668,44 @@ struct AudioView: View {
         let p = NSOpenPanel()
         p.allowedContentTypes = [.audio, .movie]
         if p.runModal() == .OK, let url = p.url { editInput = url }
+    }
+
+    private var historyKind: HistoryKind { mode == .speak ? .speech : mode == .edit ? .audioEdit : .sound }
+    private struct SavedClip: Codable { var voice: String }
+
+    /// Writes clips not yet in history; new clips arrive from three places (Speak, Compose, Clean Up).
+    private func saveNew(_ clips: [SpeakModel.Clip], kind: HistoryKind) {
+        for c in clips where !savedClips.contains(c.id) {
+            savedClips.insert(c.id)
+            let tmp = FileManager.default.temporaryDirectory.appending(path: "\(c.id).wav")
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            guard (try? SpeakModel.writeWAV(c, to: tmp)) != nil, let wav = try? Data(contentsOf: tmp) else { continue }
+            state.saveHistory(HistoryItem(id: c.id, kind: kind, title: c.text, model: c.model,
+                                          payload: (try? JSONEncoder().encode(SavedClip(voice: c.voice))) ?? Data()),
+                              files: ["clip.wav": wav])
+        }
+    }
+
+    // shortcut: the newest 50 clips of each mode load (their samples are held in memory); page in more if needed.
+    private func loadHistory() async {
+        guard state.savesHistory else { return }
+        func load(_ kind: HistoryKind) async -> [SpeakModel.Clip] {
+            var out: [SpeakModel.Clip] = []
+            for item in await state.history.list(kind).prefix(50) {
+                guard let audio = SpeakModel.readWAV(await state.history.url(item, "clip.wav")) else { continue }
+                out.append(.init(id: item.id, text: item.title, model: item.model, voice: item.decode(SavedClip.self)?.voice ?? "",
+                                 samples: audio.samples, rate: audio.rate, wav: audio.wav))
+            }
+            return out
+        }
+        let speech = await load(.speech), sound = await load(.sound), edits = await load(.audioEdit)
+        savedClips.formUnion((speech + sound + edits).map(\.id))
+        model.clips = speech; composer.clips = sound; editor.clips = edits
+    }
+
+    private func delete(_ clip: SpeakModel.Clip) {
+        model.clips.removeAll { $0.id == clip.id }; composer.clips.removeAll { $0.id == clip.id }; editor.clips.removeAll { $0.id == clip.id }
+        state.deleteHistory([clip.id], kind: historyKind)
     }
 
     private func save(_ clip: SpeakModel.Clip) {

@@ -6,11 +6,12 @@ import UniformTypeIdentifiers
 /// Video → Transform: every frame of a clip through an image tool (depth, subject mask, ×4 upscale), sound kept.
 struct VideoTransformView: View {
     struct Result: Identifiable {
-        let id = UUID()
+        var id = UUID()
         let name: String
         let operation: VideoOperation
         let model: String?
-        let source: URL
+        /// Nil for a saved result: only the output is kept in history (the source is the user's own file).
+        var source: URL?
         let output: URL
         let seconds: Double
     }
@@ -55,6 +56,7 @@ struct VideoTransformView: View {
             input = URL(fileURLWithPath: path); run()
         }
         #endif
+        .task(id: state.historyRevision) { await loadHistory() }
     }
 
     private var readout: some View {
@@ -111,9 +113,12 @@ struct VideoTransformView: View {
                             Text("\(r.operation.rawValue)\(r.model.map { " · \($0)" } ?? "") · \(String(format: "%.1f s", r.seconds))")
                                 .font(.mono(.caption)).foregroundStyle(.secondary)
                             Button("Save…", systemImage: "square.and.arrow.down") { save(r.output) }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                            DeleteItemMenu(noun: "transformed video") {
+                                results.removeAll { $0.id == r.id }; state.deleteHistory([r.id], kind: .videoTransform)
+                            }
                         }
                         HStack(spacing: 12) {
-                            ClipPlayer(url: r.source).aspectRatio(16 / 10, contentMode: .fit).clipShape(.rect(cornerRadius: 14))
+                            if let source = r.source { ClipPlayer(url: source).aspectRatio(16 / 10, contentMode: .fit).clipShape(.rect(cornerRadius: 14)) }
                             ClipPlayer(url: r.output).aspectRatio(16 / 10, contentMode: .fit).clipShape(.rect(cornerRadius: 14))
                         }
                     }
@@ -154,10 +159,29 @@ struct VideoTransformView: View {
                 let spec = try await images.transformVideo(input, to: out, operation: op, model: nil) { f in
                     Task { @MainActor in fraction = f }
                 }
-                results.insert(Result(name: input.lastPathComponent, operation: op, model: spec?.id, source: input, output: out,
-                                      seconds: Date().timeIntervalSince(started ?? Date())), at: 0)
+                let r = Result(name: input.lastPathComponent, operation: op, model: spec?.id, source: input, output: out,
+                               seconds: Date().timeIntervalSince(started ?? Date()))
+                results.insert(r, at: 0)
+                state.saveHistory(HistoryItem(id: r.id, kind: .videoTransform, title: r.name, model: spec?.id ?? op.rawValue,
+                                              payload: (try? JSONEncoder().encode(Saved(operation: op.rawValue, seconds: r.seconds))) ?? Data()),
+                                  copy: ["output.mp4": out])
             } catch { self.error = error.localizedDescription }
         }
+    }
+
+    private struct Saved: Codable { var operation: String; var seconds: Double }
+
+    private func loadHistory() async {
+        guard state.savesHistory else { return }
+        var loaded: [Result] = []
+        for item in await state.history.list(.videoTransform) {
+            guard let s = item.decode(Saved.self), let op = VideoOperation(rawValue: s.operation) else { continue }
+            loaded.append(Result(id: item.id, name: item.title, operation: op, model: item.model == s.operation ? nil : item.model,
+                                 source: nil, output: await state.history.url(item, "output.mp4"), seconds: s.seconds))
+        }
+        // This session's results keep their source; earlier ones show the output only.
+        let fresh = Dictionary(uniqueKeysWithValues: results.compactMap { r in r.source.map { (r.id, $0) } })
+        results = loaded.map { var r = $0; r.source = fresh[r.id]; return r }
     }
 
     private func save(_ url: URL) {

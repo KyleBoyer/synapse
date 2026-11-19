@@ -61,6 +61,8 @@ public struct Settings: Codable, Sendable, Equatable {
     public var kvPrecision: KVPrecision = .full
     /// Main model id -> draft model id for speculative decoding.
     public var draftModels: [String: String] = [:]
+    /// Days to keep work done in the app (chats, images, calls, …); nil keeps it forever, 0 saves nothing.
+    public var historyDays: Int?
 
     public init() {}
 
@@ -100,6 +102,7 @@ public struct Settings: Codable, Sendable, Equatable {
         diskCacheGB = try c.decodeIfPresent(Double.self, forKey: .diskCacheGB) ?? d.diskCacheGB
         kvPrecision = try c.decodeIfPresent(KVPrecision.self, forKey: .kvPrecision) ?? d.kvPrecision
         draftModels = try c.decodeIfPresent([String: String].self, forKey: .draftModels) ?? d.draftModels
+        historyDays = try c.decodeIfPresent(Int.self, forKey: .historyDays)
     }
 
     public var modelsRoot: URL {

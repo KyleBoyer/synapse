@@ -56,6 +56,8 @@ struct ChatView: View {
     @State private var task: Task<Void, Never>?
     @State private var error: String?
     @State private var run: Run?
+    /// The saved conversation this chat is (a new one on New Chat; the opened one from History).
+    @State private var conversation = UUID()
     @FocusState private var composerFocused: Bool
 
     private var specs: [ModelSpec] { state.downloadedChatSpecs }
@@ -82,8 +84,10 @@ struct ChatView: View {
                 if !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
                 }
+                HistoryButton(kind: .chat, noun: "chat") { open($0) }
                 Button("New Chat", systemImage: "square.and.pencil") {
                     stop(); lines = []; started = nil; pending = []; pendingVideos = []; pendingAudios = []; error = nil; run = nil
+                    conversation = UUID()
                 }
                     .help("New Chat")
             }
@@ -263,6 +267,50 @@ struct ChatView: View {
 
     private func stop() { task?.cancel(); task = nil; generating = false }
 
+    /// The conversation as saved: text in the payload, attachments as files named by message and position.
+    struct Record: Codable {
+        struct Message: Codable { var role: String; var text: String; var at: Double; var images, videos, audios: [String] }
+        var messages: [Message]
+    }
+
+    private func save(model: String) {
+        var files: [String: Data] = [:], copies: [String: URL] = [:]
+        let messages = lines.enumerated().map { i, line -> Record.Message in
+            let m = line.message
+            let images = m.images.enumerated().map { j, data in let n = "m\(i)-image\(j)"; files[n] = data; return n }
+            let videos = m.videos.enumerated().map { j, url in let n = "m\(i)-video\(j).\(url.pathExtension)"; copies[n] = url; return n }
+            let audios = m.audios.enumerated().map { j, url in let n = "m\(i)-audio\(j).\(url.pathExtension)"; copies[n] = url; return n }
+            return .init(role: m.role.rawValue, text: m.text, at: line.at, images: images, videos: videos, audios: audios)
+        }
+        let title = lines.first { $0.message.role == .user }?.message.text.prefix(80).description ?? ""
+        let item = HistoryItem(id: conversation, kind: .chat, title: title, model: model, createdAt: started ?? Date(),
+                               payload: (try? JSONEncoder().encode(Record(messages: messages))) ?? Data())
+        state.saveHistory(item, files: files, copy: copies)
+    }
+
+    private func open(_ item: HistoryItem) {
+        guard let record = item.decode(Record.self) else { return }
+        stop()
+        let history = state.history
+        Task {
+            var restored: [Line] = []
+            for m in record.messages {
+                var images: [Data] = []
+                for n in m.images { if let d = await history.data(item, n) { images.append(d) } }
+                var videos: [URL] = [], audios: [URL] = []
+                for n in m.videos { videos.append(await history.url(item, n)) }
+                for n in m.audios { audios.append(await history.url(item, n)) }
+                restored.append(Line(message: ChatMessage(role: ChatMessage.Role(rawValue: m.role) ?? .user, text: m.text,
+                                                          images: images, videos: videos, audios: audios), at: m.at))
+            }
+            lines = restored
+            started = item.createdAt
+            conversation = item.id
+            run = nil; error = nil; pending = []; pendingVideos = []; pendingAudios = []
+            if specs.contains(where: { $0.id == item.model }) { modelID = item.model }
+        }
+    }
+
     private func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !generating, !text.isEmpty || !pending.isEmpty || !pendingVideos.isEmpty || !pendingAudios.isEmpty, let spec else { return }
@@ -301,6 +349,7 @@ struct ChatView: View {
                     case .toolCall: break
                     }
                 }
+                save(model: spec.id)
                 if let r = run {
                     r.loadSeconds.map { metrics.record(spec.id, .loadTime, $0) }
                     r.firstTokenSeconds.map { metrics.record(spec.id, r.cached ? .firstTokenCached : .firstToken, $0) }

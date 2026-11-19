@@ -64,8 +64,42 @@ final class EmbedModel {
                 }
                 rows = out
                 modelID = spec.id
+                save(query: query, rows: out, model: spec.id, state: state)
             } catch { self.error = error.localizedDescription }
         }
+    }
+
+    /// One comparison as saved: scores in the payload, images as files.
+    struct Record: Codable {
+        struct Row: Codable { var text: String?; var image: String?; var cosine: Float; var rerank: Double? }
+        var query: String?
+        var queryImage: String?
+        var rows: [Row]
+    }
+
+    private func save(query: EmbeddingInput, rows: [Row], model: String, state: AppState) {
+        var files: [String: Data] = [:]
+        if let q = query.image { files["query-image"] = q }
+        let saved = rows.map { r -> Record.Row in
+            let name = r.doc.image.map { d in let n = "doc-\(r.doc.id)"; files[n] = d; return n }
+            return .init(text: r.doc.text, image: name, cosine: r.cosine, rerank: r.rerank)
+        }
+        let record = Record(query: query.text, queryImage: query.image == nil ? nil : "query-image", rows: saved)
+        state.saveHistory(HistoryItem(kind: .embed, title: query.text ?? "Image query", model: model,
+                                      payload: (try? JSONEncoder().encode(record)) ?? Data()), files: files)
+    }
+
+    /// Shows a saved comparison; returns its query text and text documents for the editor.
+    func open(_ item: HistoryItem, history: HistoryStore) async -> (query: String, documents: [String])? {
+        guard let record = item.decode(Record.self) else { return nil }
+        var out: [Row] = []
+        for (i, r) in record.rows.enumerated() {
+            var image: Data?
+            if let n = r.image { image = await history.data(item, n) }
+            out.append(Row(id: i, doc: Doc(id: i, text: r.text, image: image), cosine: r.cosine, rerank: r.rerank))
+        }
+        rows = out; error = nil; modelID = item.model
+        return (record.query ?? "", record.rows.compactMap(\.text))
     }
 }
 
@@ -127,6 +161,15 @@ struct EmbedView: View {
             ToolbarItemGroup {
                 if !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
+                }
+                HistoryButton(kind: .embed, noun: "comparison") { item in
+                    Task {
+                        if let r = await model.open(item, history: state.history) {
+                            query = r.query
+                            if !r.documents.isEmpty { documents = r.documents.joined(separator: "\n") }
+                            if specs.contains(where: { $0.id == item.model }) { modelID = item.model }
+                        }
+                    }
                 }
             }
         }

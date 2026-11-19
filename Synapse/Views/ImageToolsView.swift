@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 struct ImageToolsView: View {
     enum Tool: String { case cutout = "Cut Out", depth = "Depth", upscale = "Upscale" }
     struct Result: Identifiable {
-        let id = UUID()
+        var id = UUID()
         let name: String
         let label: String
         let source: Data
@@ -70,6 +70,7 @@ struct ImageToolsView: View {
             load(URL(fileURLWithPath: path)); run()
         }
         #endif
+        .task(id: state.historyRevision) { await loadHistory() }
     }
 
     private var readout: some View {
@@ -124,6 +125,7 @@ struct ImageToolsView: View {
                             Text(r.name).font(.title3).lineLimit(1).truncationMode(.middle)
                             Spacer()
                             Text("\(r.label) · \(String(format: "%.2f s", r.seconds))").font(.mono(.caption)).foregroundStyle(.secondary)
+                            DeleteItemMenu(noun: "result") { results.removeAll { $0.id == r.id }; state.deleteHistory([r.id], kind: .imageTool) }
                         }
                         HStack(alignment: .top, spacing: 12) {
                             picture(r.source, checker: false)
@@ -196,10 +198,29 @@ struct ImageToolsView: View {
                 case .cutout: try await images.cutout(input.data, output: mask ? .mask : .cutout)
                 }
                 let label = tool == .depth ? "depth" : tool == .upscale ? "×4" : mask ? "mask" : "subject"
-                results.insert(Result(name: input.name, label: label, source: input.data, output: out,
-                                      seconds: Date().timeIntervalSince(started ?? Date())), at: 0)
+                let r = Result(name: input.name, label: label, source: input.data, output: out,
+                               seconds: Date().timeIntervalSince(started ?? Date()))
+                results.insert(r, at: 0)
+                state.saveHistory(HistoryItem(id: r.id, kind: .imageTool, title: r.name, model: tool.rawValue,
+                                              payload: (try? JSONEncoder().encode(Saved(label: label, seconds: r.seconds))) ?? Data()),
+                                  files: ["source.png": r.source, "output.png": r.output])
             } catch { self.error = error.localizedDescription }
         }
+    }
+
+    private struct Saved: Codable { var label: String; var seconds: Double }
+
+    /// This tool's saved results, newest first. Tools share one history kind; `model` holds the tool's name.
+    // shortcut: the newest 50 load (both images held in memory); page older ones in if a long history matters.
+    private func loadHistory() async {
+        guard state.savesHistory else { return }
+        var loaded: [Result] = []
+        for item in await state.history.list(.imageTool).filter({ $0.model == tool.rawValue }).prefix(50) {
+            guard let s = item.decode(Saved.self), let src = await state.history.data(item, "source.png"),
+                  let out = await state.history.data(item, "output.png") else { continue }
+            loaded.append(Result(id: item.id, name: item.title, label: s.label, source: src, output: out, seconds: s.seconds))
+        }
+        results = loaded
     }
 
     private func save(_ data: Data) {
