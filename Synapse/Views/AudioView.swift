@@ -14,6 +14,8 @@ final class SpeakPlayer {
     private var finish: (@MainActor @Sendable () -> Void)?
     /// Held until 150 ms has arrived, so a slow first chunk does not stutter.
     private let prebuffer = 3600
+    /// The output device's Core Audio UID; nil or "" plays on the system default.
+    var deviceUID: String?
     /// Playback failures are reported here; synthesis itself still succeeds.
     var onError: (@MainActor (String) -> Void)?
 
@@ -31,7 +33,12 @@ final class SpeakPlayer {
                 if self.outstanding == 0, let f = self.finish { self.finish = nil; f() }
             }
         }
-        if status == noErr { queue = q } else { onError?("Could not open the audio output (\(status)).") }
+        guard status == noErr, let q else { onError?("Could not open the audio output (\(status))."); return }
+        if let uid = deviceUID, !uid.isEmpty {
+            var cf = uid as CFString
+            AudioQueueSetProperty(q, kAudioQueueProperty_CurrentDevice, &cf, UInt32(MemoryLayout<CFString>.size))
+        }
+        queue = q
     }
 
     func enqueue(_ samples: [Float], final: Bool = false, onFinish: (@MainActor @Sendable () -> Void)? = nil) {
@@ -62,7 +69,12 @@ final class SpeakPlayer {
 
     func stop() {
         pending = []; started = false; outstanding = 0; finish = nil
-        if let queue { self.queue = nil; AudioQueueDispose(queue, true) }
+        // Disposing waits for the device to stop, which takes about 15 s on a Bluetooth headset; never on the main thread.
+        if let queue {
+            self.queue = nil
+            nonisolated(unsafe) let q = queue
+            DispatchQueue.global(qos: .userInitiated).async { AudioQueueDispose(q, true) }
+        }
     }
 }
 

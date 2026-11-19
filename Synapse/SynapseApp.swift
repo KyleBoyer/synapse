@@ -16,6 +16,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `-composerKeyTest YES`: sends ⌘↩, ⌃↩ and Return to this app's own focused composer (never to other apps) and
     /// prints what each did, so the composer keys can be checked without typing.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // `-playTest YES` times clip playback as the Play/Stop buttons drive it: play, stop after 1 s, play again.
+        if UserDefaults.standard.bool(forKey: "playTest") {
+            Task { @MainActor in
+                let p = SpeakPlayer()
+                p.onError = { fputs("playTest: error \($0)\n", stderr) }
+                p.deviceUID = UserDefaults.standard.string(forKey: "playDevice")
+                func timed(_ label: String, _ f: () -> Void) {
+                    let t = Date(); f(); fputs(String(format: "playTest: %@ %.2f s\n", label, Date().timeIntervalSince(t)), stderr)
+                }
+                for round in 1...3 {
+                    let t0 = Date()
+                    timed("round \(round) begin") { p.begin(rate: 44100) }
+                    timed("round \(round) enqueue+start") {
+                        p.enqueue([Float](repeating: 0, count: 88200), final: true) {
+                            fputs(String(format: "playTest: round \(round) finished %.2f s after begin\n", Date().timeIntervalSince(t0)), stderr)
+                        }
+                    }
+                    try? await Task.sleep(for: .seconds(round == 3 ? 3.5 : 1))
+                    timed("round \(round) stop") { p.stop() }
+                }
+                fputs("playTest: done\n", stderr)
+            }
+        }
         // `-liveAudioTest YES` starts and stops Live's audio on the default devices and on each microphone, printing
         // whether echo cancellation came up.
         if UserDefaults.standard.bool(forKey: "liveAudioTest") {
