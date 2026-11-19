@@ -31,5 +31,5 @@ enum DuplexAudio {
         }
     }
 
-    static func freeMLXMemory() { MLX.Memory.clearCache() }
+    static func freeMLXMemory() { GPUGate.clearMLXCache() }
 }

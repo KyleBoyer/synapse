@@ -68,7 +68,7 @@ public actor ModelManager {
 
     /// The app's manager: frees MLX's buffer cache after each unload so memory returns to the system.
     public static func forApp(config: Config) -> ModelManager {
-        ModelManager(config: config, afterUnload: { MLX.Memory.clearCache() })
+        ModelManager(config: config, afterUnload: { GPUGate.clearMLXCache() })
     }
 
     public func update(config: Config) {

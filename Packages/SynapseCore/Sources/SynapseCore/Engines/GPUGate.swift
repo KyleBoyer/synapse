@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import Synchronization
 
 /// Serializes MLX inference across every engine in the process. Two models running MLX work at once can trip
@@ -14,7 +15,17 @@ public actor GPUGate {
     /// Whether MLX work is running now; readable from any thread (the app checks it while quitting).
     public nonisolated var isBusy: Bool { held.withLock { $0 } }
 
-    public func acquire() async {
+    /// Frees MLX's buffer cache once no MLX work is running. Clearing it while another thread evaluates (a duplex
+    /// model generating while an idle model unloads) crashed PersonaPlex with an MLX indexing error.
+    public nonisolated static func clearMLXCache() {
+        Task {
+            await shared.acquire()
+            MLX.Memory.clearCache()
+            await shared.release()
+        }
+    }
+
+        public func acquire() async {
         guard busy else { busy = true; return }
         await withCheckedContinuation { waiters.append($0) }
     }
