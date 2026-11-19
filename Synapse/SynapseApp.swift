@@ -1,3 +1,4 @@
+import os
 import AppKit
 import SwiftUI
 import SynapseCore
@@ -15,6 +16,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `-composerKeyTest YES`: sends ⌘↩, ⌃↩ and Return to this app's own focused composer (never to other apps) and
     /// prints what each did, so the composer keys can be checked without typing.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // `-liveAudioTest YES` starts and stops Live's audio on the default devices and on each microphone, printing
+        // whether echo cancellation came up.
+        if UserDefaults.standard.bool(forKey: "liveAudioTest") {
+            Task {
+                let mics = AudioDevices.list(input: true), speakers = AudioDevices.list(input: false)
+                var runs: [(String, String, String)] = [("default", "", "")]
+                runs += mics.map { ("mic \($0.name)", $0.uid, "") } + speakers.map { ("speaker \($0.name)", "", $0.uid) }
+                runs += mics.flatMap { m in speakers.map { ("\(m.name) -> \($0.name)", m.uid, $0.uid) } }
+                for (name, mic, speaker) in runs {
+                    let a = LiveAudio()
+                    let chunks = OSAllocatedUnfairLock(initialState: 0)
+                    do {
+                        let aec = try a.start(inputUID: mic, outputUID: speaker, voiceProcessing: true,
+                                              onChunk: { s in chunks.withLock { $0 += s.count } }, onLevel: { _ in })
+                        a.play(pcm16: Data(count: 24000 * 2 / 4))
+                        try? await Task.sleep(for: .seconds(1))
+                        fputs("liveAudioTest: \(name): started, echo cancel \(aec), \(chunks.withLock { $0 }) samples in 1 s\n", stderr)
+                    } catch { fputs("liveAudioTest: \(name): failed \(error)\n", stderr) }
+                    a.stop()
+                }
+            }
+        }
         guard UserDefaults.standard.bool(forKey: "composerKeyTest") else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(4))

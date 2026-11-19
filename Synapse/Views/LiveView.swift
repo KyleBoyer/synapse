@@ -18,6 +18,8 @@ final class LiveModel {
     var level: Float = 0
     var error: String?
     var latency: Double?
+    /// Whether the call's echo cancellation is on; nil until a call or duplex session starts.
+    var echoCancel: Bool?
     /// Running camera, when Voice call was started with Camera on.
     private(set) var camera: LiveCamera?
     /// When the session started; lines carry their offset from it as timecode.
@@ -32,7 +34,8 @@ final class LiveModel {
     func clear() { lines = []; latency = nil; error = nil }
 
     func start(mode: LiveMode, services: RealtimeServices, chatModel: String, duplexModel: String, recognizer: String,
-               language: String, spoken: Bool, voiceModel: String, voice: String, camera useCamera: Bool = false) async {
+               language: String, spoken: Bool, voiceModel: String, voice: String, camera useCamera: Bool = false,
+               inputUID: String = "", outputUID: String = "") async {
         guard !running else { return }
         error = nil
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
@@ -62,12 +65,14 @@ final class LiveModel {
             update["output_modalities"] = ["audio"]
         }
         let a = LiveAudio()
+        let wantsAEC = mode == .call || mode == .duplex
         do {
-            try a.start(voiceProcessing: mode == .call || mode == .duplex,   // AEC; see LiveAudio
-                        onChunk: { pcm in Task { await s.appendAudio(pcm24k: pcm) } },
-                        onLevel: { l in Task { @MainActor [weak self] in self?.level = l } })
+            let aec = try a.start(inputUID: inputUID, outputUID: outputUID, voiceProcessing: wantsAEC,   // AEC; see LiveAudio
+                                  onChunk: { pcm in Task { await s.appendAudio(pcm24k: pcm) } },
+                                  onLevel: { l in Task { @MainActor [weak self] in self?.level = l } })
+            echoCancel = wantsAEC ? aec : nil
         } catch {
-            self.error = "Could not start the microphone: \(error.localizedDescription)"
+            self.error = "Could not start the microphone: \(error.localizedDescription) Try another microphone or speaker in the options."
             await s.close(); return
         }
         if useCamera && mode == .call {
@@ -155,9 +160,17 @@ struct LiveView: View {
     @State private var cameraOn = false
     @State private var recognizer = ""
     @State private var voiceModel = ""
+    /// Device UIDs; "" is the system default.
+    @AppStorage("liveInputDevice") private var inputUID = ""
+    @AppStorage("liveOutputDevice") private var outputUID = ""
+    @State private var inputs: [AudioDevice] = []
+    @State private var outputs: [AudioDevice] = []
+    @State private var deviceWatch: AnyObject?
     private let languages = ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "English"]
 
     private var needsChat: Bool { mode == .translate || mode == .call }
+    /// The session plays audio back (so the speaker choice matters).
+    private var plays: Bool { mode == .call || mode == .duplex || (mode == .translate && spoken) }
     /// An omni model that hears the call and answers in its own voice, with no speech synthesis.
     private var ownVoice: Bool { mode == .call && Catalog.spec(chatModel).map(OmniVoices.canSpeak) == true }
     /// Parakeet EOU streams (English, words appear as you talk); Whisper and Parakeet v3 transcribe each turn when
@@ -222,6 +235,10 @@ struct LiveView: View {
         }
         .sheet(item: $pastCall) { CallTranscriptSheet(item: $0) }
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
+        .onAppear {
+            refreshDevices()
+            deviceWatch = AudioDevices.observe { Task { @MainActor in refreshDevices() } }
+        }
         .onAppear { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: state.downloadedChatSpecs.count) { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: recognizers.map(\.0), initial: true) { _, ids in if !ids.contains(recognizer) { recognizer = ids.first ?? "" } }
@@ -243,6 +260,10 @@ struct LiveView: View {
             // `-liveRecognizer parakeet-v3 -liveVoiceModel voxcpm2` preselect the recognizer and speech model.
             if let m = UserDefaults.standard.string(forKey: "liveRecognizer") { recognizer = m }
             if let m = UserDefaults.standard.string(forKey: "liveVoiceModel") { voiceModel = m }
+            // `-liveAutoStart YES` presses Start once the pickers have settled.
+            if UserDefaults.standard.bool(forKey: "liveAutoStart") {
+                Task { try? await Task.sleep(for: .seconds(3)); startSession() }
+            }
         }
         #endif
     }
@@ -326,7 +347,8 @@ struct LiveView: View {
                 model.latency.map { Reading(label: "First audio", value: String(format: "%.2f s", $0)) }
                     ?? Reading(label: "First audio", value: state.metrics.typical(speakerID, .firstAudio) ?? "–", muted: true),
                 Reading(label: "Lines", value: "\(model.lines.count)"),
-            ] + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil),
+            ] + (model.echoCancel.map { [Reading(label: "Echo cancel", value: $0 ? "on" : "off · use headphones")] } ?? [])
+              + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil),
                                   Reading(label: "Voice", value: ownVoice ? "model's own" : voiceLabel)] : [])
               + (mode == .duplex ? [] : [Reading(label: "Recognizer", value: recognizer.isEmpty ? "–" : recognizer)]) + [
                 Reading(label: "Resident", value: state.resident(speakerID).map { $0.memory } ?? "not loaded"),
@@ -337,8 +359,27 @@ struct LiveView: View {
             apiCopy: "ws://127.0.0.1:\(state.settings.port)/v1/realtime?model=\(speakerID)" + (mode == .captions ? "&intent=transcription" : ""))
     }
 
+    private func refreshDevices() {
+        inputs = AudioDevices.list(input: true)
+        outputs = AudioDevices.list(input: false)
+    }
+
+    /// A device menu: the system default first, then each device; a saved device that is unplugged stays listed.
+    private func devicePicker(_ title: String, _ uid: Binding<String>, _ devices: [AudioDevice]) -> some View {
+        Picker(title, selection: uid) {
+            Text("System Default").tag("")
+            Divider()
+            ForEach(devices) { Text($0.name).tag($0.uid) }
+            if !uid.wrappedValue.isEmpty && !devices.contains(where: { $0.uid == uid.wrappedValue }) {
+                Text("Disconnected device").tag(uid.wrappedValue)
+            }
+        }
+    }
+
     private var options: some View {
         VStack(alignment: .leading, spacing: 10) {
+            devicePicker("Microphone", $inputUID, inputs)
+            if plays { devicePicker("Speaker", $outputUID, outputs) }
             if needsChat {
                 Picker("Chat model", selection: $chatModel) {
                     ForEach(state.downloadedChatSpecs) { Text($0.displayName).tag($0.id) }
@@ -404,14 +445,17 @@ struct LiveView: View {
                                       createdAt: model.started ?? Date(), payload: (try? JSONEncoder().encode(record)) ?? Data()))
     }
 
+    private func startSession() {
+        Task { await model.start(mode: mode, services: state.realtime, chatModel: chatModel,
+                                 duplexModel: duplexModel, recognizer: recognizer, language: language, spoken: spoken,
+                                 voiceModel: voiceModel, voice: voice, camera: cameraOn,
+                                 inputUID: inputUID, outputUID: plays ? outputUID : "") }
+    }
+
     private var micBar: some View {
         HStack(spacing: 14) {
             Button {
-                if model.running { model.stop() } else {
-                    Task { await model.start(mode: mode, services: state.realtime, chatModel: chatModel,
-                                             duplexModel: duplexModel, recognizer: recognizer, language: language, spoken: spoken,
-                                             voiceModel: voiceModel, voice: voice, camera: cameraOn) }
-                }
+                if model.running { model.stop() } else { startSession() }
             } label: {
                 Label(model.running ? "Stop" : "Start", systemImage: model.running ? "stop.fill" : "mic.fill").frame(minWidth: 80)
             }
