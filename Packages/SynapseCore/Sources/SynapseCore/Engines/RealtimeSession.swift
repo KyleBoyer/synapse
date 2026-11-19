@@ -82,6 +82,10 @@ public actor RealtimeSession {
     private var activeTask: Task<Void, Never>?
     private var active: Response?
     private var duplexResponse: Response?
+    /// The client asked for transcripts of its audio (audio.input.transcription).
+    private var transcribeInput = false
+    /// A duplex model's streaming transcript of the user: one item per turn, closed when the model answers.
+    private var duplexUser: (id: String, text: String)?
     /// Tools last given to the duplex engine, and its calls still waiting for a result (call id -> tool name).
     private var duplexTools: [ChatTool]?
     private var duplexCalls: [String: String] = [:]
@@ -225,6 +229,7 @@ public actor RealtimeSession {
                 if let r = f["rate"] as? Int { inputRate = r; up = nil }
             }
             if let tr = input["transcription"] as? [String: Any] {
+                transcribeInput = true
                 let lang = tr["language"] as? String
                 if let m = tr["model"] as? String, m != transcriptionModel || lang != language {
                     transcriptionModel = m
@@ -794,19 +799,31 @@ public actor RealtimeSession {
             let support = await engine.toolSupport, tools = chatTools
             if support == .native, tools != duplexTools { duplexTools = tools; duplexCalls = [:]; await engine.setTools(tools) }
             // Without its own tool calling, a side recognizer and chat model listen along (decideTools).
-            if support == .spokenResults, !tools.isEmpty { await recognize(samples) }
+            // The same recognizer shows what the model heard, for a model that writes no transcript of its own.
+            if support != .native, !tools.isEmpty || transcribeInput { await recognize(samples) }
             for ev in try await engine.push(duplexUp!.convert(samples)) {
                 switch ev {
                 case .audio(let a): respAudio(duplexResponseOpen(), duplexDown!.convert(a))
-                case .assistantText(let t): respText(duplexResponseOpen(), t)
+                case .assistantText(let t):
+                    closeDuplexUser()
+                    respText(duplexResponseOpen(), t)
                 case .userText(let t):
-                    let id = newItemID()
-                    items.append(Item(id: id, role: "user", text: t))
-                    complete(id, t)
-                case .toolCall(let name, let arguments): await emitDuplexCalls([(name, arguments)])
+                    // Fragments of one turn go to one item, as transcription deltas, until the model answers.
+                    var u = duplexUser ?? (newItemID(), "")
+                    u.text += t
+                    duplexUser = u
+                    emit("conversation.item.input_audio_transcription.delta", ["item_id": u.id, "content_index": 0, "delta": t])
+                case .toolCall(let name, let arguments): closeDuplexUser(); await emitDuplexCalls([(name, arguments)])
                 }
             }
         } catch { fail("server_error", "duplex_failed", error.localizedDescription) }
+    }
+
+    private func closeDuplexUser() {
+        guard let u = duplexUser else { return }
+        duplexUser = nil
+        items.append(Item(id: u.id, role: "user", text: u.text))
+        complete(u.id, u.text)
     }
 
     /// Ends the current duplex response with the calls as its function_call items, as a cascade response does,

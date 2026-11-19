@@ -63,6 +63,7 @@ final class LiveModel {
         case .duplex:
             s = RealtimeSession(model: duplexModel, services: services)
             update["output_modalities"] = ["audio"]
+            if !recognizer.isEmpty { update["audio"] = ["input": input] }   // a transcript of what the model heard
         }
         let wantsAEC = mode == .call || mode == .duplex
         let a: LiveAudio
@@ -146,6 +147,7 @@ final class LiveModel {
         case "response.output_audio.delta":
             if !muted, let b = e["delta"] as? String, let d = Data(base64Encoded: b) { audio?.play(pcm16: d) }
         case "input_audio_buffer.speech_started":
+            guard mode != .duplex else { break }   // a duplex model talks over you and stops on its own
             muted = true; audio?.flush()   // barge-in: cut local playback now
             sendFrame(s)
         case "response.done":
@@ -184,6 +186,8 @@ struct LiveView: View {
     private func tooBig(_ spec: ModelSpec) -> Bool {
         spec.recommendedRAMGB.map { UInt64($0) << 30 > ProcessInfo.processInfo.physicalMemory } ?? false
     }
+    /// VoiceChat writes its own transcript of you; PersonaPlex's comes from the recognizer.
+    private var duplexTranscribes: Bool { duplexModel.hasPrefix("voicechat") }
     private var needsChat: Bool { mode == .translate || mode == .call }
     /// The session plays audio back (so the speaker choice matters).
     private var plays: Bool { mode == .call || mode == .duplex || (mode == .translate && spoken) }
@@ -367,7 +371,7 @@ struct LiveView: View {
             ] + (model.echoCancel.map { [Reading(label: "Echo cancel", value: $0 ? "on" : "off · use headphones")] } ?? [])
               + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil),
                                   Reading(label: "Voice", value: ownVoice ? "model's own" : voiceLabel)] : [])
-              + (mode == .duplex ? [] : [Reading(label: "Recognizer", value: recognizer.isEmpty ? "–" : recognizer)]) + [
+              + (mode == .duplex && duplexTranscribes ? [] : [Reading(label: "Recognizer", value: recognizer.isEmpty ? "–" : recognizer)]) + [
                 Reading(label: "Resident", value: state.resident(speakerID).map { $0.memory } ?? "not loaded"),
             ],
             history: state.metrics.history(speakerID, .firstAudio), historyMetric: .firstAudio,
@@ -389,7 +393,7 @@ struct LiveView: View {
                 Picker("Translate to", selection: $language) { ForEach(languages, id: \.self) { Text($0) } }
                 Toggle("Speak the translation", isOn: $spoken)
             }
-            if mode != .duplex {
+            if mode != .duplex || !duplexTranscribes {
                 Picker("Recognizer", selection: $recognizer) {
                     ForEach(recognizers, id: \.0) { Text($0.1).tag($0.0) }
                 }
