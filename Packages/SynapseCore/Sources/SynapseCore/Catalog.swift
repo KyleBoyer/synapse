@@ -77,6 +77,10 @@ public enum Catalog {
         // repos are not gated, so no token is needed. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),
         hf("stable-audio-3-small-music", "Stable Audio 3 Music", .audiogen, "mlx-community/stable-audio-3-small-music", 3490, ramGB: 8),
+        // General sound and music in one larger model (Stability AI Community License).
+        hf("stable-audio-3-medium", "Stable Audio 3 Medium", .audiogen, "mlx-community/stable-audio-3-medium", 5833, ramGB: 12),
+        // Full songs from a style caption, with sung vocals when lyrics are given (MiniMax Music 3 Community License).
+        hf("minimax-music3-4bit", "MiniMax Music 3 (songs, vocals)", .audiogen, "mlx-community/MiniMax-Music3-4bit", 9211, ramGB: 16),
         ModelSpec(id: "depth-anything-v2-small", engine: .imagetool, displayName: "Depth Anything V2 small (depth maps)",
                   variant: "apple/coreml-depth-anything-v2-small", approxMB: 50, languages: nil, canTranslate: false,
                   canDetectLanguage: false, files: ["DepthAnythingV2SmallF16.mlpackage/"]),

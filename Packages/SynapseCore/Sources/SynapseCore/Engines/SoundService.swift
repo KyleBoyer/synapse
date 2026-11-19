@@ -37,7 +37,8 @@ public struct AudioTrack: Sendable {
 public typealias AudioEditRunner = @Sendable (_ spec: ModelSpec, _ folder: URL, _ input: URL, _ prompt: String?, _ out: URL) async throws -> Void
 
 public protocol SoundEngine: Actor {
-    func generate(prompt: String, seconds: Double, seed: UInt64?, to wav: URL) async throws
+    /// `lyrics` are sung by models that take them (MiniMax Music 3); others ignore them.
+    func generate(prompt: String, lyrics: String?, seconds: Double, seed: UInt64?, to wav: URL) async throws
 }
 
 public enum SoundEngines {
@@ -51,7 +52,7 @@ public enum SoundEngines {
 
 public actor MockSoundEngine: SoundEngine {
     public init() {}
-    public func generate(prompt: String, seconds: Double, seed: UInt64?, to wav: URL) async throws {
+    public func generate(prompt: String, lyrics: String?, seconds: Double, seed: UInt64?, to wav: URL) async throws {
         let rate = 44100.0, n = Int(seconds * rate)
         let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n))!
@@ -64,18 +65,19 @@ public actor MockSoundEngine: SoundEngine {
     }
 }
 
-/// Stable Audio 3 through mlx-audio's music CLI, one process per clip.
+/// Stable Audio 3 and MiniMax Music 3 through mlx-audio's music CLI (it picks the model family), one process per clip.
 actor MLXAudioSoundEngine: SoundEngine {
     static let version = "0.6.6"
     let folder: URL
     init(folder: URL) { self.folder = folder }
 
-    func generate(prompt: String, seconds: Double, seed: UInt64?, to wav: URL) async throws {
+    func generate(prompt: String, lyrics: String?, seconds: Double, seed: UInt64?, to wav: URL) async throws {
         let rt = try await PythonRuntime.shared.ensureInstalled(.init(name: "mlx-audio", requirements: ["mlx-audio==\(Self.version)"]),
                                                                 storeRoot: try PythonRuntime.storeRoot(above: folder))
         var args = ["-m", "mlx_audio.music.generate", "--model", folder.path, "--caption", prompt,
                     "--duration", String(format: "%.2f", seconds), "--output", wav.path]
         if let seed { args += ["--seed", "\(seed % UInt64(Int32.max))"] }
+        if let lyrics, !lyrics.isEmpty { args += ["--lyrics", lyrics] }
         try await PythonRuntime.run(rt.python, args, env: [
             "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
             "HF_HOME": rt.dir.appending(path: "hf").path,
@@ -173,13 +175,16 @@ public actor SoundService {
         throw SoundError.noModel
     }
 
-    public func generate(model spec: ModelSpec, prompt: String, seconds: Double, seed: UInt64?) async throws -> SoundClip {
+    /// Models that sing lyrics.
+    public static func takesLyrics(_ spec: ModelSpec) -> Bool { spec.variant.lowercased().contains("minimax-music") }
+
+    public func generate(model spec: ModelSpec, prompt: String, lyrics: String? = nil, seconds: Double, seed: UInt64?) async throws -> SoundClip {
         let folder = await store.folder(for: spec.id) ?? FileManager.default.temporaryDirectory
         let engine = try await engineFactory(spec, folder)
         let wav = FileManager.default.temporaryDirectory.appending(path: "synapse-sound-\(UUID().uuidString).wav")
         defer { try? FileManager.default.removeItem(at: wav) }
         let run: @Sendable () async throws -> Void = {
-            try await GPUGate.shared.run { try await engine.generate(prompt: prompt, seconds: seconds, seed: seed, to: wav) }
+            try await GPUGate.shared.run { try await engine.generate(prompt: prompt, lyrics: lyrics, seconds: seconds, seed: seed, to: wav) }
         }
         if SoundEngines.mock { try await run() } else {
             try await models.reserve(spec.id, estimatedBytes: spec.estimatedResidentBytes, during: run)

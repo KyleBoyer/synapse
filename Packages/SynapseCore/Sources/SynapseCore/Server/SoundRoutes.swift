@@ -7,6 +7,8 @@ import NIOCore
 private struct SoundParams: Decodable {
     var model: String?
     var prompt: String?
+    /// Sung by models that take lyrics (MiniMax Music 3), with section tags like [verse] on their own lines.
+    var lyrics: String?
     var seconds: Double?
     var seed: UInt64?
     var response_format: String?
@@ -25,7 +27,7 @@ func addSoundRoutes(to g: RouterGroup<SynapseContext>, sound: SoundService) {
         }
         let spec: ModelSpec
         do { spec = try await sound.resolve(nonEmpty(p.model)) } catch { throw HTTPError(.badRequest, message: error.localizedDescription) }
-        let clip = try await sound.generate(model: spec, prompt: prompt, seconds: seconds, seed: p.seed)
+        let clip = try await sound.generate(model: spec, prompt: prompt, lyrics: nonEmpty(p.lyrics), seconds: seconds, seed: p.seed)
         return Response(status: .ok, headers: [.contentType: format.contentType],
                         body: .init(byteBuffer: ByteBuffer(data: try await sound.encoded(clip, as: format))))
     }

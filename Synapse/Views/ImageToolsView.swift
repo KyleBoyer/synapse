@@ -168,6 +168,7 @@ struct ImageToolsView: View {
                 .disabled(!state.downloadedImageSpecs.contains(where: \.canEditImages))
                 .help("Edit this result in Generate: describe a change")
             AnimateButton(image: data)
+            SendToMenu(item: .image(data))
             Button("Save…", systemImage: "square.and.arrow.down") { save(data) }
             Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
         }

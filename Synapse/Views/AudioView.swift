@@ -181,13 +181,13 @@ final class ComposeModel {
 
     init() { player.onError = { [weak self] in self?.error = $0 } }
 
-    func generate(prompt: String, spec: ModelSpec, seconds: Double, seed: UInt64?, state: AppState) {
+    func generate(prompt: String, lyrics: String? = nil, spec: ModelSpec, seconds: Double, seed: UInt64?, state: AppState) {
         let sound = state.sound, metrics = state.metrics
         error = nil; running = true; elapsed = nil; started = Date()
         task = Task {
             defer { running = false }
             do {
-                let clip = try await sound.generate(model: spec, prompt: prompt, seconds: seconds, seed: seed)
+                let clip = try await sound.generate(model: spec, prompt: prompt, lyrics: lyrics, seconds: seconds, seed: seed)
                 let took = Date().timeIntervalSince(started ?? Date())
                 elapsed = took
                 if !SoundEngines.mock, took > 0 { metrics.record(spec.id, .soundSpeed, clip.seconds / took) }
@@ -251,9 +251,10 @@ struct AudioView: View {
     @MainActor static var autoNextDone = false
     #endif
     @Environment(AppState.self) private var state
-    enum Mode: String, CaseIterable { case speak = "Speak", compose = "Compose", edit = "Clean Up" }
+    /// Sound & Music (a prompt becomes a clip) leads; Speech reads text aloud; Clean Up works on a recording.
+    enum Mode: String, CaseIterable { case compose = "Sound & Music", speak = "Speech", edit = "Clean Up" }
 
-    @State private var mode = Mode.speak
+    @State private var mode = Mode.compose
     @State private var modelID = ""
     @State private var soundModelID = ""
     @State private var voice = SpeechService.pocketVoices[0]
@@ -261,6 +262,7 @@ struct AudioView: View {
     @State private var cloning = false
     @State private var deleting: CustomVoice?
     @State private var text = ""
+    @State private var lyrics = ""
     @State private var model = SpeakModel()
     @State private var composer = ComposeModel()
     @State private var editor = ComposeModel()
@@ -302,7 +304,20 @@ struct AudioView: View {
         }
     }
 
-    var body: some View { observed }
+    var body: some View {
+        observed
+            .onChange(of: state.handoff, initial: true) { takeHandoff() }
+    }
+
+    /// A result sent here from another pane: a recording to clean up, or text to speak or turn into a sound.
+    private func takeHandoff() {
+        switch state.handoff {
+        case .cleanUp(let url): state.handoff = nil; mode = .edit; editInput = url
+        case .prompt(let t, .speech): state.handoff = nil; mode = .speak; text = t
+        case .prompt(let t, .sound): state.handoff = nil; mode = .compose; text = t
+        default: break
+        }
+    }
 
     private var content: some View {
         Group {
@@ -552,6 +567,11 @@ struct AudioView: View {
                 }
             }
             PanelRow("Random seed") { Toggle("Random seed", isOn: $randomSeed).toggleStyle(.switch).labelsHidden() }
+            if let spec, SoundService.takesLyrics(spec) {
+                // Sung by the model; the prompt below describes the style. Section tags like [verse] go on their own lines.
+                TextField("Lyrics (optional): [verse] … [chorus] …", text: $lyrics, axis: .vertical)
+                    .lineLimit(3...8).textFieldStyle(.roundedBorder)
+            }
             if !randomSeed {
                 PanelRow("Seed") {
                     TextField("Seed", text: $seed).font(.mono()).textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing).frame(width: 120)
@@ -594,6 +614,8 @@ struct AudioView: View {
                         Button(playing == clip.id ? "Stop" : "Play", systemImage: playing == clip.id ? "stop.fill" : "play.fill") {
                             if speak { model.toggle(clip) } else { sounds.toggle(clip) }
                         }
+                        // Speech and sounds carry the text they came from; a cleaned-up recording has none of its own.
+                        SendToMenu(item: .audio(file: { clipFile(clip) }, text: mode == .edit ? nil : clip.text))
                         Button("Clean Up", systemImage: "wand.and.sparkles") { cleanUp(clip) }
                             .disabled(state.downloadedEditSpecs.isEmpty || running)
                             .help(state.downloadedEditSpecs.isEmpty ? "Download a Clean Up model (DeepFilterNet, SAM-Audio…) in Models"
@@ -625,7 +647,8 @@ struct AudioView: View {
             guard voiceOptions.contains(where: { $0.0 == voice }) else { return }
             model.speak(text: text, spec: spec, voice: voice, state: state)
         } else {
-            composer.generate(prompt: text, spec: spec, seconds: length, seed: randomSeed ? nil : UInt64(seed), state: state)
+            composer.generate(prompt: text, lyrics: SoundService.takesLyrics(spec) && !lyrics.isEmpty ? lyrics : nil, spec: spec,
+                              seconds: length, seed: randomSeed ? nil : UInt64(seed), state: state)
         }
         text = ""
     }
@@ -720,6 +743,13 @@ struct AudioView: View {
 
     /// Sends a clip to Clean Up as its input recording, written out as a WAV named after the clip.
     private func cleanUp(_ clip: SpeakModel.Clip) {
+        guard let url = clipFile(clip) else { return }
+        mode = .edit
+        editInput = url
+    }
+
+    /// The clip as a WAV named after it, for panes that take files.
+    private func clipFile(_ clip: SpeakModel.Clip) -> URL? {
         let name = clip.text.prefix(40).map { "/:\\".contains($0) ? "-" : $0 }
         let url = FileManager.default.temporaryDirectory.appending(path: "Synapse-clips", directoryHint: .isDirectory)
             .appending(path: "\(String(name).trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ".")))).wav")
@@ -727,12 +757,11 @@ struct AudioView: View {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? FileManager.default.removeItem(at: url)
             try SpeakModel.writeWAV(clip, to: url)
+            return url
         } catch {
             sounds.error = error.localizedDescription
-            return
+            return nil
         }
-        mode = .edit
-        editInput = url
     }
 
     private func delete(_ clip: SpeakModel.Clip) {

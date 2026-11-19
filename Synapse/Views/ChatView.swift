@@ -109,6 +109,22 @@ struct ChatView: View {
         #endif
         .onChange(of: specs.map(\.id)) { pickModel() }
         .onChange(of: generating) { state.setActive(.chat, generating) }
+        .onChange(of: state.handoff, initial: true) {
+            guard case .chat(let text, let images, let videos, let audios) = state.handoff else { return }
+            state.handoff = nil
+            if !text.isEmpty { input = text }
+            pending += images; pendingVideos += videos; pendingAudios += audios
+            composerFocused = true
+            // Pick a model that can take what arrived: audio needs an omni model (mlx-vlm), video a video-capable one.
+            let chat = state.chat, current = spec
+            Task {
+                if !audios.isEmpty, let current, await !chat.supportsAudio(current),
+                   let omni = specs.first(where: { $0.engine == .mlxvlm }) { modelID = omni.id; return }
+                if !videos.isEmpty, let current, await !chat.supportsVideo(current) {
+                    for s in specs where await chat.supportsVideo(s) { modelID = s.id; return }
+                }
+            }
+        }
     }
 
     private func pickModel() {
@@ -178,7 +194,10 @@ struct ChatView: View {
             Text(timecode(l.at)).font(.mono(.caption)).foregroundStyle(current ? Color.live : Color.secondary)
                 .frame(width: 82, alignment: .leading)
             VStack(alignment: .leading, spacing: 6) {
-                Text(user ? "You" : (spec?.displayName ?? "Model")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(user ? "You" : (spec?.displayName ?? "Model")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    if !user, !current, !l.message.text.isEmpty { SendToMenu(item: .text(l.message.text)).controlSize(.small) }
+                }
                 ForEach(l.message.videos, id: \.self) { VideoThumb(url: $0, height: 160) }
                 ForEach(l.message.audios, id: \.self) { AudioChip(url: $0) }
                 ForEach(Array(l.message.images.enumerated()), id: \.offset) { _, d in

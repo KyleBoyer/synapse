@@ -33,7 +33,7 @@ Everything runs on the Mac, in one native app that is also the server: the same 
 
 ## Capabilities and Constraints
 
-- Panes today: Transcribe, Chat, Images, Video, Audio (Speak and Compose), Embed, Live, Models, Memory, Watch Folders, Server, plus Settings and a menu bar extra.
+- Panes today: Transcribe, Chat, Images, Video, Audio (Sound & Music, Speech, Clean Up), Embed, Live, Models, Memory, Watch Folders, Server, plus Settings and a menu bar extra.
 - Modalities: transcription with speaker labels, chat with image, video and (omni models) audio input, image generation, video generation, text to speech, sound and music generation, embeddings and reranking, realtime speech with camera frames, voice calls with an omni model that hears and speaks itself (LFM3 Omni), full-duplex speech.
 - Some engines are Python tools (mlx-video, mlx-audio, mlx-vlm) installed on first use under the models folder; their models run as separate processes, one per clip or one server per omni model.
 - The dev Mac has 16 GB. LTX-2.3 video (about 96 GB), MiniCPM-o and Qwen3-Omni are verified only with mocks or not at all until they run on a 128 GB Mac Studio.

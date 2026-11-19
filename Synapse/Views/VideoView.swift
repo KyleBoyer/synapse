@@ -125,6 +125,9 @@ struct VideoView: View {
                 mode = .generate; startImage = data; prompt = ""; promptFocused = true
             case .transformVideo:
                 mode = .transform   // VideoTransformView takes the clip itself
+            case .prompt(let text, .video):
+                state.handoff = nil
+                mode = .generate; prompt = text; promptFocused = true
             default: break
             }
         }
@@ -290,6 +293,7 @@ struct VideoView: View {
             .help("Continue: start a new clip from this clip's last frame")
         Button("Transform", systemImage: "wand.and.sparkles") { state.send(.transformVideo(file)) }
             .help("Transform every frame: depth, subject mask or upscale")
+        SendToMenu(item: .video(file))
     }
 
     private func continueFrom(_ file: URL) async {
@@ -365,18 +369,25 @@ private extension VideoJob.Status {
 /// (fatal error in _AVKit_SwiftUI class metadata) on macOS 26.
 struct ClipPlayer: NSViewRepresentable {
     let url: URL
+    /// Players on screen by file, so Send To can take the frame at the playhead.
+    @MainActor private static var players: [URL: AVPlayer] = [:]
+    @MainActor static func playhead(_ url: URL) -> CMTime? { players[url]?.currentTime() }
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .floating
         view.videoGravity = .resizeAspect
         view.player = AVPlayer(url: url)
+        Self.players[url] = view.player
         return view
     }
 
     func updateNSView(_ view: AVPlayerView, context: Context) {
-        if (view.player?.currentItem?.asset as? AVURLAsset)?.url != url { view.player = AVPlayer(url: url) }
+        if (view.player?.currentItem?.asset as? AVURLAsset)?.url != url { view.player = AVPlayer(url: url); Self.players[url] = view.player }
     }
 
-    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) { view.player?.pause() }
+    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+        view.player?.pause()
+        if let url = (view.player?.currentItem?.asset as? AVURLAsset)?.url, players[url] === view.player { players[url] = nil }
+    }
 }

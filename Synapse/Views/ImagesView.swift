@@ -101,10 +101,16 @@ struct ImagesView: View {
         }
         .task(id: state.historyRevision) { await loadHistory() }
         .onChange(of: state.handoff, initial: true) {
-            guard case .editImage(let data) = state.handoff else { return }
-            state.handoff = nil
-            mode = .generate
-            editImage(data)
+            switch state.handoff {
+            case .editImage(let data):
+                state.handoff = nil
+                mode = .generate
+                editImage(data)
+            case .prompt(let text, .image):
+                state.handoff = nil
+                mode = .generate; references = []; prompt = text; promptFocused = true
+            default: break
+            }
         }
 
         .task { await state.refreshModels() }
@@ -298,6 +304,7 @@ struct ImagesView: View {
                     .disabled(editModels.isEmpty)
                     .help(editModels.isEmpty ? "Download FLUX.2 klein or Qwen-Image Edit in Models to edit images" : "Edit this image: describe a change")
                 AnimateButton(image: data)
+                SendToMenu(item: .image(data))
                 Button("Save…", systemImage: "square.and.arrow.down") { save(data) }
                 Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
             }

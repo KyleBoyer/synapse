@@ -24,6 +24,7 @@ struct TranscriptView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                SendToMenu(item: .text(transcript.text))
                 Button("Copy Text", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(transcript.text, forType: .string)

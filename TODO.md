@@ -18,6 +18,13 @@ Make repeat requests fast and give clients the knobs the engines already have.
 - [ ] Prompt cache for requests with images, video or audio (mlx's appendMediaSuffix path).
 - [ ] Acceptance rate for draft-model speculation (mlx-swift-lm reports it only for MTP).
 
+## Every modality into every other (done)
+
+- [x] Send To on every result (images, tool results, clips, transformed videos, audio clips, chat replies, transcripts, call transcripts): direct where a model takes the input (image → video start, video frame → image edit, video soundtrack → Clean Up), through editable text otherwise (audio → transcript → image). Each handoff checked in the app; Chat switches to an omni model when audio arrives.
+- [x] Audio tabs: Sound & Music (first, default), Speech, Clean Up.
+- [x] More sound models: Stable Audio 3 Medium (10 s of jungle ambience in 8 s) and MiniMax Music 3 4-bit (songs with sung lyrics; a 20 s song in 6 min, lyrics transcribe back word for word). `lyrics` on `/v1/audio/generations` and a Lyrics field for MiniMax.
+- [ ] Real image-to-video and frame-to-video runs: LTX-2.3 is not on the 16 GB Mac; checked with the mock engine.
+
 ## Saved history (done)
 
 - [x] Chats, images, image tools, video and transforms, speech/sound/cleanup clips, Live call transcripts, GUI transcriptions and Embed comparisons kept in `~/Library/Application Support/Synapse/History`; delete per item, per pane, or all; retention in Settings. API requests are never saved (a unit test guards it). Verified in the app: GUI chat and image restored after relaunch; API chat and image sent alongside not saved.

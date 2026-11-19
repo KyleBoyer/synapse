@@ -117,6 +117,7 @@ struct VideoTransformView: View {
                             Spacer()
                             Text("\(r.operation.rawValue)\(r.model.map { " · \($0)" } ?? "") · \(String(format: "%.1f s", r.seconds))")
                                 .font(.mono(.caption)).foregroundStyle(.secondary)
+                            SendToMenu(item: .video(r.output))
                             Button("Transform Again", systemImage: "arrow.trianglehead.2.clockwise") { input = r.output }
                                 .labelStyle(.iconOnly).buttonStyle(.borderless).help("Transform again: use this result as the input")
                             Button("Save…", systemImage: "square.and.arrow.down") { save(r.output) }.labelStyle(.iconOnly).buttonStyle(.borderless)

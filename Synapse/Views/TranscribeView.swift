@@ -53,6 +53,11 @@ struct TranscribeView: View {
             }
         }
         .sheet(item: $opened) { TranscriptView(job: $0) }
+        .onChange(of: state.handoff, initial: true) {
+            guard case .transcribe(let url) = state.handoff else { return }
+            state.handoff = nil
+            submit([url])
+        }
         #if DEBUG
         // `-autoTranscribe <path> [-autoDiarize YES]` submits one file after launch and opens its transcript when done,
         // so the result can be captured without typing.

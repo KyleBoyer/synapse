@@ -51,7 +51,7 @@ Every screenshot below is a real run on the 16 GB Mac mini.
   </tr>
   <tr>
     <td><img src="docs/screenshots/speak.png" alt="Audio, Speak: PocketTTS reads a sentence aloud, with first-audio time and speed"><br><b>Speak and clone voices.</b> Five speech engines; PocketTTS starts talking in a quarter second and runs 3× faster than realtime. Clone a voice from a 10-second clip and use it everywhere, including voice calls.</td>
-    <td><img src="docs/screenshots/compose.png" alt="Audio, Compose: Stable Audio 3 makes thunder and rain from a text prompt"><br><b>Make music and sound effects.</b> Stable Audio 3 from a text prompt. Clean Up removes noise, splits speakers, pulls out a described sound, or re-voices a recording.</td>
+    <td><img src="docs/screenshots/compose.png" alt="Audio, Sound & Music: Stable Audio 3 makes thunder and rain from a text prompt"><br><b>Make music and sound effects.</b> Stable Audio 3 from a text prompt. Clean Up removes noise, splits speakers, pulls out a described sound, or re-voices a recording.</td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/embed.png" alt="Embed: documents ranked against a query by cosine similarity and a reranker"><br><b>Embed and rerank.</b> Text and image embeddings plus a reranker, for search and RAG, behind the OpenAI and Cohere shapes.</td>
@@ -114,8 +114,8 @@ It also works with anything that lets you set an OpenAI or Anthropic base URL: c
 | Chat, with images, video and audio | Chat | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/api/v1/chat` | Qwen3.5 (0.8B to 9B), Gemma 3n and 4, LFM3 Omni, MiniCPM-o 4.5, Qwen3-Omni 30B, and any MLX or GGUF chat model from Hugging Face |
 | Transcribe and subtitle | Transcribe, Watch Folders | `/v1/audio/transcriptions`, `/v1/audio/translations`, `/asr` | Whisper (Tiny to Large v3 Turbo), Distil Large v3, Parakeet v2 and v3, speaker diarization |
 | Talk in real time | Live | `/v1/realtime` | Parakeet EOU and Silero VAD to hear, any chat model to think, any voice to speak; full-duplex PersonaPlex 7B and Nemotron VoiceChat 11B; Hibiki Zero for French-to-English speech translation |
-| Speak text, clone voices | Audio → Speak | `/v1/audio/speech`, `/v1/audio/voices` | PocketTTS, Kokoro 82M, Qwen3-TTS 1.7B, VoxCPM2, Chatterbox Turbo |
-| Make music and sound | Audio → Compose | `/v1/audio/generations` | Stable Audio 3 Music and SFX |
+| Speak text, clone voices | Audio → Speech | `/v1/audio/speech`, `/v1/audio/voices` | PocketTTS, Kokoro 82M, Qwen3-TTS 1.7B, VoxCPM2, Chatterbox Turbo |
+| Make music and sound | Audio → Sound & Music | `/v1/audio/generations` | Stable Audio 3 SFX, Music and Medium; MiniMax Music 3 (songs with sung lyrics) |
 | Clean up audio | Audio → Clean Up | `/v1/audio/enhance`, `/v1/audio/separate`, `/v1/audio/convert` | DeepFilterNet 3, NemotronLabs RE-USE, SAM-Audio, DialogueSidon, Chatterbox |
 | Generate and edit images | Images → Generate | `/v1/images/generations`, `/v1/images/edits` | FLUX.2 klein 4B and 9B, Z-Image and Z-Image Turbo, Qwen-Image 2.1 and 2512, Qwen-Image Edit |
 | Cut out, depth, upscale | Images | `/v1/images/cutout`, `/v1/images/depth`, `/v1/images/upscale` | macOS Vision, Depth Anything V2, Real-ESRGAN |
@@ -266,16 +266,16 @@ Files live in `~/Library/Application Support/Synapse/History`.
 
 To change a picture you made, press **Edit** (the wand) on it, then describe the change, for example "make it night". The image becomes the reference for an edit-capable model (FLUX.2 klein or Qwen-Image Edit, chosen for you if the current model can't edit), at the size closest to the original's. Press Edit on the new result to keep going. Saved images from earlier sessions can be edited the same way. Over the API this is `/v1/images/edits`.
 
-Results feed the next step in other panes too:
+Every result also has a **Send To** menu (the arrow), so each modality can feed every other. Where a model takes the input directly, it goes straight in; otherwise it goes through text: audio is transcribed and the transcript makes the image, an image is described in Chat and the reply makes the sound. Prompts land in the target's composer for you to edit and run; Synapse adds no words of its own.
 
-| On | Button | What it does |
-|---|---|---|
-| An image, or a Cut Out, Depth or Upscale result | **Edit** | Edit it in Images → Generate. |
-| An image, or a Cut Out, Depth or Upscale result | **Animate** | Start a video clip from it (Video → Generate, as the start image). |
-| A video clip | **Continue** | Start a new clip from its last frame. |
-| A video clip | **Transform** | Send it to Video → Transform. |
-| A transformed video | **Transform Again** | Use the result as the next input. |
-| A speech, sound or cleaned-up clip | **Clean Up** | Send it to Audio → Clean Up. |
+| From | Send To |
+|---|---|
+| An image (or a Cut Out, Depth or Upscale result) | Edit in Images · Animate in Video · Ask About It in Chat |
+| A video clip | Edit Frame in Images · Animate from Frame (the frame at the playhead) · Transform in Video · Clean Up Its Sound · Transcribe Its Speech · Ask About It in Chat |
+| An audio clip | Clean Up · Transcribe · Ask About It in Chat (switches to an omni model) · and, for speech and sounds, Make an Image, Video or Sound from its text |
+| A chat reply, transcript or call transcript | Make an Image · Make a Video · Speak It · Make a Sound · Ask About It in Chat |
+
+Quick buttons cover the common steps: **Edit** and **Animate** on images, **Continue** (a new clip from the last frame) and **Transform** on clips, **Transform Again** on transformed videos, and **Clean Up** on audio clips.
 
 | Route | Notes |
 |---|---|
@@ -315,7 +315,7 @@ c.videos.download_content(v.id).write_to_file("fox.mp4")
 <details>
 <summary><b>Speech, voice cloning, sound, audio cleanup and embeddings</b></summary>
 
-**Audio → Speak → Clone Voice…** makes a voice from a clip (the first 10 seconds are kept and transcribed). Every model that clones speaks every voice, in the Voice menu and on the API by its id:
+**Audio → Speech → Clone Voice…** makes a voice from a clip (the first 10 seconds are kept and transcribed). Every model that clones speaks every voice, in the Voice menu and on the API by its id:
 
 | Model | Speaker similarity* | Notes |
 |---|---|---|
@@ -336,7 +336,7 @@ c.audio.speech.create(model="qwen3-tts-1.7b", voice={"id": voice.id}, input="Hel
 | `POST /v1/audio/speech` | OpenAI speech: `input` (up to 4096 characters), `voice`, `response_format` (`mp3` default, `opus`, `aac`, `flac`, `wav`, `pcm`), `speed`, `stream_format` (`audio` or `sse`). `tts-1`, `tts-1-hd` and `gpt-4o-mini-tts` mean the first downloaded of PocketTTS and Kokoro. PocketTTS ignores `speed`; OpenAI voice names use the default voice. |
 | `POST /v1/audio/voice_consents` | OpenAI voice consents, for clients that create one first: multipart `name`, `language`, `recording` (up to 10 MiB). Also `GET` (list, `after`, `limit`), `GET`/`POST` (rename)/`DELETE` `/v1/audio/voice_consents/{id}`. No voice needs a consent. |
 | `POST /v1/audio/voices` | OpenAI custom voices: multipart `name`, `audio_sample` (up to 10 MiB, any format ffmpeg reads). `consent` is accepted and ignored; `transcript` (Synapse's addition) replaces the automatic transcription. The first 10 seconds are kept; 5 to 10 seconds of one person speaking works best. Returns `{"id": "voice_…", "object": "audio.voice"}`; speak with `voice: {"id": "voice_…"}` and any model that clones. `DELETE /v1/audio/voices/{id}` removes it, and `GET /v1/audio/voices` (Synapse's addition) lists them. Voices from a text prompt are refused. |
-| `POST /v1/audio/generations` | Synapse's own: `prompt`, `seconds` (1 to 120, default 8), `seed`, `response_format` (`wav` default keeps stereo; other formats are mono). Models: `stable-audio-3-small-sfx`, `stable-audio-3-small-music`. |
+| `POST /v1/audio/generations` | Synapse's own: `prompt`, `lyrics` (sung by `minimax-music3-4bit`; section tags like `[verse]` on their own lines), `seconds` (1 to 120, default 8), `seed`, `response_format` (`wav` default keeps stereo; other formats are mono). Models: `stable-audio-3-small-sfx`, `stable-audio-3-small-music`, `stable-audio-3-medium`, `minimax-music3-4bit`. On a 16 GB Mac, 10 s of jungle ambience from Stable Audio 3 Medium took 8 s; a 20 s MiniMax song took 6 minutes and its lyrics transcribe back word for word. |
 | `POST /v1/audio/enhance` | Synapse's own: multipart `file` (any format ffmpeg reads), `model`, `response_format` (`wav` default). Returns the recording with background noise removed, at 48 kHz mono. Models: `deepfilternet-3` (30 MB, the default), `nemotron-reuse`. |
 | `POST /v1/audio/convert` | Synapse's own voice conversion: multipart `file` (someone speaking), `voice` (a cloned voice id), `model` (`chatterbox-turbo`, the only one that converts), `response_format` (`wav` default). The recording re-spoken in that voice; words and timing come from the recording. About real time on the Mac mini. |
 | `POST /v1/audio/separate` | Synapse's own: multipart `file`, `model`, `prompt`, `response_format`. Returns `{"model", "tracks": [{"name", "format", "seconds", "audio": base64}]}`. With a `prompt` (what to pull out: "speech", "dog barking", "vocals") the default is `sam-audio-small`, giving `target` and `residual`; without one it is `dialoguesidon`, giving `speaker_1` and `speaker_2` from a two-person recording. Input is mixed to mono. |

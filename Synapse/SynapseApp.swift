@@ -167,6 +167,26 @@ struct MainView: View {
             state.tryRequest = .init(pane: target, modelID: id)
             pane = target
         }
+        // `-debugHandoff kind:value` sends a Send To handoff after launch (image, video, speech, sound: a prompt;
+        // transcribe, cleanup, chatimage, chataudio: a file path; chattext: text), to check each pane takes it.
+        .task {
+            guard let spec = UserDefaults.standard.string(forKey: "debugHandoff"), let colon = spec.firstIndex(of: ":") else { return }
+            try? await Task.sleep(for: .seconds(2))
+            let kind = String(spec[..<colon]), value = String(spec[spec.index(after: colon)...])
+            let file = URL(fileURLWithPath: value)
+            switch kind {
+            case "image": state.send(.prompt(value, .image))
+            case "video": state.send(.prompt(value, .video))
+            case "speech": state.send(.prompt(value, .speech))
+            case "sound": state.send(.prompt(value, .sound))
+            case "transcribe": state.send(.transcribe(file))
+            case "cleanup": state.send(.cleanUp(file))
+            case "chatimage": state.send(.chat(text: "", images: [(try? Data(contentsOf: file)) ?? Data()], videos: [], audios: []))
+            case "chataudio": state.send(.chat(text: "", images: [], videos: [], audios: [file]))
+            case "chattext": state.send(.chat(text: value, images: [], videos: [], audios: []))
+            default: break
+            }
+        }
         // `-openSettings YES` opens Settings after launch, for captures.
         .task { if UserDefaults.standard.bool(forKey: "openSettings") { state.showingSettings = true } }
         #endif

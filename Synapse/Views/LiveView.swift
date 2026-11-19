@@ -459,6 +459,7 @@ struct CallTranscriptSheet: View {
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
+                SendToMenu(item: .text((record?.lines ?? []).map(\.text).joined(separator: "\n")))
                 Button("Copy", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString((record?.lines ?? []).map { "\($0.role): \($0.text)" }.joined(separator: "\n"), forType: .string)

@@ -40,11 +40,23 @@ final class AppState {
         case animateImage(Data)
         /// Video → Transform, as the input clip.
         case transformVideo(URL)
+        /// Audio → Clean Up, as the input recording (a video's soundtrack works too).
+        case cleanUp(URL)
+        /// Transcribe, as a dropped file.
+        case transcribe(URL)
+        /// Chat's composer: text to send and attachments.
+        case chat(text: String, images: [Data], videos: [URL], audios: [URL])
+        /// Text as the prompt of another generation, left in its composer to edit before running.
+        case prompt(String, PromptTarget)
+        enum PromptTarget: Equatable { case image, video, speech, sound }
 
         var pane: Pane {
             switch self {
-            case .editImage: .images
-            case .animateImage, .transformVideo: .video
+            case .editImage, .prompt(_, .image): .images
+            case .animateImage, .transformVideo, .prompt(_, .video): .video
+            case .cleanUp, .prompt(_, .speech), .prompt(_, .sound): .audio
+            case .transcribe: .transcribe
+            case .chat: .chat
             }
         }
     }
