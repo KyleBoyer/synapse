@@ -25,7 +25,7 @@ final class PromptCacheE2ETests: XCTestCase {
         var messages = [ChatMessage(role: .system, text: system)]
         var turns: [Turn] = []
         for q in questions {
-            if cold { await chat.clearCache() }
+            if cold { await chat.clearCache(spec.id, disk: true) }
             messages.append(ChatMessage(role: .user, text: q))
             let start = ContinuousClock.now
             var first: Double?
@@ -49,8 +49,9 @@ final class PromptCacheE2ETests: XCTestCase {
     func testCachedConversationMatchesColdAndReusesHistory() async throws {
         let (chat, spec) = try await service()
         _ = try await chat.complete(model: spec, messages: [ChatMessage(role: .user, text: "hi")], options: ChatOptions(maxTokens: 2))  // load
+        await chat.clearCache(spec.id, disk: true)
         let cold = try await conversation(chat, spec, cold: true)
-        await chat.clearCache()
+        await chat.clearCache(spec.id, disk: true)
         let warm = try await conversation(chat, spec, cold: false)
         for (i, (c, w)) in zip(cold, warm).enumerated() {
             print("[turn \(i + 1)] cold \(String(format: "%.3f", c.firstToken)) s, warm \(String(format: "%.3f", w.firstToken)) s, "
@@ -68,5 +69,32 @@ final class PromptCacheE2ETests: XCTestCase {
         let stats = await chat.cacheStats()[spec.id]
         print("[stats] \(String(describing: stats))")
         XCTAssertEqual(stats?.hits, 2, "only warm turns 2 and 3 hit")
+        XCTAssertEqual(stats?.diskEntries, 1, "turns 2 and 3 grew the conversation by under a third: no new files")
+        await chat.clearCache(spec.id, disk: true)
+    }
+
+    /// Turn 1 saves its checkpoint to disk; after an unload (memory cache gone) turn 2 still starts warm, unchanged.
+    func testCheckpointSurvivesUnloadOnDisk() async throws {
+        let (chat, spec) = try await service()
+        await chat.clearCache(spec.id, disk: true)
+        let cold = try await conversation(chat, spec, cold: true)
+        await chat.clearCache(spec.id, disk: true)
+
+        var messages = [ChatMessage(role: .system, text: system), ChatMessage(role: .user, text: questions[0])]
+        let first = try await chat.complete(model: spec, messages: messages, options: ChatOptions(maxTokens: 24, temperature: 0))
+        _ = await chat.models.unload(spec.id)
+        let afterUnload = await chat.cacheStats()[spec.id]
+        XCTAssertEqual(afterUnload?.entries, 0, "unloading drops the memory checkpoints")
+        XCTAssertEqual(afterUnload?.diskEntries, 1)
+
+        messages += [ChatMessage(role: .assistant, text: first.text), ChatMessage(role: .user, text: questions[1])]
+        let diskHitsBefore = afterUnload?.diskHits ?? 0
+        let second = try await chat.complete(model: spec, messages: messages, options: ChatOptions(maxTokens: 24, temperature: 0))
+        print("[disk] turn 2 prompt \(second.usage.promptTokens), cached \(second.usage.cachedTokens): \(second.text.debugDescription)")
+        XCTAssertGreaterThan(second.usage.cachedTokens, first.usage.promptTokens - 20)
+        XCTAssertEqual(second.text, cold[1].text)
+        let stats = await chat.cacheStats()[spec.id]
+        XCTAssertEqual(stats?.diskHits, diskHitsBefore + 1)
+        await chat.clearCache(spec.id, disk: true)
     }
 }

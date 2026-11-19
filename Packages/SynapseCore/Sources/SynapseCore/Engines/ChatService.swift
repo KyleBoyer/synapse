@@ -122,11 +122,18 @@ public actor ChatService {
     static let defaultMaxTokens = 4096
     /// Memory each loaded model may spend on prompt-cache checkpoints.
     private var promptCacheBytes: Int
+    /// Disk space for saved checkpoints, all models together (0 turns saving off).
+    private var diskCacheBytes: Int
     private var promptCaches: [String: PromptCache] = [:]
+    nonisolated var diskCacheRoot: URL { store.root.appending(path: "cache", directoryHint: .isDirectory) }
 
-    public init(store: ModelStore, models: ModelManager = ModelManager(), promptCacheBytes: Int = ChatService.defaultPromptCacheBytes) {
-        self.store = store; self.models = models; self.promptCacheBytes = promptCacheBytes
+    public init(store: ModelStore, models: ModelManager = ModelManager(), promptCacheBytes: Int = ChatService.defaultPromptCacheBytes,
+                diskCacheBytes: Int = 10 << 30) {
+        self.store = store; self.models = models; self.promptCacheBytes = promptCacheBytes; self.diskCacheBytes = diskCacheBytes
     }
+
+    /// Takes effect for models loaded from now on; caches of loaded models keep their current disk setting.
+    public func setDiskCacheLimit(_ bytes: Int) { diskCacheBytes = bytes }
 
     /// 1.5 GB on Macs with 16 GB or less, 4 GB above that.
     public static var defaultPromptCacheBytes: Int {
@@ -145,15 +152,25 @@ public actor ChatService {
         return out
     }
 
-    /// Drops cached prompts for one model, or for all when `id` is nil. Counters are kept.
-    public func clearCache(_ id: String? = nil) async {
-        for (key, c) in promptCaches where id == nil || key == id { await c.clear() }
+    /// Drops cached prompts for one model, or for all when `id` is nil; `disk` also deletes saved checkpoints.
+    /// Counters are kept.
+    public func clearCache(_ id: String? = nil, disk: Bool = false) async {
+        for (key, c) in promptCaches where id == nil || key == id {
+            await c.clear()
+            if disk { await c.forgetDisk() }
+        }
+        // By path, so a model whose cache was not created this session is covered too.
+        if disk { try? FileManager.default.removeItem(at: id.map(DiskPromptCache.folder(root: diskCacheRoot)) ?? diskCacheRoot) }
     }
 
     /// One cache per model id; it lives as long as the service, its entries are dropped when the model unloads.
-    private func promptCache(_ id: String) -> PromptCache {
+    /// In-process MLX models pass their folder, which gives the cache a disk tier.
+    private func promptCache(_ id: String, folder: URL? = nil) -> PromptCache {
         if let c = promptCaches[id] { return c }
-        let c = PromptCache(byteLimit: promptCacheBytes)
+        let disk = folder.flatMap { f in
+            diskCacheBytes > 0 ? DiskPromptCache(root: diskCacheRoot, modelID: id, modelFolder: f, byteLimit: diskCacheBytes) : nil
+        }
+        let c = PromptCache(byteLimit: promptCacheBytes, disk: disk)
         promptCaches[id] = c
         return c
     }
@@ -247,12 +264,12 @@ public actor ChatService {
     private func streamMLXVLM(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
                               _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        let cacheBytes = promptCacheBytes
+        let cacheBytes = promptCacheBytes, diskBytes = diskCacheBytes
         let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedResidentBytes,
                                            measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
                 try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
-                let server = try await MLXVLMServer.launch(folder: folder, cacheBytes: cacheBytes)
+                let server = try await MLXVLMServer.launch(folder: folder, cacheBytes: cacheBytes, diskBytes: diskBytes)
                 return (server, unload: { server.terminate() })
             }
         }
@@ -337,6 +354,8 @@ public actor ChatService {
         let generation: AsyncStream<Generation>
         let promptTokens: Int
         let cachedTokens: Int
+        /// Runs after the last token, still under the GPU gate (saving a checkpoint to disk).
+        var afterward: (@Sendable () async -> Void)? = nil
     }
 
     /// Prefills through the prompt cache and starts generating. Runs inside `perform`, where the model and the
@@ -362,9 +381,13 @@ public actor ChatService {
         }
         await cache.record(prompt: tokens.count, cached: hit?.reused ?? 0)
         let rest = LMInput(tokens: MLXArray(tokens[fed...].map(Int32.init)))
-        return Started(generation: try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params,
-                                                            context: ctx, tools: tools),
-                       promptTokens: tokens.count, cachedTokens: hit?.reused ?? 0)
+        let generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx, tools: tools)
+        var started = Started(generation: generation, promptTokens: tokens.count, cachedTokens: hit?.reused ?? 0)
+        if let boundary {
+            let prefix = Array(tokens[0..<boundary])
+            started.afterward = { await cache.persist(prefix) }
+        }
+        return started
     }
 
     /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.
@@ -384,6 +407,7 @@ public actor ChatService {
             throw error
         }
         let generation = started.generation, promptTokens = started.promptTokens, cachedTokens = started.cachedTokens
+        let afterward = started.afterward
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -408,6 +432,8 @@ public actor ChatService {
                         break
                     }
                 }
+                // The reply is complete (`.done` is out); a cancelled request has already released the gate.
+                if !Task.isCancelled { await afterward?() }
                 releaseGate()
                 continuation.finish()
             }
@@ -477,7 +503,7 @@ public actor ChatService {
 
     private func containerLease(for spec: ModelSpec, progress: @escaping Progress) async throws -> ModelLease<ModelContainer> {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
-        let cache = promptCache(spec.id)
+        let cache = promptCache(spec.id, folder: folder)
         return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedResidentBytes,
                                       measure: { await Self.weightBytes($0) + cache.stats.bytes }) {
             try await Self.timed(progress) {
