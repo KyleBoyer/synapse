@@ -618,6 +618,19 @@ def cache():
     check("chat completions: follow-up reports cached_tokens", cached > first.usage.prompt_tokens - 20,
           f"{cached} of {second.usage.prompt_tokens}")
 
+    # Server-backed engines keep their own prefix cache (llama.cpp slots, mlx-vlm APC); Synapse relays their counts.
+    listed = {m.id for m in client.models.list().data}
+    for model in ("bartowski/Llama-3.2-1B-Instruct-GGUF", "gemma-3n-e2b"):
+        if model not in listed:
+            print(f"SKIP cache: {model} not downloaded")
+            continue
+        m = msgs[:2]
+        r1 = client.chat.completions.create(model=model, messages=m, max_tokens=8, temperature=0)
+        m += [{"role": "assistant", "content": r1.choices[0].message.content}, {"role": "user", "content": "Another one?"}]
+        r2 = client.chat.completions.create(model=model, messages=m, max_tokens=8, temperature=0)
+        got = r2.usage.prompt_tokens_details.cached_tokens
+        check(f"{model}: follow-up reports cached_tokens", got > r1.usage.prompt_tokens - 40, f"{got} of {r2.usage.prompt_tokens}")
+
     ant = Anthropic(base_url=HOST, api_key=KEY)
     turns = [{"role": "user", "content": "Name a fruit. One word."}]
     a1 = ant.messages.create(model="qwen3.5-0.8b", system=system + "\nBe terse.", messages=turns, max_tokens=8)

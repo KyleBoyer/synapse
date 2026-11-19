@@ -31,14 +31,16 @@ public final class LlamaServer: @unchecked Sendable {
         kill $child 2>/dev/null; wait $child
         """#
 
-    static func launch(folder: URL, files: [String]) async throws -> LlamaServer {
+    /// `cacheMiB` caps llama.cpp's host-memory prompt cache (its own default is 8 GiB), matching Synapse's setting.
+    static func launch(folder: URL, files: [String], cacheMiB: Int) async throws -> LlamaServer {
         guard let exe = binary() else { throw EngineError.unsupported("llama-server is missing from this build (run scripts/build-llama.sh).") }
         guard let weights = files.first(where: { !$0.lowercased().contains("mmproj") }) else {
             throw EngineError.unsupported("No GGUF weights file was chosen for this model.")
         }
         let port = try MLXVLMServer.freePort()
         var args = ["-m", folder.appending(path: weights).path, "--host", "127.0.0.1", "--port", String(port),
-                    "--fit", "on", "--jinja", "--offline", "--no-ui", "-np", "1"]
+                    "--fit", "on", "--jinja", "--offline", "--no-ui", "-np", "1",
+                    "--cache-ram", String(cacheMiB)]
         if let projector = files.first(where: { $0.lowercased().contains("mmproj") }) {
             args += ["--mmproj", folder.appending(path: projector).path]
         }

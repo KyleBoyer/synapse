@@ -247,11 +247,12 @@ public actor ChatService {
     private func streamMLXVLM(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
                               _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
+        let cacheBytes = promptCacheBytes
         let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedResidentBytes,
                                            measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
                 try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
-                let server = try await MLXVLMServer.launch(folder: folder)
+                let server = try await MLXVLMServer.launch(folder: folder, cacheBytes: cacheBytes)
                 return (server, unload: { server.terminate() })
             }
         }
@@ -259,18 +260,36 @@ public actor ChatService {
         do { body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath) } catch { lease.release(); throw error }
         await GPUGate.shared.acquire()
         let gate = GateRelease()
-        return MLXVLMChat.stream(base: lease.value.base, body: body) { gate(); lease.release() }
+        return Self.recording(MLXVLMChat.stream(base: lease.value.base, body: body) { gate(); lease.release() }, into: promptCache(spec.id))
+    }
+
+    /// Server-backed models keep their own prefix cache; their usage reports feed the same counters as in-process ones.
+    private static func recording(_ events: AsyncThrowingStream<ChatEvent, Error>, into cache: PromptCache)
+        -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        AsyncThrowingStream { c in
+            let task = Task {
+                do {
+                    for try await e in events {
+                        if case .done(_, let u) = e { await cache.record(prompt: u.promptTokens, cached: u.cachedTokens) }
+                        c.yield(e)
+                    }
+                    c.finish()
+                } catch { c.finish(throwing: error) }
+            }
+            c.onTermination = { _ in task.cancel() }
+        }
     }
 
     /// GGUF models run in their own llama.cpp server (same OpenAI stream as mlx-vlm); eviction stops it.
     private func streamLlama(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
                              _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        let files = spec.files ?? []
+        let files = spec.files ?? [], cacheMiB = promptCacheBytes >> 20
         let lease = try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedResidentBytes,
                                            measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
-                let server = try await LlamaServer.launch(folder: folder, files: files)
+                let server = try await LlamaServer.launch(folder: folder, files: files, cacheMiB: cacheMiB)
                 return (server, unload: { server.terminate() })
             }
         }
@@ -280,7 +299,7 @@ public actor ChatService {
         } catch { lease.release(); throw error }
         await GPUGate.shared.acquire()
         let gate = GateRelease()
-        return MLXVLMChat.stream(base: lease.value.base, body: body) { gate(); lease.release() }
+        return Self.recording(MLXVLMChat.stream(base: lease.value.base, body: body) { gate(); lease.release() }, into: promptCache(spec.id))
     }
 
     /// Raw text continuation (legacy OpenAI Completions): the prompt is tokenized as-is, with no chat template.

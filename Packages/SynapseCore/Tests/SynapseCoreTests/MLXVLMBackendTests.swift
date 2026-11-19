@@ -57,6 +57,32 @@ final class MLXVLMBackendTests: XCTestCase {
         }
     }
 
+    /// mlx-vlm's prefix cache can refuse a request when free RAM is short; the reader retries once, and the retry's
+    /// cached-token count comes through.
+    func testAPCAdmissionErrorIsRetriedOnce() async throws {
+        let calls = Mutex(0)
+        let router = Router()
+        router.post("v1/chat/completions") { _, _ -> Response in
+            let n = calls.withLock { $0 += 1; return $0 }
+            let lines = n == 1
+                ? [#"{"error":{"message":"The request cannot fit the APC prefill memory budget even alone. Reduce the context length or memory reserve."}}"#]
+                : [#"{"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#,
+                   #"{"choices":[],"usage":{"prompt_tokens":40,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":32}}}"#]
+            let text = lines.map { "data: \($0)\n\n" }.joined() + "data: [DONE]\n\n"
+            return Response(status: .ok, headers: [.contentType: "text/event-stream"], body: .init(byteBuffer: ByteBuffer(string: text)))
+        }
+        try await Application(router: router).test(.live) { client in
+            let port = try XCTUnwrap(client.port)
+            var events: [ChatEvent] = []
+            for try await e in MLXVLMChat.stream(base: URL(string: "http://localhost:\(port)")!, body: Data("{}".utf8), onFinish: {}) {
+                events.append(e)
+            }
+            XCTAssertEqual(calls.withLock { $0 }, 2)
+            XCTAssertEqual(events.last, .done(finishReason: "stop", usage: ChatUsage(promptTokens: 40, completionTokens: 1, cachedTokens: 32)))
+            XCTAssertEqual(events.filter { $0 == .progress(.promptStarted) }.count, 1)
+        }
+    }
+
     /// llama.cpp with return_progress: prompt_progress objects (cached tokens excluded) become fractions before the answer.
     func testLlamaPromptProgressBecomesFractions() async throws {
         let router = Router()

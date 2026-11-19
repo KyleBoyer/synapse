@@ -39,7 +39,8 @@ public final class MLXVLMServer: @unchecked Sendable {
         runpy.run_module("mlx_vlm.server", run_name="__main__")
         """
 
-    static func launch(folder: URL) async throws -> MLXVLMServer {
+    /// `cacheBytes` caps the prefix cache (APC), matching Synapse's prompt-cache setting.
+    static func launch(folder: URL, cacheBytes: Int = ChatService.defaultPromptCacheBytes) async throws -> MLXVLMServer {
         let rt = try await PythonRuntime.shared.ensureInstalled(.init(name: "mlx-vlm", requirements: ["mlx-vlm==\(version)"]),
                                                                 storeRoot: try PythonRuntime.storeRoot(above: folder))
         let port = try freePort()
@@ -48,6 +49,8 @@ public final class MLXVLMServer: @unchecked Sendable {
         p.arguments = ["-c", watchdog, "--host", "127.0.0.1", "--port", String(port), "--model", folder.path]
         p.environment = ProcessInfo.processInfo.environment.merging([
             "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
+            // Automatic prefix caching: follow-up turns reuse the history's KV blocks. Off by default in mlx-vlm.
+            "APC_ENABLED": "1", "APC_DISK_ENABLED": "0", "APC_MEMORY_MAX_GB": String(Double(cacheBytes) / Double(1 << 30)),
             "HF_HOME": rt.dir.appending(path: "hf").path,
         ]) { $1 }
         let logURL = FileManager.default.temporaryDirectory.appending(path: "synapse-mlxvlm-\(port).log")
@@ -145,17 +148,20 @@ enum MLXVLMChat {
         s.wholeMatch(of: /\s*<\|[A-Za-z0-9_]+\|>\s*/) != nil
     }
 
+    private struct APCBusy: Error { let message: String }
+
     /// Reads `data:` lines until `[DONE]`; usage comes in the last chunk (include_usage).
     static func stream(base: URL, body: Data, onFinish: @escaping @Sendable () -> Void) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { c in
             let task = Task {
                 defer { onFinish() }
-                do {
+                var produced = false
+                /// One POST; returns the finish reason and usage after the stream ends.
+                func once() async throws -> (String, ChatUsage) {
                     var req = URLRequest(url: base.appending(path: "v1/chat/completions"), timeoutInterval: 600)
                     req.httpMethod = "POST"
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     req.httpBody = body
-                    c.yield(.progress(.promptStarted))
                     let (bytes, resp) = try await URLSession.shared.bytes(for: req)
                     guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                         var text = ""
@@ -173,6 +179,7 @@ enum MLXVLMChat {
                         // A failure after the 200 (out of GPU memory, say) arrives as a data line, not a status code.
                         if let e = o["error"] {
                             let message = (e as? String) ?? ((e as? [String: Any])?["message"] as? String) ?? "\(e)"
+                            if message.contains("APC prefill memory budget"), !produced { throw APCBusy(message: message) }
                             throw EngineError.unsupported("mlx-vlm failed: \(message)")
                         }
                         if reading, let pp = o["prompt_progress"] as? [String: Any], let total = pp["total"] as? Int,
@@ -182,7 +189,9 @@ enum MLXVLMChat {
                             continue
                         }
                         if let u = o["usage"] as? [String: Any], let p = u["prompt_tokens"] as? Int {
-                            usage = ChatUsage(promptTokens: p, completionTokens: u["completion_tokens"] as? Int ?? 0)
+                            // llama.cpp and mlx-vlm (APC) both report prefix-cache reuse here.
+                            let cached = (u["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int ?? 0
+                            usage = ChatUsage(promptTokens: p, completionTokens: u["completion_tokens"] as? Int ?? 0, cachedTokens: cached)
                         }
                         guard let choice = (o["choices"] as? [[String: Any]])?.first else { continue }
                         let delta = choice["delta"] as? [String: Any]
@@ -195,12 +204,28 @@ enum MLXVLMChat {
                             if let n = fn?["name"] as? String { calls[i, default: ("", "")].name += n }
                             if let a = fn?["arguments"] as? String { calls[i, default: ("", "")].arguments += a }
                         }
-                        if let d = content, !d.isEmpty, !isSpecialToken(d) { c.yield(.delta(d)) }
+                        if let d = content, !d.isEmpty, !isSpecialToken(d) { produced = true; c.yield(.delta(d)) }
                         if let f { finish = f }
                     }
                     for i in calls.keys.sorted() where !calls[i]!.name.isEmpty {
                         c.yield(.toolCall(name: calls[i]!.name, arguments: calls[i]!.arguments.isEmpty ? "{}" : calls[i]!.arguments))
                     }
+                    return (finish, usage)
+                }
+                do {
+                    c.yield(.progress(.promptStarted))
+                    var result: (String, ChatUsage)
+                    do {
+                        result = try await once()
+                    } catch is APCBusy {
+                        // mlx-vlm's prefix cache admits a request only when free RAM covers its reserve; without the
+                        // cache the request would just run. Wait for memory to settle and try once more.
+                        try await Task.sleep(for: .seconds(1))
+                        do { result = try await once() } catch let busy as APCBusy {
+                            throw EngineError.unsupported("mlx-vlm failed: \(busy.message) (memory is too full; unload a model and retry)")
+                        }
+                    }
+                    let (finish, usage) = result
                     c.yield(.done(finishReason: finish == "tool_calls" ? "stop" : finish, usage: usage))
                     c.finish()
                 } catch { c.finish(throwing: error) }
