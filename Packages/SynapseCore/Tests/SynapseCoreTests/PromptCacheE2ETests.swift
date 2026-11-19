@@ -120,7 +120,7 @@ final class PromptCacheE2ETests: XCTestCase {
         await chat.setKVPrecision(.full)
     }
 
-    /// mlx-vlm takes the precision through KV_BITS; Gemma 3n still answers and its prefix cache still works.
+    /// mlx-vlm takes the precision through KV_BITS and Gemma 3n still answers.
     func testMLXVLMRunsWithInt8KV() async throws {
         let (chat, _) = try await service()
         guard let gemma = try? await chat.resolve("gemma-3n-e2b") else { throw XCTSkip("gemma-3n-e2b not downloaded") }
@@ -133,6 +133,7 @@ final class PromptCacheE2ETests: XCTestCase {
         let r2 = try await chat.complete(model: gemma, messages: messages, options: ChatOptions(maxTokens: 8, temperature: 0))
         print("[mlx-vlm int8] \(r1.text.debugDescription) \(r2.text.debugDescription) cached \(r2.usage.cachedTokens)")
         XCTAssertTrue(r1.text.contains("4")); XCTAssertTrue(r2.text.contains("6"))
-        XCTAssertGreaterThan(r2.usage.cachedTokens, 0)
+        // mlx-vlm's prefix cache is on only with 32 GB or more (it refuses requests when free memory is short).
+        if MLXVLMServer.prefixCache { XCTAssertGreaterThan(r2.usage.cachedTokens, 0) } else { XCTAssertEqual(r2.usage.cachedTokens, 0) }
     }
 }

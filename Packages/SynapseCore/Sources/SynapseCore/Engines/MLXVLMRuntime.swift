@@ -40,6 +40,9 @@ public final class MLXVLMServer: @unchecked Sendable {
         """
 
     /// `cacheBytes` caps the prefix cache (APC) in memory and `diskBytes` its disk tier, matching Synapse's settings.
+    /// mlx-vlm's prefix cache runs on Macs with 32 GB or more (see the APC note in `launch`).
+    public static let prefixCache = ProcessInfo.processInfo.physicalMemory >= 32 << 30
+
     static func launch(folder: URL, cacheBytes: Int = ChatService.defaultPromptCacheBytes, diskBytes: Int = 0,
                        kv: KVPrecision = .full) async throws -> MLXVLMServer {
         let rt = try await PythonRuntime.shared.ensureInstalled(.init(name: "mlx-vlm", requirements: ["mlx-vlm==\(version)"]),
@@ -50,10 +53,12 @@ public final class MLXVLMServer: @unchecked Sendable {
         p.arguments = ["-c", watchdog, "--host", "127.0.0.1", "--port", String(port), "--model", folder.path]
         p.environment = ProcessInfo.processInfo.environment.merging([
             "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
-            // Automatic prefix caching: follow-up turns reuse the history's KV blocks. Off by default in mlx-vlm.
-            "APC_ENABLED": "1", "APC_MEMORY_MAX_GB": String(Double(cacheBytes) / Double(1 << 30)),
+            // Automatic prefix caching (follow-up turns reuse the history's KV blocks), off by default in mlx-vlm. It
+            // admits a request only when system-wide free RAM covers it, and refuses it otherwise; on a 16 GB Mac with
+            // other models loaded that happened on most requests in testing, so it is only turned on with room to spare.
+            "APC_ENABLED": MLXVLMServer.prefixCache ? "1" : "0", "APC_MEMORY_MAX_GB": String(Double(cacheBytes) / Double(1 << 30)),
             // Its own folder: Synapse's disk cache evicts by its own file layout and must not touch these blocks.
-            "APC_DISK_ENABLED": diskBytes > 0 ? "1" : "0", "APC_DISK_PATH": rt.dir.appending(path: "apc").path,
+            "APC_DISK_ENABLED": MLXVLMServer.prefixCache && diskBytes > 0 ? "1" : "0", "APC_DISK_PATH": rt.dir.appending(path: "apc").path,
             "APC_DISK_MAX_GB": String(Double(diskBytes) / Double(1 << 30)),
             "HF_HOME": rt.dir.appending(path: "hf").path,
         ].merging(kv.mlxVLMBits.map { ["KV_BITS": $0] } ?? [:]) { $1 }) { $1 }

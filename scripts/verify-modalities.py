@@ -620,7 +620,10 @@ def cache():
 
     # Server-backed engines keep their own prefix cache (llama.cpp slots, mlx-vlm APC); Synapse relays their counts.
     listed = {m.id for m in client.models.list().data}
-    for model in ("bartowski/Llama-3.2-1B-Instruct-GGUF", "gemma-3n-e2b"):
+    # mlx-vlm's cache (gemma-3n-e2b) runs only on Macs with 32 GB or more.
+    import os
+    big = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >= 32 << 30
+    for model in ("bartowski/Llama-3.2-1B-Instruct-GGUF",) + (("gemma-3n-e2b",) if big else ()):
         if model not in listed:
             print(f"SKIP cache: {model} not downloaded")
             continue

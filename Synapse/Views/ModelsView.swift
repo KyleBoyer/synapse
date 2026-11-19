@@ -238,7 +238,10 @@ struct Datasheet: View {
                     }
                 }
             }
-            if s.requests == 0 {
+            if spec.engine == .mlxvlm, !MLXVLMServer.prefixCache {
+                Text("Off for mlx-vlm models on Macs with less than 32 GB: its cache refuses requests when free memory runs short.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if s.requests == 0 {
                 Text("No requests yet. Follow-up turns reuse the conversation so far instead of reading it again.")
                     .font(.caption).foregroundStyle(.secondary)
             }

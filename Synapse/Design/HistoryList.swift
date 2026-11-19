@@ -83,6 +83,11 @@ struct HistoryList: View {
             #if DEBUG
             // `-openFirstHistory YES` (with `-openHistory`) opens the newest item, to capture a restore.
             if UserDefaults.standard.bool(forKey: "openFirstHistory"), let first = items.first { open(first) }
+            // `-deleteFirstHistory YES` deletes the newest item the way the confirmed Delete does.
+            if UserDefaults.standard.bool(forKey: "deleteFirstHistory"), let first = items.first {
+                state.deleteHistory([first.id], kind: kind)
+                UserDefaults.standard.set(false, forKey: "deleteFirstHistory")
+            }
             #endif
         }
         .confirmationDialog(deleteTitle, isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
