@@ -262,6 +262,8 @@ Files live in `~/Library/Application Support/Synapse/History`.
 <details>
 <summary><b>Images: generate, edit, cut out, depth, upscale</b></summary>
 
+To change a picture you made, press **Edit** (the wand) on it, then describe the change, for example "make it night". The image becomes the reference for an edit-capable model (FLUX.2 klein or Qwen-Image Edit, chosen for you if the current model can't edit), at the size closest to the original's. Press Edit on the new result to keep going. Saved images from earlier sessions can be edited the same way. Over the API this is `/v1/images/edits`.
+
 | Route | Notes |
 |---|---|
 | `POST /v1/images/generations` | OpenAI Images: `prompt`, `size`, `n`, `stream` (partial-image SSE). Models: `flux2-klein-4b`, `z-image-turbo`, `qwen-image-2.1-q4`. |

@@ -28,6 +28,7 @@ struct ImagesView: View {
     @State private var mode = Mode.generate
     @State private var modelID = ""
     @State private var prompt = ""
+    @FocusState private var promptFocused: Bool
     @State private var negative = ""
     @State private var size = "1024x1024"
     @State private var useDefaultSteps = true
@@ -113,6 +114,13 @@ struct ImagesView: View {
             guard let p = UserDefaults.standard.string(forKey: "autoImagePrompt"), !p.isEmpty, history.isEmpty, !running, !modelID.isEmpty else { return }
             if let m = UserDefaults.standard.string(forKey: "imageModel"), m != modelID, specs.contains(where: { $0.id == m }) { modelID = m; return }
             prompt = p; generate()
+        }
+        // `-autoEditPrompt "..."` then edits that first image with this change, the way its Edit button does.
+        .task(id: history.count) {
+            guard let e = UserDefaults.standard.string(forKey: "autoEditPrompt"), !e.isEmpty, history.count == 1, !running,
+                  let first = history.last?.images.first else { return }
+            editImage(first)
+            prompt = e; generate()
         }
         #endif
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { r in
@@ -245,8 +253,10 @@ struct ImagesView: View {
                     Button("Add reference images", systemImage: "photo.badge.plus") { importing = true }
                         .labelStyle(.iconOnly).buttonStyle(.borderless).help("Add reference images")
                 }
-                TextField("Describe the image", text: $prompt, axis: .vertical)
+                TextField(spec?.canEditImages == true && !references.isEmpty ? "Describe the change" : "Describe the image",
+                          text: $prompt, axis: .vertical)
                     .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
+                    .focused($promptFocused)
                     .onSubmit(generate).composerKeys()
                 if running {
                     Button("Stop", systemImage: "stop.fill") { task?.cancel() }.buttonStyle(.glass)
@@ -270,12 +280,16 @@ struct ImagesView: View {
             if let img = NSImage(data: data) { Image(nsImage: img).resizable().scaledToFit().clipShape(.rect(cornerRadius: 12)) }
         }
         .contextMenu {
+            Button("Edit This Image") { editImage(data) }.disabled(editModels.isEmpty)
+            if spec?.canEditImages == true, !references.isEmpty { Button("Add as Reference") { references.append(data) } }
             Button("Save…") { save(data) }
             Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
-            if spec?.canEditImages == true { Button("Use as Reference") { references.append(data) } }
         }
         .overlay(alignment: .bottomTrailing) {
             HStack(spacing: 4) {
+                Button("Edit", systemImage: "wand.and.sparkles") { editImage(data) }
+                    .disabled(editModels.isEmpty)
+                    .help(editModels.isEmpty ? "Download FLUX.2 klein or Qwen-Image Edit in Models to edit images" : "Edit this image: describe a change")
                 Button("Save…", systemImage: "square.and.arrow.down") { save(data) }
                 Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
             }
@@ -295,6 +309,33 @@ struct ImagesView: View {
                                      seconds: item.decode([String: Double].self)?["seconds"] ?? 0))
         }
         history = loaded
+    }
+
+    /// Downloaded models that take reference images (FLUX.2 klein, Qwen-Image Edit).
+    private var editModels: [ModelSpec] { state.downloadedImageSpecs.filter(\.canEditImages) }
+
+    /// Image to image: the picture becomes the reference for the next generation, with an edit-capable model, at the
+    /// size closest to its own, and the prompt waits for the change to make.
+    private func editImage(_ data: Data) {
+        guard let model = spec?.canEditImages == true ? spec : editModels.first else { return }
+        modelID = model.id
+        references = [data]
+        if let rep = NSBitmapImageRep(data: data), rep.pixelsHigh > 0 { size = Self.closestSize(rep.pixelsWide, rep.pixelsHigh) }
+        prompt = ""
+        promptFocused = true
+    }
+
+    /// The offered size nearest in aspect ratio to w × h, then nearest in area.
+    static func closestSize(_ w: Int, _ h: Int) -> String {
+        let aspect = log(Double(w) / Double(h)), area = Double(w * h)
+        return sizes.min { a, b in
+            func cost(_ s: String) -> (Double, Double) {
+                let (sw, sh) = (try? ImageService.parseSize(s)) ?? (1024, 1024)
+                return (abs(log(Double(sw) / Double(sh)) - aspect), abs(Double(sw * sh) - area))
+            }
+            let (ca, cb) = (cost(a), cost(b))
+            return ca.0 < cb.0 - 1e-9 || (abs(ca.0 - cb.0) < 1e-9 && ca.1 < cb.1)
+        } ?? "1024x1024"
     }
 
     private func addReferences(_ urls: [URL]) {
