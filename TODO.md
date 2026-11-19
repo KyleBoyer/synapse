@@ -104,5 +104,6 @@ Editing, restyling, upscaling. Heavy on 16 GB; may be Mac Studio only.
 - [x] v0.1.1: Developer ID signed, notarized and stapled; Gatekeeper reports "Notarized Developer ID".
 - [x] v0.1.2: Sparkle updates (appcast.xml on each release, EdDSA-signed) and a drag-to-Applications DMG; earlier releases removed so every published build can update itself.
 - [x] v0.1.3: the DMG opens on a drawn background with an arrow from Synapse to Applications (dmgbuild, scripts/dmg).
+- [x] v0.1.4: prompt caching, KV precision, speculative decoding, sampling controls, thinking budget, keep-warm, measured memory, cache metrics on model cards, saved history. DMG and app "Notarized Developer ID"; appcast offers build 5.
 - [x] App icon is an Icon Composer `.icon`, so macOS 26 no longer draws it inside a grey plate.
 - [x] README rebuilt around real screenshots from the 16 GB Mac mini (docs/screenshots).
