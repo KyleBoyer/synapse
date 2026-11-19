@@ -8,6 +8,7 @@ struct VideoView: View {
     @MainActor static var autoNextDone = false
     #endif
     @Environment(AppState.self) private var state
+    @Environment(\.paneShown) private var paneShown
     private static let sizes = ["768x512", "512x768", "1280x704", "704x1280"]
     #if DEBUG
     @MainActor private static var autoQueued = false
@@ -61,8 +62,7 @@ struct VideoView: View {
             }
         }
         .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.video) { modelID = s.id } }
-        .navigationTitle("Video")
-        .toolbar {
+        .toolbar { if paneShown {
             ToolbarItem(placement: .principal) {
                 Picker("Mode", selection: $mode) { ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).labelsHidden().disabled(running)
@@ -76,7 +76,7 @@ struct VideoView: View {
                     state.clearHistory(mode == .generate ? .video : .videoTransform)
                 }
             }
-        }
+        } }
         .task(id: state.historyRevision) {
             guard state.savesHistory else { return }
             var loaded: [(item: HistoryItem, saved: Saved, url: URL)] = []

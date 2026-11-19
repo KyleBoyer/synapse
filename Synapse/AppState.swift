@@ -32,7 +32,7 @@ final class AppState {
         return Catalog.spec(r.modelID)
     }
     /// A result sent on to another pane as the next step's input (an image to animate, a clip to transform…).
-    /// MainView switches to the target pane, which takes the handoff when it appears.
+    /// MainView switches to the target pane, which takes the handoff (when it appears, or at once if already open).
     enum Handoff: Equatable {
         /// Images → Generate, as the reference for an edit.
         case editImage(Data)
@@ -61,7 +61,9 @@ final class AppState {
         }
     }
     var handoff: Handoff?
-    func send(_ h: Handoff) { handoff = h }
+    /// The pane a handoff goes to; kept apart from `handoff`, which a pane already open takes at once.
+    var paneRequest: Pane?
+    func send(_ h: Handoff) { handoff = h; paneRequest = h.pane }
 
     /// Panes doing work right now; the sidebar marks them with the live dot.
     var activePanes: Set<Pane> = []

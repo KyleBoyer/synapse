@@ -97,6 +97,11 @@ enum Pane: String, CaseIterable, Identifiable {
     static let runPanes: [Pane] = [.models, .memory, .watch, .server]
 }
 
+extension EnvironmentValues {
+    /// False for a Try pane kept alive behind the one on screen.
+    @Entry var paneShown = true
+}
+
 @main
 struct SynapseApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -136,6 +141,21 @@ struct MainView: View {
     @AppStorage(WindowLook.sidebarTintKey) private var sidebarTint = WindowLook.defaultSidebarTint
     @AppStorage(WindowLook.contentTintKey) private var contentTint = WindowLook.defaultContentTint
 
+    @State private var opened: Set<Pane> = []
+    private var current: Pane { pane ?? .chat }
+
+    @ViewBuilder private func tryPane(_ p: Pane) -> some View {
+        switch p {
+        case .transcribe: TranscribeView()
+        case .chat: ChatView()
+        case .images: ImagesView()
+        case .audio: AudioView()
+        case .embed: EmbedView()
+        case .video: VideoView()
+        default: LiveView()
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
             List(selection: $pane) {
@@ -150,21 +170,25 @@ struct MainView: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
             .safeAreaInset(edge: .bottom) { SidebarFooter().padding(10) }
         } detail: {
-            Group {
-                switch pane ?? .chat {
-                case .transcribe: TranscribeView()
-                case .chat: ChatView()
-                case .images: ImagesView()
-                case .audio: AudioView()
-                case .embed: EmbedView()
-                case .video: VideoView()
-                case .live: LiveView()
+            // Try panes stay alive once opened, so work started in one keeps running and its progress and results are
+            // there on return; only the shown one is visible, takes input and puts items in the toolbar.
+            ZStack {
+                ForEach(Pane.tryPanes.filter(opened.contains)) { p in
+                    let shown = p == current
+                    tryPane(p)
+                        .environment(\.paneShown, shown)
+                        .opacity(shown ? 1 : 0).allowsHitTesting(shown).disabled(!shown).accessibilityHidden(!shown)
+                }
+                switch current {
                 case .models: ModelsView(openPane: { pane = $0 })
                 case .memory: MemoryView()
                 case .watch: WatchFoldersView()
                 case .server: ServerView()
+                default: EmptyView()
                 }
             }
+            .navigationTitle(current.rawValue)
+            .onChange(of: current, initial: true) { opened.insert(current) }
             .scrollContentBackground(.hidden)
             // Fill the column before the background: panes that size to their content (Video's empty state, Memory's
             // centered column) otherwise get the work-area glass only behind that content, and the rest shows the desktop.
@@ -180,7 +204,7 @@ struct MainView: View {
             }
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        .onChange(of: state.handoff) { if let h = state.handoff { pane = h.pane } }
+        .onChange(of: state.paneRequest) { if let p = state.paneRequest { pane = p; state.paneRequest = nil } }
         #if DEBUG
         // `-tryModel <id>` does what Models' "Try in" button does, a moment after launch, for checks.
         .task {

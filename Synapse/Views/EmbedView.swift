@@ -105,6 +105,7 @@ final class EmbedModel {
 
 struct EmbedView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.paneShown) private var paneShown
     @State private var modelID = ""
     @State private var query = ""
     @AppStorage("embed.documents") private var documents = """
@@ -156,8 +157,7 @@ struct EmbedView: View {
             }
         }
         .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.embed) { if s.isEmbedding { modelID = s.id } } }
-        .navigationTitle("Embed")
-        .toolbar {
+        .toolbar { if paneShown {
             ToolbarItemGroup {
                 if !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
@@ -172,7 +172,7 @@ struct EmbedView: View {
                     }
                 }
             }
-        }
+        } }
         .task { await state.refreshModels() }
         .onChange(of: specs.map(\.id), initial: true) { _, ids in
             if !ids.contains(modelID) { modelID = ids.first ?? "" }

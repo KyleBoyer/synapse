@@ -3,6 +3,7 @@ import SynapseCore
 
 struct TranscribeView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.paneShown) private var paneShown
     @State private var modelID: String?
     @State private var language: String?
     @State private var task: TaskKind = .transcribe
@@ -27,8 +28,7 @@ struct TranscribeView: View {
             }
         }
         .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.transcribe) { modelID = s.id } }
-        .navigationTitle("Transcribe")
-        .toolbar {
+        .toolbar { if paneShown {
             ToolbarItemGroup {
                 ChoiceMenu(title: "Model", selection: $modelID,
                            options: [(nil, "Default · \(Catalog.spec(state.settings.defaultModelID)?.displayName ?? state.settings.defaultModelID)")]
@@ -51,7 +51,7 @@ struct TranscribeView: View {
                 Button("Clear Finished", systemImage: "trash") { state.clearFinished() }
                     .disabled(!state.jobs.contains { $0.status.isTerminal })
             }
-        }
+        } }
         .sheet(item: $opened) { TranscriptView(job: $0) }
         .onChange(of: state.handoff, initial: true) {
             guard case .transcribe(let url) = state.handoff else { return }

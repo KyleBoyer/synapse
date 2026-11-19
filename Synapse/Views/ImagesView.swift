@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct ImagesView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.paneShown) private var paneShown
     struct Generation: Identifiable {
         var id = UUID()
         let prompt: String
@@ -77,8 +78,7 @@ struct ImagesView: View {
             guard let s = state.takeTry(.images) else { return }
             if s.isDepth { mode = .depth } else if s.isUpscaler { mode = .upscale } else { mode = .generate; modelID = s.id }
         }
-        .navigationTitle("Images")
-        .toolbar {
+        .toolbar { if paneShown {
             ToolbarItem(placement: .principal) {
                 Picker("Mode", selection: $mode) { ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).labelsHidden().disabled(running)
@@ -98,7 +98,7 @@ struct ImagesView: View {
                     }
                 }
             }
-        }
+        } }
         .task(id: state.historyRevision) { await loadHistory() }
         .onChange(of: state.handoff, initial: true) {
             switch state.handoff {

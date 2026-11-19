@@ -147,6 +147,7 @@ final class LiveModel {
 
 struct LiveView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.paneShown) private var paneShown
     /// A saved call opened from History (read-only transcript).
     @State private var pastCall: HistoryItem?
     @State private var model = LiveModel()
@@ -229,14 +230,13 @@ struct LiveView: View {
         }
         .safeAreaInset(edge: .bottom) { micBar.padding([.horizontal, .bottom], 16) }
         .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.live) { if s.engine == .duplex { mode = .duplex; duplexModel = s.id } else { mode = .captions } } }
-        .navigationTitle("Live")
-        .toolbar {
+        .toolbar { if paneShown {
             ToolbarItem(placement: .principal) {
                 Picker("Mode", selection: $mode) { ForEach(LiveMode.allCases) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).disabled(model.running)
             }
             ToolbarItem { HistoryButton(kind: .call, noun: "call") { pastCall = $0 } }
-        }
+        } }
         .sheet(item: $pastCall) { CallTranscriptSheet(item: $0) }
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
         .onAppear {

@@ -85,6 +85,8 @@ final class SpeakModel {
     var preparing = false
     var error: String?
     var playing: UUID?
+    /// The text being spoken, shown with progress until its clip arrives.
+    private(set) var pending: String?
     private(set) var started: Date?
     private(set) var firstAudio: Double?
     private(set) var audioSeconds = 0.0
@@ -98,10 +100,10 @@ final class SpeakModel {
     func speak(text: String, spec: ModelSpec, voice: String, state: AppState) {
         let speech = state.speech, metrics = state.metrics
         error = nil; running = true; firstAudio = nil; audioSeconds = 0; elapsed = nil; playing = nil
-        started = nil
+        started = nil; pending = text
         task = Task {
             preparing = state.resident("speech:\(spec.id)") == nil
-            defer { running = false; preparing = false }
+            defer { running = false; preparing = false; pending = nil }
             var samples: [Float] = []
             do {
                 let (sr, pcm) = try await speech.synthesize(model: spec, text: text, voice: voice, speed: 1)
@@ -174,6 +176,8 @@ final class ComposeModel {
     var running = false
     var error: String?
     var playing: UUID?
+    /// What is being made (the prompt, or the recording's name), shown with progress until its clips arrive.
+    private(set) var pending: String?
     private(set) var started: Date?
     private(set) var elapsed: Double?
     private var task: Task<Void, Never>?
@@ -183,9 +187,9 @@ final class ComposeModel {
 
     func generate(prompt: String, lyrics: String? = nil, spec: ModelSpec, seconds: Double, seed: UInt64?, state: AppState) {
         let sound = state.sound, metrics = state.metrics
-        error = nil; running = true; elapsed = nil; started = Date()
+        error = nil; running = true; elapsed = nil; started = Date(); pending = prompt
         task = Task {
-            defer { running = false }
+            defer { running = false; pending = nil }
             do {
                 let clip = try await sound.generate(model: spec, prompt: prompt, lyrics: lyrics, seconds: seconds, seed: seed)
                 let took = Date().timeIntervalSince(started ?? Date())
@@ -201,9 +205,9 @@ final class ComposeModel {
     /// Clean Up mode: a recording through a noise-removal or separation model; each output track becomes a clip.
     func edit(input: URL, prompt: String?, spec: ModelSpec, state: AppState) {
         let sound = state.sound
-        error = nil; running = true; elapsed = nil; started = Date()
+        error = nil; running = true; elapsed = nil; started = Date(); pending = input.lastPathComponent
         task = Task {
-            defer { running = false }
+            defer { running = false; pending = nil }
             do {
                 let tracks = try await sound.edit(model: spec, input: input, prompt: prompt)
                 elapsed = Date().timeIntervalSince(started ?? Date())
@@ -221,9 +225,9 @@ final class ComposeModel {
     /// Clean Up with a converting model: the recording re-spoken in a cloned voice.
     func convert(input: URL, voice: CustomVoice, spec: ModelSpec, state: AppState) {
         let speech = state.speech
-        error = nil; running = true; elapsed = nil; started = Date()
+        error = nil; running = true; elapsed = nil; started = Date(); pending = "\(input.lastPathComponent) as \(voice.name)"
         task = Task {
-            defer { running = false }
+            defer { running = false; pending = nil }
             do {
                 let (rate, pcm) = try await speech.convert(model: spec, source: input, voice: voice.id)
                 var samples: [Float] = []
@@ -251,6 +255,7 @@ struct AudioView: View {
     @MainActor static var autoNextDone = false
     #endif
     @Environment(AppState.self) private var state
+    @Environment(\.paneShown) private var paneShown
     /// Sound & Music (a prompt becomes a clip) leads; Speech reads text aloud; Clean Up works on a recording.
     enum Mode: String, CaseIterable { case compose = "Sound & Music", speak = "Speech", edit = "Clean Up" }
 
@@ -355,8 +360,7 @@ struct AudioView: View {
             _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in editInput = url } } }
             return true
         }
-        .navigationTitle("Audio")
-        .toolbar {
+        .toolbar { if paneShown {
             ToolbarItem(placement: .principal) {
                 Picker("Mode", selection: $mode) { ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).labelsHidden().disabled(running)
@@ -370,7 +374,7 @@ struct AudioView: View {
                     switch mode { case .speak: model.clips = []; case .edit: editor.clips = []; default: composer.clips = [] }
                 }
             }
-        }
+        } }
     }
 
     /// Lifecycle and data hooks, split from `content` so Swift 6.2's type checker handles each half.
@@ -603,6 +607,9 @@ struct AudioView: View {
                             .font(.subtitle).foregroundStyle(.secondary).padding(.top, 40)
                     }
                 }
+                if let pending = speak ? model.pending : sounds.pending {
+                    pendingRow(pending, speak: speak)
+                }
                 ForEach(clips) { clip in
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -628,6 +635,19 @@ struct AudioView: View {
             }
             .padding(.horizontal, 24).padding(.vertical, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The clip being made: its text and a live label with the time so far.
+    private func pendingRow(_ text: String, speak: Bool) -> some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+            let since = (speak ? model.started : sounds.started).map { ctx.date.timeIntervalSince($0) }
+            let verb = speak ? (model.preparing ? "Loading model" : "Speaking")
+                : mode == .edit ? (converts ? "Converting" : "Cleaning up") : "Generating"
+            VStack(alignment: .leading, spacing: 8) {
+                Text(text).font(.title3).lineLimit(2).foregroundStyle(.secondary)
+                LiveProgress(label: verb + (since.map { String(format: " · %.0f s", $0) } ?? "…"))
+            }
         }
     }
 

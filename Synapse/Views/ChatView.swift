@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.paneShown) private var paneShown
     /// A conversation line plus when it started, relative to the conversation's first message.
     struct Line { var message: ChatMessage; var at: Double }
     /// The run being measured: what it is doing now, when each phase began, tokens so far, final usage.
@@ -78,8 +79,7 @@ struct ChatView: View {
             }
         }
         .onChange(of: state.tryRequest, initial: true) { if let s = state.takeTry(.chat) { modelID = s.id } }
-        .navigationTitle("Chat")
-        .toolbar {
+        .toolbar { if paneShown {
             ToolbarItemGroup {
                 if !specs.isEmpty {
                     ChoiceMenu(title: "Model", selection: $modelID, options: specs.map { ($0.id, $0.displayName) }, detail: { $0 })
@@ -91,7 +91,7 @@ struct ChatView: View {
                 }
                     .help("New Chat")
             }
-        }
+        } }
         .task { await state.refreshModels() }
         .onAppear { pickModel(); composerFocused = true }
         #if DEBUG
