@@ -82,6 +82,19 @@ struct SynapseApp: App {
     var body: some Scene {
         Window("Synapse", id: "main") {
             MainView().environment(state).frame(minWidth: 960, minHeight: 600)
+                // With the window closed Synapse lives in the menu bar only: no Dock icon, no app menus. Opening the
+                // window again (from the menu bar) brings the Dock icon back.
+                .onAppear { NSApp.setActivationPolicy(.regular) }
+                .onDisappear { NSApp.setActivationPolicy(.accessory) }
+                #if DEBUG
+                // `-closeWindowAfter <seconds>` closes the main window as its close button would, for checks.
+                .task {
+                    let after = UserDefaults.standard.double(forKey: "closeWindowAfter")
+                    guard after > 0 else { return }
+                    try? await Task.sleep(for: .seconds(after))
+                    NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true || $0.title == "Synapse" }?.performClose(nil)
+                }
+                #endif
         }
         .commands {
             CommandGroup(replacing: .appSettings) { SettingsCommand().environment(state) }
@@ -144,6 +157,7 @@ struct MainView: View {
             }
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        .onChange(of: state.handoff) { if let h = state.handoff { pane = h.pane } }
         #if DEBUG
         // `-tryModel <id>` does what Models' "Try in" button does, a moment after launch, for checks.
         .task {

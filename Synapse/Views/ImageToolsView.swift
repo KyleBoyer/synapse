@@ -6,6 +6,9 @@ import UniformTypeIdentifiers
 /// Images → Cut Out, Depth and Upscale: an image in, a result beside it. Cut-outs use macOS Vision (nothing to
 /// download); depth uses Depth Anything V2 through Core ML; upscaling uses Real-ESRGAN on MLX.
 struct ImageToolsView: View {
+    #if DEBUG
+    @MainActor static var autoNextDone = false
+    #endif
     enum Tool: String { case cutout = "Cut Out", depth = "Depth", upscale = "Upscale" }
     struct Result: Identifiable {
         var id = UUID()
@@ -71,6 +74,14 @@ struct ImageToolsView: View {
         }
         #endif
         .task(id: state.historyRevision) { await loadHistory() }
+        #if DEBUG
+        // `-autoNext edit|animate` presses that button on the first result, for checks.
+        .onChange(of: results.first?.id) {
+            guard let next = UserDefaults.standard.string(forKey: "autoNext"), let out = results.first?.output, !Self.autoNextDone else { return }
+            Self.autoNextDone = true
+            if next == "edit" { state.send(.editImage(out)) } else if next == "animate" { state.send(.animateImage(out)) }
+        }
+        #endif
     }
 
     private var readout: some View {
@@ -153,6 +164,10 @@ struct ImageToolsView: View {
 
     private func actions(_ data: Data) -> some View {
         HStack(spacing: 4) {
+            Button("Edit", systemImage: "wand.and.sparkles") { state.send(.editImage(data)) }
+                .disabled(!state.downloadedImageSpecs.contains(where: \.canEditImages))
+                .help("Edit this result in Generate: describe a change")
+            AnimateButton(image: data)
             Button("Save…", systemImage: "square.and.arrow.down") { save(data) }
             Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
         }

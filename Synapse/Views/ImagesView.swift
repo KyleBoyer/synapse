@@ -100,6 +100,12 @@ struct ImagesView: View {
             }
         }
         .task(id: state.historyRevision) { await loadHistory() }
+        .onChange(of: state.handoff, initial: true) {
+            guard case .editImage(let data) = state.handoff else { return }
+            state.handoff = nil
+            mode = .generate
+            editImage(data)
+        }
 
         .task { await state.refreshModels() }
         .onChange(of: specs.map(\.id), initial: true) { _, ids in
@@ -281,6 +287,7 @@ struct ImagesView: View {
         }
         .contextMenu {
             Button("Edit This Image") { editImage(data) }.disabled(editModels.isEmpty)
+            Button("Animate…") { state.send(.animateImage(data)) }.disabled(state.downloadedVideoSpecs.isEmpty && !VideoEngines.mock)
             if spec?.canEditImages == true, !references.isEmpty { Button("Add as Reference") { references.append(data) } }
             Button("Save…") { save(data) }
             Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
@@ -290,6 +297,7 @@ struct ImagesView: View {
                 Button("Edit", systemImage: "wand.and.sparkles") { editImage(data) }
                     .disabled(editModels.isEmpty)
                     .help(editModels.isEmpty ? "Download FLUX.2 klein or Qwen-Image Edit in Models to edit images" : "Edit this image: describe a change")
+                AnimateButton(image: data)
                 Button("Save…", systemImage: "square.and.arrow.down") { save(data) }
                 Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setData(data, forType: .png) }
             }
@@ -388,5 +396,18 @@ struct ImagesView: View {
             } catch is CancellationError {
             } catch { self.error = error.localizedDescription }
         }
+    }
+}
+
+/// Sends a picture to Video as the start image of a new clip.
+struct AnimateButton: View {
+    let image: Data
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        let none = state.downloadedVideoSpecs.isEmpty && !VideoEngines.mock
+        Button("Animate", systemImage: "film") { state.send(.animateImage(image)) }
+            .disabled(none)
+            .help(none ? "Download LTX-2.3 in Models to turn images into clips" : "Animate: start a video clip from this image")
     }
 }

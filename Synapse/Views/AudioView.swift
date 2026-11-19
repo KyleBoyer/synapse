@@ -247,6 +247,9 @@ final class ComposeModel {
 }
 
 struct AudioView: View {
+    #if DEBUG
+    @MainActor static var autoNextDone = false
+    #endif
     @Environment(AppState.self) private var state
     enum Mode: String, CaseIterable { case speak = "Speak", compose = "Compose", edit = "Clean Up" }
 
@@ -360,6 +363,14 @@ struct AudioView: View {
         content
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
         .task(id: state.historyRevision) { await loadHistory() }
+        #if DEBUG
+        // `-autoNext cleanup` sends the first Speak clip to Clean Up, for checks.
+        .onChange(of: model.clips.first?.id) {
+            guard UserDefaults.standard.string(forKey: "autoNext") == "cleanup", !Self.autoNextDone, let c = model.clips.first else { return }
+            Self.autoNextDone = true
+            cleanUp(c)
+        }
+        #endif
         .onChange(of: model.clips.map(\.id)) { saveNew(model.clips, kind: .speech) }
         .onChange(of: composer.clips.map(\.id)) { saveNew(composer.clips, kind: .sound) }
         .onChange(of: editor.clips.map(\.id)) { saveNew(editor.clips, kind: .audioEdit) }
@@ -583,6 +594,10 @@ struct AudioView: View {
                         Button(playing == clip.id ? "Stop" : "Play", systemImage: playing == clip.id ? "stop.fill" : "play.fill") {
                             if speak { model.toggle(clip) } else { sounds.toggle(clip) }
                         }
+                        Button("Clean Up", systemImage: "wand.and.sparkles") { cleanUp(clip) }
+                            .disabled(state.downloadedEditSpecs.isEmpty || running)
+                            .help(state.downloadedEditSpecs.isEmpty ? "Download a Clean Up model (DeepFilterNet, SAM-Audio…) in Models"
+                                  : "Clean Up: remove noise, separate sounds or re-voice this clip")
                         Button("Save…", systemImage: "square.and.arrow.down") { save(clip) }
                         DeleteItemMenu(noun: "clip") { delete(clip) }
                     }
@@ -701,6 +716,23 @@ struct AudioView: View {
         let speech = await load(.speech), sound = await load(.sound), edits = await load(.audioEdit)
         savedClips.formUnion((speech + sound + edits).map(\.id))
         model.clips = speech; composer.clips = sound; editor.clips = edits
+    }
+
+    /// Sends a clip to Clean Up as its input recording, written out as a WAV named after the clip.
+    private func cleanUp(_ clip: SpeakModel.Clip) {
+        let name = clip.text.prefix(40).map { "/:\\".contains($0) ? "-" : $0 }
+        let url = FileManager.default.temporaryDirectory.appending(path: "Synapse-clips", directoryHint: .isDirectory)
+            .appending(path: "\(String(name).trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ".")))).wav")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: url)
+            try SpeakModel.writeWAV(clip, to: url)
+        } catch {
+            sounds.error = error.localizedDescription
+            return
+        }
+        mode = .edit
+        editInput = url
     }
 
     private func delete(_ clip: SpeakModel.Clip) {

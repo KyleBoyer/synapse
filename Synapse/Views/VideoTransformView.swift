@@ -57,6 +57,11 @@ struct VideoTransformView: View {
         }
         #endif
         .task(id: state.historyRevision) { await loadHistory() }
+        .onChange(of: state.handoff, initial: true) {
+            guard case .transformVideo(let url) = state.handoff else { return }
+            state.handoff = nil
+            input = url
+        }
     }
 
     private var readout: some View {
@@ -112,6 +117,8 @@ struct VideoTransformView: View {
                             Spacer()
                             Text("\(r.operation.rawValue)\(r.model.map { " · \($0)" } ?? "") · \(String(format: "%.1f s", r.seconds))")
                                 .font(.mono(.caption)).foregroundStyle(.secondary)
+                            Button("Transform Again", systemImage: "arrow.trianglehead.2.clockwise") { input = r.output }
+                                .labelStyle(.iconOnly).buttonStyle(.borderless).help("Transform again: use this result as the input")
                             Button("Save…", systemImage: "square.and.arrow.down") { save(r.output) }.labelStyle(.iconOnly).buttonStyle(.borderless)
                             DeleteItemMenu(noun: "transformed video") {
                                 results.removeAll { $0.id == r.id }; state.deleteHistory([r.id], kind: .videoTransform)

@@ -73,6 +73,8 @@ Every screenshot below is a real run on the 16 GB Mac mini.
 2. Open Synapse, go to **Models**, and download a model. `Qwen3.5 2B` (1.6 GB) is a good first chat model; `Parakeet v3` is a good first transcriber.
 3. Press **Try in Chat**, or point any OpenAI or Anthropic client at `http://127.0.0.1:9000`.
 
+Closing the window doesn't quit Synapse. It keeps serving and watching folders from the menu bar (the waveform icon), with no Dock icon until you choose **Open Synapse** there. **Quit Synapse** in that menu stops it.
+
 You need an Apple Silicon Mac with macOS 26 or later. 16 GB of memory runs everything in the gallery; the largest models (full-precision LTX-2.3, Qwen3-Omni 30B, MiniCPM-o) want 32 to 64 GB or more.
 
 ## Use it from code
@@ -263,6 +265,17 @@ Files live in `~/Library/Application Support/Synapse/History`.
 <summary><b>Images: generate, edit, cut out, depth, upscale</b></summary>
 
 To change a picture you made, press **Edit** (the wand) on it, then describe the change, for example "make it night". The image becomes the reference for an edit-capable model (FLUX.2 klein or Qwen-Image Edit, chosen for you if the current model can't edit), at the size closest to the original's. Press Edit on the new result to keep going. Saved images from earlier sessions can be edited the same way. Over the API this is `/v1/images/edits`.
+
+Results feed the next step in other panes too:
+
+| On | Button | What it does |
+|---|---|---|
+| An image, or a Cut Out, Depth or Upscale result | **Edit** | Edit it in Images → Generate. |
+| An image, or a Cut Out, Depth or Upscale result | **Animate** | Start a video clip from it (Video → Generate, as the start image). |
+| A video clip | **Continue** | Start a new clip from its last frame. |
+| A video clip | **Transform** | Send it to Video → Transform. |
+| A transformed video | **Transform Again** | Use the result as the next input. |
+| A speech, sound or cleaned-up clip | **Clean Up** | Send it to Audio → Clean Up. |
 
 | Route | Notes |
 |---|---|

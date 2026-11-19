@@ -4,6 +4,9 @@ import SynapseCore
 import UniformTypeIdentifiers
 
 struct VideoView: View {
+    #if DEBUG
+    @MainActor static var autoNextDone = false
+    #endif
     @Environment(AppState.self) private var state
     private static let sizes = ["768x512", "512x768", "1280x704", "704x1280"]
     #if DEBUG
@@ -17,6 +20,7 @@ struct VideoView: View {
     @State private var randomSeed = true
     @State private var seed = "0"
     @State private var startImage: Data?
+    @FocusState private var promptFocused: Bool
     @State private var importing = false
     /// Newest first, as the service reports them.
     @State private var jobs: [VideoJob] = []
@@ -105,6 +109,25 @@ struct VideoView: View {
         .onChange(of: specs.map(\.id), initial: true) { _, ids in
             if !ids.contains(modelID) { modelID = ids.first ?? "" }
         }
+        #if DEBUG
+        // `-autoNext continue|transform` presses that button on the first finished clip (saved or new), for checks.
+        .onChange(of: (jobs.first { $0.file != nil }?.file ?? saved.first?.url)?.path) {
+            guard let next = UserDefaults.standard.string(forKey: "autoNext"), !Self.autoNextDone,
+                  let file = jobs.first(where: { $0.file != nil })?.file ?? saved.first?.url else { return }
+            Self.autoNextDone = true
+            if next == "continue" { Task { await continueFrom(file) } } else if next == "transform" { state.send(.transformVideo(file)) }
+        }
+        #endif
+        .onChange(of: state.handoff, initial: true) {
+            switch state.handoff {
+            case .animateImage(let data):
+                state.handoff = nil
+                mode = .generate; startImage = data; prompt = ""; promptFocused = true
+            case .transformVideo:
+                mode = .transform   // VideoTransformView takes the clip itself
+            default: break
+            }
+        }
         .onChange(of: running) { state.setActive(.video, running) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { r in
             if case .success(let url) = r { startImage = try? Data(contentsOf: url) }
@@ -192,6 +215,10 @@ struct VideoView: View {
                             }
                             ClipPlayer(url: s.url).aspectRatio(16 / 9, contentMode: .fit).frame(maxHeight: 460).clipShape(.rect(cornerRadius: 14))
                                 .contextMenu { Button("Save…") { save(s.url) } }
+                                .overlay(alignment: .topTrailing) {
+                                    HStack(spacing: 4) { nextSteps(s.url) }
+                                        .labelStyle(.iconOnly).buttonStyle(.glass).controlSize(.small).padding(8)
+                                }
                         }
                     }
                 }
@@ -243,14 +270,48 @@ struct VideoView: View {
             }
             .overlay(alignment: .topTrailing) {
                 if let file = j.file {
-                    Button("Save…", systemImage: "square.and.arrow.down") { save(file) }
-                        .labelStyle(.iconOnly).buttonStyle(.glass).controlSize(.small).padding(8)
+                    HStack(spacing: 4) {
+                        nextSteps(file)
+                        Button("Save…", systemImage: "square.and.arrow.down") { save(file) }
+                    }
+                    .labelStyle(.iconOnly).buttonStyle(.glass).controlSize(.small).padding(8)
                 } else if !j.status.isDone {
                     Button("Stop", systemImage: "stop.fill") { Task { _ = await state.videos.delete(j.id); jobs.removeAll { $0.id == j.id } } }
                         .labelStyle(.iconOnly).buttonStyle(.glass).controlSize(.small).padding(8)
                 }
             }
         }
+    }
+
+    /// What a finished clip can feed next: a new clip that starts where it ends, or Transform.
+    @ViewBuilder private func nextSteps(_ file: URL) -> some View {
+        Button("Continue", systemImage: "arrow.forward.to.line") { Task { await continueFrom(file) } }
+            .disabled(specs.isEmpty)
+            .help("Continue: start a new clip from this clip's last frame")
+        Button("Transform", systemImage: "wand.and.sparkles") { state.send(.transformVideo(file)) }
+            .help("Transform every frame: depth, subject mask or upscale")
+    }
+
+    private func continueFrom(_ file: URL) async {
+        guard let frame = await Self.lastFrame(file) else { error = "Could not read the clip's last frame."; return }
+        mode = .generate
+        startImage = frame
+        prompt = ""
+        promptFocused = true
+    }
+
+    /// The clip's final frame as PNG, the start image for a clip that continues it.
+    static func lastFrame(_ url: URL) async -> Data? {
+        let asset = AVURLAsset(url: url)
+        guard let duration = try? await asset.load(.duration) else { return nil }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        // A frame's length before the end: asking for the end itself can return nothing.
+        let at = CMTimeSubtract(duration, CMTime(value: 1, timescale: 30))
+        guard let (cg, _) = try? await generator.image(at: CMTimeMaximum(at, .zero)) else { return nil }
+        return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
     }
 
     private func meta(_ j: VideoJob) -> String {
@@ -261,8 +322,9 @@ struct VideoView: View {
 
     private var promptBar: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Describe the clip", text: $prompt, axis: .vertical)
+            TextField(startImage == nil ? "Describe the clip" : "Describe what happens from the start image", text: $prompt, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain).font(.title3)
+                .focused($promptFocused)
                 .onSubmit(generate).composerKeys()
             Button("Generate", systemImage: "film") { generate() }
                 .buttonStyle(.glassProminent)

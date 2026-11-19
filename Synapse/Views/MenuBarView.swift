@@ -14,10 +14,12 @@ struct MenuBarView: View {
         Text(state.serverStatus.label)
         Divider()
         Button("Open Synapse") {
+            NSApp.setActivationPolicy(.regular)
             openWindow(id: "main")
             NSApp.activate()
         }
         Button("Settings…") {
+            NSApp.setActivationPolicy(.regular)
             openWindow(id: "main")
             NSApp.activate()
             state.showingSettings = true
