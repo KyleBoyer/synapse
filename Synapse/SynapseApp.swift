@@ -85,15 +85,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 LiveAudio.hold("live", true)
                 for (round, vp) in [(1, true), (2, true), (3, false)] {
-                    let peak = OSAllocatedUnfairLock(initialState: 0)
+                    let peak = OSAllocatedUnfairLock(initialState: 0), count = OSAllocatedUnfairLock(initialState: 0)
                     do {
                         let t = Date()
                         let a = try await LiveAudio.acquire(.init(input: input, output: output, voiceProcessing: vp),
-                                                            onChunk: { s in peak.withLock { $0 = max($0, s.map { abs(Int($0)) }.max() ?? 0) } }, onLevel: { _ in })
+                                                            onChunk: { s in peak.withLock { $0 = max($0, s.map { abs(Int($0)) }.max() ?? 0) }; count.withLock { $0 += s.count } }, onLevel: { _ in })
                         fputs(String(format: "liveRepeatTest: round \(round) acquire (echo cancel asked: \(vp)) %.2f s\n", Date().timeIntervalSince(t)), stderr)
                         a.play(pcm16: Data(count: 48000))
                         try? await Task.sleep(for: .seconds(1))
-                        fputs("liveRepeatTest: round \(round) echo cancel \(a.echoCancel), peak \(peak.withLock { $0 })\n", stderr)
+                        fputs("liveRepeatTest: round \(round) echo cancel \(a.echoCancel), peak \(peak.withLock { $0 }), \(count.withLock { $0 }) samples in 1 s\n", stderr)
                         timed("round \(round) release") { a.release() }
                     } catch { fputs("liveRepeatTest: round \(round) failed \(error)\n", stderr) }
                 }

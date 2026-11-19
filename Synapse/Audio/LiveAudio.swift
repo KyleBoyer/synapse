@@ -4,8 +4,8 @@ import CoreAudio
 /// Mic capture (-> 24 kHz mono Int16) and 24 kHz PCM16 playback.
 /// With `voiceProcessing` both run on one AVAudioEngine whose input node uses Apple's voice-processing I/O unit:
 /// acoustic echo cancellation, so the assistant's own playback is not fed back into the VAD (playback must go through
-/// the same engine to be the AEC reference). Without it the mic is read by an AVCaptureSession and playback has its
-/// own engine: an engine drives input and output through one unit, so it cannot read a mic that has no output side
+/// the same engine to be the AEC reference). Without it the mic is read by a HAL input unit (HALInput) and playback has
+/// its own engine: an engine drives input and output through one unit, so it cannot read a mic that has no output side
 /// (a Bluetooth headset's) unless that mic is the system default.
 final class LiveAudio: @unchecked Sendable {
     /// The devices a link is open on; a call that asks for the same ones reuses it.
@@ -31,8 +31,10 @@ final class LiveAudio: @unchecked Sendable {
     private var onChunk: (@Sendable ([Int16]) -> Void)?
     private var onLevel: (@Sendable (Float) -> Void)?
     private var engine: AVAudioEngine?
-    private var capture: AVCaptureSession?
-    private var captureReader: CaptureReader?
+    private var input: HALInput?
+    private var engineWatch: NSObjectProtocol?
+    /// Told when the mic or speaker goes away mid-session (unplugged, switched off), with a message to show.
+    private var onLost: (@MainActor (String) -> Void)?
     private let player = AVAudioPlayerNode()
     private let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false)!
     private let lock = NSLock()
@@ -67,7 +69,8 @@ final class LiveAudio: @unchecked Sendable {
     /// The open link on these devices (reused, or opened now, closing one on other devices), feeding this caller.
     /// Opening runs off the main thread: a Bluetooth headset takes seconds to start.
     @MainActor static func acquire(_ config: Config, onChunk: @escaping @Sendable ([Int16]) -> Void,
-                                   onLevel: @escaping @Sendable (Float) -> Void) async throws -> LiveAudio {
+                                   onLevel: @escaping @Sendable (Float) -> Void,
+                                   onLost: @escaping @MainActor (String) -> Void = { _ in }) async throws -> LiveAudio {
         releaseTask?.cancel(); releaseTask = nil
         var config = config
         let pair = config.input + "|" + config.output
@@ -90,12 +93,24 @@ final class LiveAudio: @unchecked Sendable {
         link.flush()
         link.lock.withLock { link.onChunk = onChunk; link.onLevel = onLevel }
         link.attached = true
+        link.onLost = onLost
         return link
+    }
+
+    /// The mic or speaker went away: the link is dropped (the next caller opens a new one) and its user told.
+    @MainActor private func lost(_ message: String) {
+        guard Self.current === self else { return }
+        Self.current = nil
+        close()
+        let tell = attached ? onLost : nil
+        attached = false
+        tell?(message)
     }
 
     /// The call is over: stop feeding it and drop its queued audio. The devices stay open (see `current`).
     @MainActor func release() {
         lock.withLock { onChunk = nil; onLevel = nil }
+        onLost = nil
         phraseMode = false
         flush()
         attached = false
@@ -160,6 +175,14 @@ final class LiveAudio: @unchecked Sendable {
         e.prepare()
         try e.start()
         player.play()
+        // A device change stops the engine; restart it, or report the speaker (or echo-cancelled mic) gone.
+        engineWatch = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            nonisolated(unsafe) let engine = e
+            MainActor.assumeIsolated {
+                if (try? engine.start()) != nil { self.player.play() } else { self.lost("The speaker or microphone was disconnected.") }
+            }
+        }
     }
 
     private func tap(_ input: AVAudioInputNode, _ deliver: @escaping @Sendable ([Int16]) -> Void) throws {
@@ -182,27 +205,11 @@ final class LiveAudio: @unchecked Sendable {
         }
     }
 
-    /// Reads the mic (a Core Audio UID is also its AVCaptureDevice unique ID), converted to 24 kHz mono Int16.
+    /// Reads the mic through a HAL input unit (see HALInput for why not AVCaptureSession).
     private func startCapture(_ uid: String, _ deliver: @escaping @Sendable ([Int16]) -> Void) throws {
-        guard let device = (uid.isEmpty ? nil : AVCaptureDevice(uniqueID: uid)) ?? AVCaptureDevice.default(for: .audio) else {
-            throw NSError(domain: "Synapse", code: 2, userInfo: [NSLocalizedDescriptionKey: "No microphone is connected."])
-        }
-        let session = AVCaptureSession()
-        let input = try AVCaptureDeviceInput(device: device)
-        let output = AVCaptureAudioDataOutput()
-        output.audioSettings = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 24000, AVNumberOfChannelsKey: 1,
-                                AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
-                                AVLinearPCMIsNonInterleaved: false]
-        let reader = CaptureReader(deliver)
-        output.setSampleBufferDelegate(reader, queue: reader.queue)
-        guard session.canAddInput(input), session.canAddOutput(output) else {
-            throw NSError(domain: "Synapse", code: 3, userInfo: [NSLocalizedDescriptionKey: "\(device.localizedName) can't be read."])
-        }
-        session.addInput(input)
-        session.addOutput(output)
-        session.startRunning()
-        capture = session
-        captureReader = reader
+        input = try HALInput(uid: uid, deliver: deliver, lost: { [weak self] in
+            Task { @MainActor in self?.lost("The microphone was disconnected.") }
+        })
     }
 
     func play(pcm16: Data) {
@@ -264,7 +271,8 @@ final class LiveAudio: @unchecked Sendable {
             held = []; releaseAt = nil; quiet = 0; drain?.cancel(); drain = nil
         }
         // Outside the lock: stopping calls the dropped buffers' completion handlers, which take it.
-        player.stop(); player.play()
+        player.stop()
+        if engine?.isRunning == true { player.play() }   // playing on a stopped engine raises an exception
     }
 
     /// The buffer length a reply needs before it starts, after any growth from running dry (for checks).
@@ -290,42 +298,19 @@ final class LiveAudio: @unchecked Sendable {
 
     /// Closes the devices on a background queue: stopping a Bluetooth headset's capture and output blocks for seconds.
     private func close() {
-        let capture = capture, engine = engine, player = player, echoCancel = echoCancel
-        self.capture = nil; self.engine = nil; captureReader = nil
-        nonisolated(unsafe) let parts = (capture, engine, player)
+        let input = input, engine = engine, player = player, echoCancel = echoCancel
+        self.input = nil; self.engine = nil
+        if let w = engineWatch { NotificationCenter.default.removeObserver(w); engineWatch = nil }
+        nonisolated(unsafe) let parts = (input, engine, player)
         DispatchQueue.global(qos: .utility).async {
-            let (capture, engine, player) = parts
-            capture?.stopRunning()
+            let (input, engine, player) = parts
+            input?.stop()
             player.stop()
             if let engine {
                 if echoCancel { engine.inputNode.removeTap(onBus: 0) }
                 engine.stop()
                 if echoCancel { try? engine.inputNode.setVoiceProcessingEnabled(false) }
             }
-        }
-    }
-}
-
-/// Hands each captured buffer's Int16 samples on.
-private final class CaptureReader: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
-    let queue = DispatchQueue(label: "Synapse.LiveAudio.capture")
-    private let deliver: @Sendable ([Int16]) -> Void
-    #if DEBUG
-    private var loggedFormat = false
-    #endif
-    init(_ deliver: @escaping @Sendable ([Int16]) -> Void) { self.deliver = deliver }
-
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        #if DEBUG
-        if !loggedFormat, let f = sampleBuffer.formatDescription?.audioStreamBasicDescription {
-            loggedFormat = true
-            fputs("LiveAudio capture format: \(f)\n", stderr)
-        }
-        #endif
-        try? sampleBuffer.withAudioBufferList { list, _ in
-            guard let buffer = list.first, let data = buffer.mData else { return }
-            deliver(Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: Int16.self),
-                                              count: Int(buffer.mDataByteSize) / MemoryLayout<Int16>.size)))
         }
     }
 }

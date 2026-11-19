@@ -69,7 +69,8 @@ final class LiveModel {
         do {
             a = try await LiveAudio.acquire(.init(input: inputUID, output: outputUID, voiceProcessing: wantsAEC),   // AEC; see LiveAudio
                                       onChunk: { pcm in Task { await s.appendAudio(pcm24k: pcm) } },
-                                      onLevel: { l in Task { @MainActor [weak self] in self?.level = l } })
+                                      onLevel: { l in Task { @MainActor [weak self] in self?.level = l } },
+                                      onLost: { [weak self] message in self?.stop(); self?.error = message })
             echoCancel = wantsAEC ? a.echoCancel : nil
             a.phraseMode = mode == .duplex   // its text runs with its voice; see LiveAudio.phraseEnded
         } catch {

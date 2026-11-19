@@ -121,7 +121,8 @@ struct CloneVoiceSheet: View {
         let link: LiveAudio
         do {
             link = try await LiveAudio.acquire(.init(input: inputUID, output: outputUID, voiceProcessing: false),
-                                         onChunk: { pcm in samples.withLock { $0 += pcm } }, onLevel: { _ in })
+                                         onChunk: { pcm in samples.withLock { $0 += pcm } }, onLevel: { _ in },
+                                         onLost: { message in stopRequested = true; error = message })
         } catch {
             self.error = "Recording failed: \(error.localizedDescription)"
             return
