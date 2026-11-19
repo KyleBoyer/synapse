@@ -40,6 +40,40 @@ public struct ChatOptions: Sendable, Equatable {
     }
 }
 
+/// How the KV cache stores attention keys and values. Lower precision fits longer contexts and more cached prompts
+/// in memory, at a small quality cost. Only affine quantization is offered: it is the scheme whose caches can be
+/// copied (mlx-swift-lm's TurboQuant cache has no `copy()`, which the prompt cache needs).
+public enum KVPrecision: String, Codable, Sendable, CaseIterable {
+    case full, int8, int4
+
+    public var label: String {
+        switch self { case .full: "Full"; case .int8: "8-bit"; case .int4: "4-bit" }
+    }
+
+    /// Recurrent layers (Qwen3.5's GatedDeltaNet) stay as they are; only attention layers compress.
+    var configuration: KVCacheConfiguration? {
+        let bits: Int
+        switch self { case .full: return nil; case .int8: bits = 8; case .int4: bits = 4 }
+        return (try? AffineKVCacheConfiguration(bits: bits)).map {
+            KVCacheConfiguration(strategy: .affine($0), compatibility: .allowPartial)
+        }
+    }
+
+    /// llama-server cache types (flash attention, on by default, handles quantized V).
+    var llamaArgs: [String] {
+        switch self {
+        case .full: []
+        case .int8: ["-ctk", "q8_0", "-ctv", "q8_0"]
+        case .int4: ["-ctk", "q4_0", "-ctv", "q4_0"]
+        }
+    }
+
+    /// mlx-vlm's KV_BITS environment value.
+    var mlxVLMBits: String? {
+        switch self { case .full: nil; case .int8: "8"; case .int4: "4" }
+    }
+}
+
 /// A function tool offered to the chat model.
 public struct ChatTool: Sendable, Equatable {
     public var name: String
@@ -125,6 +159,7 @@ public actor ChatService {
     /// Disk space for saved checkpoints, all models together (0 turns saving off).
     private var diskCacheBytes: Int
     private var promptCaches: [String: PromptCache] = [:]
+    private var kvPrecision: KVPrecision = .full
     nonisolated var diskCacheRoot: URL { store.root.appending(path: "cache", directoryHint: .isDirectory) }
 
     public init(store: ModelStore, models: ModelManager = ModelManager(), promptCacheBytes: Int = ChatService.defaultPromptCacheBytes,
@@ -134,6 +169,17 @@ public actor ChatService {
 
     /// Takes effect for models loaded from now on; caches of loaded models keep their current disk setting.
     public func setDiskCacheLimit(_ bytes: Int) { diskCacheBytes = bytes }
+
+    /// Cached prompts were built at the old precision, so they are dropped, and idle models unload so llama.cpp and
+    /// mlx-vlm restart with the new cache type on next use.
+    public func setKVPrecision(_ precision: KVPrecision) async {
+        guard precision != kvPrecision else { return }
+        kvPrecision = precision
+        let ids = Array(promptCaches.keys)
+        for c in promptCaches.values { await c.clear() }
+        promptCaches = [:]
+        for id in ids { _ = await models.unload(id) }
+    }
 
     /// 1.5 GB on Macs with 16 GB or less, 4 GB above that.
     public static var defaultPromptCacheBytes: Int {
@@ -168,7 +214,8 @@ public actor ChatService {
     private func promptCache(_ id: String, folder: URL? = nil) -> PromptCache {
         if let c = promptCaches[id] { return c }
         let disk = folder.flatMap { f in
-            diskCacheBytes > 0 ? DiskPromptCache(root: diskCacheRoot, modelID: id, modelFolder: f, byteLimit: diskCacheBytes) : nil
+            diskCacheBytes > 0 ? DiskPromptCache(root: diskCacheRoot, modelID: id, modelFolder: f, variant: kvPrecision.rawValue,
+                                                 byteLimit: diskCacheBytes) : nil
         }
         let c = PromptCache(byteLimit: promptCacheBytes, disk: disk)
         promptCaches[id] = c
@@ -209,7 +256,7 @@ public actor ChatService {
             let lease = try await self.containerLease(for: spec, progress: progress)
             let container = lease.value
             let cache = cacheable ? await self.promptCache(spec.id) : nil
-            let params = Self.parameters(options)
+            let params = Self.parameters(options, await self.kvPrecision)
             return try await self.run(lease: lease, stripThinking: !options.enableThinking, progress: progress) {
                 try await container.perform { ctx in
                     let input = try Self.userInput(messages, options)
@@ -264,12 +311,12 @@ public actor ChatService {
     private func streamMLXVLM(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
                               _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        let cacheBytes = promptCacheBytes, diskBytes = diskCacheBytes
+        let cacheBytes = promptCacheBytes, diskBytes = diskCacheBytes, kv = kvPrecision
         let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedResidentBytes,
                                            measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
                 try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
-                let server = try await MLXVLMServer.launch(folder: folder, cacheBytes: cacheBytes, diskBytes: diskBytes)
+                let server = try await MLXVLMServer.launch(folder: folder, cacheBytes: cacheBytes, diskBytes: diskBytes, kv: kv)
                 return (server, unload: { server.terminate() })
             }
         }
@@ -302,11 +349,11 @@ public actor ChatService {
     private func streamLlama(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
                              _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        let files = spec.files ?? [], cacheMiB = promptCacheBytes >> 20
+        let files = spec.files ?? [], cacheMiB = promptCacheBytes >> 20, kv = kvPrecision
         let lease = try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedResidentBytes,
                                            measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
-                let server = try await LlamaServer.launch(folder: folder, files: files, cacheMiB: cacheMiB)
+                let server = try await LlamaServer.launch(folder: folder, files: files, cacheMiB: cacheMiB, kv: kv)
                 return (server, unload: { server.terminate() })
             }
         }
@@ -332,7 +379,7 @@ public actor ChatService {
             let lease = try await self.containerLease(for: spec, progress: progress)
             let container = lease.value
             let cache = await self.promptCache(spec.id)
-            let params = Self.parameters(options)
+            let params = Self.parameters(options, await self.kvPrecision)
             return try await self.run(lease: lease, stripThinking: false, progress: progress) {
                 try await container.perform { ctx in
                     let tokens = ctx.tokenizer.encode(text: prompt)
@@ -344,9 +391,11 @@ public actor ChatService {
         }
     }
 
-    static func parameters(_ options: ChatOptions) -> GenerateParameters {
-        GenerateParameters(maxTokens: options.maxTokens ?? defaultMaxTokens,
-                           temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
+    static func parameters(_ options: ChatOptions, _ precision: KVPrecision) -> GenerateParameters {
+        var p = GenerateParameters(maxTokens: options.maxTokens ?? defaultMaxTokens,
+                                   temperature: options.temperature ?? 0.7, topP: options.topP ?? 0.8)
+        p.kvCache = precision.configuration
+        return p
     }
 
     /// A started generation and how much of its prompt came from the cache.
@@ -368,7 +417,7 @@ public actor ChatService {
                            promptTokens: tokens.count, cachedTokens: 0)
         }
         let hit = await cache.lookup(tokens)
-        let kv = try hit?.cache ?? makePromptCache(model: ctx.model, parameters: params)
+        var kv = try hit?.cache ?? makePromptCache(model: ctx.model, parameters: params)
         var state = hit?.state
         var fed = hit?.reused ?? 0
         if let boundary, boundary > fed, boundary < tokens.count {
@@ -377,6 +426,9 @@ public actor ChatService {
                                        model: ctx.model, cache: kv, state: state, parameters: params)
             state = it.state
             fed = boundary
+            // The iterator compressed its own copy of the array; `kv` still holds the full-precision layers with every
+            // prefilled token, so compress them the same way before keeping and continuing from them.
+            if let configuration = params.kvCache { _ = try applyKVCacheConfiguration(cache: &kv, configuration: configuration) }
             await cache.store(Array(tokens[0..<boundary]), .init(cache: kv.map { $0.copy() }, state: state, reused: boundary))
         }
         await cache.record(prompt: tokens.count, cached: hit?.reused ?? 0)

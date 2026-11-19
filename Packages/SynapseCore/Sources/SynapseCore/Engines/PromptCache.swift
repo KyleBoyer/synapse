@@ -172,10 +172,11 @@ struct DiskPromptCache: Sendable {
     /// Shorter checkpoints are cheap to recompute and not worth a file.
     static let minTokens = 1024
 
-    init(root: URL, modelID: String, modelFolder: URL, byteLimit: Int) {
+    /// `variant` separates checkpoints that cannot be mixed (the KV precision they were built at).
+    init(root: URL, modelID: String, modelFolder: URL, variant: String = "full", byteLimit: Int) {
         self.root = root
         self.byteLimit = byteLimit
-        let config = (try? Data(contentsOf: modelFolder.appending(path: "config.json"))) ?? Data()
+        let config = ((try? Data(contentsOf: modelFolder.appending(path: "config.json"))) ?? Data()) + Data(variant.utf8)
         let hash = SHA256.hash(data: config).prefix(6).map { String(format: "%02x", $0) }.joined()
         dir = Self.folder(root: root)(modelID).appending(path: hash, directoryHint: .isDirectory)
     }

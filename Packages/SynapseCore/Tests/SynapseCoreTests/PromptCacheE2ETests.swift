@@ -97,4 +97,42 @@ final class PromptCacheE2ETests: XCTestCase {
         XCTAssertEqual(stats?.diskHits, diskHitsBefore + 1)
         await chat.clearCache(spec.id, disk: true)
     }
+
+    /// 8-bit KV: the cache still never changes the output, checkpoints shrink, and answers stay close to full precision.
+    func testInt8KVCacheShrinksCheckpointsWithoutChangingCachedOutput() async throws {
+        let (chat, spec) = try await service()
+        await chat.clearCache(spec.id, disk: true)
+        let full = try await conversation(chat, spec, cold: false)
+        let fullBytes = await chat.cacheStats()[spec.id]?.bytes ?? 0
+        await chat.setKVPrecision(.int8)
+        let cold = try await conversation(chat, spec, cold: true)
+        await chat.clearCache(spec.id, disk: true)
+        let warm = try await conversation(chat, spec, cold: false)
+        let int8Bytes = await chat.cacheStats()[spec.id]?.bytes ?? 0
+        for i in 0..<3 {
+            print("[int8 turn \(i + 1)] full \(full[i].text.debugDescription), int8 \(warm[i].text.debugDescription), cached \(warm[i].usage.cachedTokens)")
+            XCTAssertEqual(cold[i].text, warm[i].text, "turn \(i + 1): the cache changed int8 output")
+        }
+        print("[int8] checkpoint bytes: full \(fullBytes), int8 \(int8Bytes)")
+        XCTAssertGreaterThan(warm[2].usage.cachedTokens, 2000)
+        XCTAssertLessThan(int8Bytes, fullBytes)
+        await chat.clearCache(spec.id, disk: true)
+        await chat.setKVPrecision(.full)
+    }
+
+    /// mlx-vlm takes the precision through KV_BITS; Gemma 3n still answers and its prefix cache still works.
+    func testMLXVLMRunsWithInt8KV() async throws {
+        let (chat, _) = try await service()
+        guard let gemma = try? await chat.resolve("gemma-3n-e2b") else { throw XCTSkip("gemma-3n-e2b not downloaded") }
+        await chat.setKVPrecision(.int8)
+        defer { Task { await chat.setKVPrecision(.full) } }
+        // No long system prompt: Gemma 3n answers the rule list instead of the question (at full precision too).
+        var messages = [ChatMessage(role: .user, text: "What is 2 + 2? Reply with only the number.")]
+        let r1 = try await chat.complete(model: gemma, messages: messages, options: ChatOptions(maxTokens: 8, temperature: 0))
+        messages += [ChatMessage(role: .assistant, text: r1.text), ChatMessage(role: .user, text: "And 3 + 3? Only the number.")]
+        let r2 = try await chat.complete(model: gemma, messages: messages, options: ChatOptions(maxTokens: 8, temperature: 0))
+        print("[mlx-vlm int8] \(r1.text.debugDescription) \(r2.text.debugDescription) cached \(r2.usage.cachedTokens)")
+        XCTAssertTrue(r1.text.contains("4")); XCTAssertTrue(r2.text.contains("6"))
+        XCTAssertGreaterThan(r2.usage.cachedTokens, 0)
+    }
 }

@@ -40,7 +40,8 @@ public final class MLXVLMServer: @unchecked Sendable {
         """
 
     /// `cacheBytes` caps the prefix cache (APC) in memory and `diskBytes` its disk tier, matching Synapse's settings.
-    static func launch(folder: URL, cacheBytes: Int = ChatService.defaultPromptCacheBytes, diskBytes: Int = 0) async throws -> MLXVLMServer {
+    static func launch(folder: URL, cacheBytes: Int = ChatService.defaultPromptCacheBytes, diskBytes: Int = 0,
+                       kv: KVPrecision = .full) async throws -> MLXVLMServer {
         let rt = try await PythonRuntime.shared.ensureInstalled(.init(name: "mlx-vlm", requirements: ["mlx-vlm==\(version)"]),
                                                                 storeRoot: try PythonRuntime.storeRoot(above: folder))
         let port = try freePort()
@@ -55,7 +56,7 @@ public final class MLXVLMServer: @unchecked Sendable {
             "APC_DISK_ENABLED": diskBytes > 0 ? "1" : "0", "APC_DISK_PATH": rt.dir.appending(path: "apc").path,
             "APC_DISK_MAX_GB": String(Double(diskBytes) / Double(1 << 30)),
             "HF_HOME": rt.dir.appending(path: "hf").path,
-        ]) { $1 }
+        ].merging(kv.mlxVLMBits.map { ["KV_BITS": $0] } ?? [:]) { $1 }) { $1 }
         let logURL = FileManager.default.temporaryDirectory.appending(path: "synapse-mlxvlm-\(port).log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let log = try FileHandle(forWritingTo: logURL)
