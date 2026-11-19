@@ -113,5 +113,6 @@ Editing, restyling, upscaling. Heavy on 16 GB; may be Mac Studio only.
 - [x] v0.1.3: the DMG opens on a drawn background with an arrow from Synapse to Applications (dmgbuild, scripts/dmg).
 - [x] v0.1.4: prompt caching, KV precision, speculative decoding, sampling controls, thinking budget, keep-warm, measured memory, cache metrics on model cards, saved history. DMG and app "Notarized Developer ID"; appcast offers build 5.
 - [x] v0.1.5: Edit / Animate / Continue / Transform / Clean Up feed each result into the next generation; no Dock icon while the window is closed (Synapse stays in the menu bar). DMG and app "Notarized Developer ID"; appcast offers build 6.
+- [x] v0.1.6: Send To between every modality, Audio tabs Sound & Music / Speech / Clean Up, Stable Audio 3 Medium and MiniMax Music 3 with lyrics. DMG and app "Notarized Developer ID"; appcast offers build 7.
 - [x] App icon is an Icon Composer `.icon`, so macOS 26 no longer draws it inside a grey plate.
 - [x] README rebuilt around real screenshots from the 16 GB Mac mini (docs/screenshots).
