@@ -39,7 +39,7 @@ struct VideoView: View {
         Group {
             if mode == .transform {
                 VideoTransformView()
-            } else if specs.isEmpty {
+            } else if specs.isEmpty, saved.isEmpty {
                 ContentUnavailableView("No video models", systemImage: "film",
                                        description: Text("Download LTX-2.3 Distilled in Models. On Macs under 64 GB it runs in low-memory mode (about 55 GB download)."))
             } else {

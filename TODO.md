@@ -8,7 +8,7 @@ Make repeat requests fast and give clients the knobs the engines already have.
 
 - [x] Prompt cache, in-process MLX: checkpoints at the end of the history (before the generation prompt), so reuse works on Qwen3.5's unrewindable linear attention; Qwen's rope state travels with each. Verified on Qwen3.5 0.8B: replies identical to uncached; turn-2 time to first token 1.07 s → 0.11 s (2,309 of 2,334 tokens reused).
 - [x] Disk tier: histories ≥ 1,024 tokens saved under `<models>/cache`, rewritten only when a conversation grows by a third. Verified: after unload, turn 2 reuses 2,309 tokens from disk with identical output; across an app relaunch too.
-- [x] llama.cpp (slot cache, `--cache-ram`) and mlx-vlm (APC, turned on, retried once if it refuses for memory). Verified: GGUF Llama 3.2 1B reuses 1,684 of 1,697; Gemma 3n 1,996 of 2,017 (2.3 s → 0.11 s prefill), same reply as cold.
+- [x] llama.cpp (slot cache, `--cache-ram`) and mlx-vlm (APC, on only with 32 GB or more: under load on 16 GB it refused requests even after a retry). Verified: GGUF Llama 3.2 1B reuses 1,684 of 1,697; Gemma 3n 1,996 of 2,017 (2.3 s → 0.11 s prefill) when it was on, same reply as cold.
 - [x] Cached tokens in every API's usage (OpenAI SDK and Anthropic SDK checked: `verify-modalities.py --only cache`).
 - [x] KV precision Full/8-bit/4-bit on MLX, llama.cpp and mlx-vlm. Verified: 8-bit cached = uncached output; Qwen3.5 0.8B checkpoint 48 → 35 MB. TurboQuant left out (its cache has no `copy()`).
 - [x] Speculative decoding with a draft model, full-attention pairs only (mlx-swift-lm needs trimmable caches; Qwen3.5 has none and its 4-bit weights ship no MTP heads). Verified: Llama 3.2 3B + 1B draft, 50 → 69 tok/s over 3 alternating runs, identical text.

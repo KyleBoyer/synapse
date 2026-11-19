@@ -33,7 +33,7 @@ The same models answer on `http://127.0.0.1:9000` in the shapes of the **OpenAI*
 - **Every modality in one place.** Text, images, video and audio in. Text, speech, music, images and video out. Full-duplex voice models that listen while they talk.
 - **A real Mac app, not a web wrapper.** SwiftUI and Liquid Glass, with a live readout on every pane: time to first token, tokens per second, memory, and the exact API call that does the same thing.
 - **Any model from Hugging Face.** Paste a repo name. Synapse checks it, tells you how it would run it, and then runs it in-process on MLX, through mlx-vlm, or as a GGUF on a bundled llama.cpp.
-- **Fast follow-up turns.** A prompt cache reuses the conversation so far, on every engine, so turn two of a long chat or agent session starts in a tenth of the time. Long prompts are saved to disk and stay warm across restarts.
+- **Fast follow-up turns.** A prompt cache reuses the conversation so far, so turn two of a long chat or agent session starts in a tenth of the time. Long prompts are saved to disk and stay warm across restarts.
 - **Built for a laptop's memory.** A memory budget, one GPU user at a time, idle unloading, and optional vOOM paging for models larger than RAM. Every screenshot here was taken on a 16 GB M4 Mac mini.
 
 ## See it work
@@ -58,8 +58,12 @@ Every screenshot below is a real run on the 16 GB Mac mini.
     <td><img src="docs/screenshots/live.png" alt="Live: voice call settings with hearing, thinking and speaking models"><br><b>Talk to it.</b> Live captions, translation and voice calls (with the camera, if you like) over the OpenAI Realtime protocol. Pick how it hears, thinks and speaks.</td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/models.png" alt="Models: the catalog, with measured load time, first-token time and decode rate on this Mac"><br><b>Know what you're running.</b> Every model shows what it costs on <i>your</i> Mac: load time, first token, decode rate, memory.</td>
+    <td><img src="docs/screenshots/models.png" alt="Models: Qwen3.5 2B's datasheet, with first token at 0.70 s uncached and 0.25 s from the prompt cache, and the cache's hit rate"><br><b>Know what you're running.</b> Every model shows what it costs on <i>your</i> Mac: load time, first token with and without the prompt cache, decode rate, memory, and how much of every request the cache answered.</td>
     <td><img src="docs/screenshots/server.png" alt="Server: address, LAN switch, API key and the list of routes"><br><b>Serve your network.</b> One switch opens the server to your LAN behind an API key, with a ready-to-paste URL for each client.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/history.png" alt="Chat: a long project brief and two follow-up questions, with the History list of earlier chats open"><br><b>Pick up where you left off.</b> Chats, images, clips, calls and transcripts are kept across launches, ready to reopen or delete. Here the follow-ups read 428 of 464 prompt tokens from the cache.</td>
+    <td><img src="docs/screenshots/memory.png" alt="Memory: two Qwen3.5 models loaded with their prompt caches, and two long prompts saved to disk"><br><b>See where the memory goes.</b> Measured memory for every loaded model, its prompt cache, and the long prompts saved to disk so they stay warm after a restart.</td>
   </tr>
 </table>
 
@@ -204,7 +208,7 @@ print(r.output_text)
 
 **Prompt cache.** Caching is automatic; there is nothing to send. Each chat model keeps the attention state of recent conversations, so a request that starts with an earlier conversation only reads its new part:
 - **In-process MLX models.** Synapse saves the state where the history ends and the generation prompt begins. Every follow-up turn starts with exactly those tokens, so reuse works even on Qwen3.5, whose recurrent layers cannot be rewound.
-- **llama.cpp and mlx-vlm.** These use their own prefix caches (mlx-vlm's is turned on by Synapse).
+- **llama.cpp and mlx-vlm.** These use their own prefix caches. Synapse turns mlx-vlm's on only on Macs with 32 GB or more, because it refuses requests outright when free memory runs short.
 - **Disk.** Histories of 1,024 tokens or more are also saved to `<models>/cache` and survive unloads and restarts.
 - **Not cached.** Requests that carry images, video or audio.
 

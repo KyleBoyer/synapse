@@ -37,8 +37,18 @@ struct ModelsView: View {
             .frame(width: 300)
             Divider()
             if let spec = selection.flatMap(Catalog.spec) {
-                ScrollView { Datasheet(spec: spec, openPane: openPane, confirmDelete: $confirmDelete).padding(28) }
-                    .frame(maxWidth: .infinity)
+                ScrollViewReader { proxy in
+                    ScrollView { Datasheet(spec: spec, openPane: openPane, confirmDelete: $confirmDelete).padding(28) }
+                        .frame(maxWidth: .infinity)
+                        #if DEBUG
+                        // `-datasheetScrollTo running` scrolls a datasheet to its Running section, for captures.
+                        .task(id: spec.id) {
+                            guard let id = UserDefaults.standard.string(forKey: "datasheetScrollTo") else { return }
+                            try? await Task.sleep(for: .seconds(1))
+                            proxy.scrollTo(id, anchor: .top)
+                        }
+                        #endif
+                }
             } else {
                 ContentUnavailableView("Select a model", systemImage: "cube.transparent").frame(maxWidth: .infinity)
             }
@@ -137,7 +147,7 @@ struct Datasheet: View {
             header
             Divider()
             if !metrics.isEmpty { characteristics }
-            if spec.isChat || spec.isImage, case .ready = state.modelStates[spec.id] { running }
+            if spec.isChat || spec.isImage, case .ready = state.modelStates[spec.id] { running.id("running") }
             VStack(alignment: .leading, spacing: 8) {
                 Text("API").font(.headline)
                 ForEach(api, id: \.self) { Text($0).font(.mono(.callout)).textSelection(.enabled) }

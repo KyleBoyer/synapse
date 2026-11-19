@@ -21,12 +21,20 @@ struct HistoryButton: View {
                 guard UserDefaults.standard.string(forKey: "openHistory") == kind.rawValue else { return }
                 try? await Task.sleep(for: .seconds(1))
                 showing = true
+                // With -openFirstHistory the list opens the newest item and closes; show it again over the result.
+                guard UserDefaults.standard.bool(forKey: "openFirstHistory") else { return }
+                try? await Task.sleep(for: .seconds(2))
+                showing = true
             }
             #endif
     }
 }
 
 struct HistoryList: View {
+    #if DEBUG
+    @MainActor static var debugDeleted = false
+    @MainActor static var debugOpened = false
+    #endif
     let kind: HistoryKind
     let noun: String
     let open: (HistoryItem) -> Void
@@ -82,11 +90,14 @@ struct HistoryList: View {
             items = await state.history.list(kind)
             #if DEBUG
             // `-openFirstHistory YES` (with `-openHistory`) opens the newest item, to capture a restore.
-            if UserDefaults.standard.bool(forKey: "openFirstHistory"), let first = items.first { open(first) }
+            if UserDefaults.standard.bool(forKey: "openFirstHistory"), !Self.debugOpened, let first = items.first {
+                Self.debugOpened = true
+                open(first)
+            }
             // `-deleteFirstHistory YES` deletes the newest item the way the confirmed Delete does.
-            if UserDefaults.standard.bool(forKey: "deleteFirstHistory"), let first = items.first {
+            if UserDefaults.standard.bool(forKey: "deleteFirstHistory"), !Self.debugDeleted, let first = items.first {
+                Self.debugDeleted = true   // the launch argument stays set, so delete once per launch
                 state.deleteHistory([first.id], kind: kind)
-                UserDefaults.standard.set(false, forKey: "deleteFirstHistory")
             }
             #endif
         }

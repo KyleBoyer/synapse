@@ -100,7 +100,11 @@ struct ChatView: View {
             guard let p = UserDefaults.standard.string(forKey: "autoSendPrompt"), !p.isEmpty, lines.isEmpty, spec != nil else { return }
             // `-autoAttach <path>` attaches a file first, so video and image runs can be captured too.
             if let path = UserDefaults.standard.string(forKey: "autoAttach") { add([URL(fileURLWithPath: path)]) }
-            input = p; send()
+            // Several prompts separated by " || " are sent one after another, each once the previous reply ends.
+            for (i, q) in p.components(separatedBy: " || ").enumerated() {
+                if i > 0 { while generating { try? await Task.sleep(for: .milliseconds(200)) } }
+                input = q; send()
+            }
         }
         #endif
         .onChange(of: specs.map(\.id)) { pickModel() }
