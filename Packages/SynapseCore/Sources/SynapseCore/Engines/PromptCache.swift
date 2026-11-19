@@ -160,6 +160,19 @@ actor PromptCache {
     }
 }
 
+/// A loaded draft model's weights, handed into the main model's context for speculative decoding. The weights
+/// are evaluated and never mutated after load (mlx-swift-lm's ChatSession hands its draft over the same way).
+struct DraftModel: @unchecked Sendable {
+    let model: any LanguageModel
+    init(_ container: ModelContainer) async {
+        model = await container.perform { ctx in UncheckedModel(ctx.model) }.model
+    }
+    private struct UncheckedModel: @unchecked Sendable {
+        let model: any LanguageModel
+        init(_ model: any LanguageModel) { self.model = model }
+    }
+}
+
 /// Checkpoints saved under `<models>/cache/<model id>/<config hash>/`, so a long system prompt stays warm across
 /// unloads and relaunches. Each entry is `<sha256>.safetensors` (the KV state, with the model state) plus
 /// `<sha256>.tokens` (the prompt it holds, Int32 little-endian). The folder name changes when the model's config does,

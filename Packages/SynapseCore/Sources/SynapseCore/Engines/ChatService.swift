@@ -1,4 +1,5 @@
 import CoreImage
+import CryptoKit
 import Foundation
 @preconcurrency import MLX
 @preconcurrency import MLXLLM
@@ -96,6 +97,9 @@ public struct ChatUsage: Sendable, Equatable {
     public var completionTokens: Int
     /// Prompt tokens read from the prompt cache instead of being processed (part of `promptTokens`).
     public var cachedTokens: Int
+    /// A draft model proposed tokens for this reply (speculative decoding ran). mlx-swift-lm reports no acceptance
+    /// counts for draft-model speculation, only for MTP.
+    public var drafted = false
     public var totalTokens: Int { promptTokens + completionTokens }
 
     public init(promptTokens: Int, completionTokens: Int, cachedTokens: Int = 0) {
@@ -160,6 +164,8 @@ public actor ChatService {
     private var diskCacheBytes: Int
     private var promptCaches: [String: PromptCache] = [:]
     private var kvPrecision: KVPrecision = .full
+    /// Main model id -> draft model id for speculative decoding.
+    private var draftModels: [String: String] = [:]
     nonisolated var diskCacheRoot: URL { store.root.appending(path: "cache", directoryHint: .isDirectory) }
 
     public init(store: ModelStore, models: ModelManager = ModelManager(), promptCacheBytes: Int = ChatService.defaultPromptCacheBytes,
@@ -169,6 +175,37 @@ public actor ChatService {
 
     /// Takes effect for models loaded from now on; caches of loaded models keep their current disk setting.
     public func setDiskCacheLimit(_ bytes: Int) { diskCacheBytes = bytes }
+
+    /// Speculative decoding for `id`: a smaller model with the same tokenizer proposes tokens the main model checks
+    /// in one pass. Output is unchanged; nil turns it off.
+    public func setDraftModel(_ draft: String?, for id: String) { draftModels[id] = draft }
+
+    /// Downloaded in-process chat models that can draft for `spec`: smaller, with an identical tokenizer, and both
+    /// built only from full attention (see `rewindable`). Empty for Qwen3.5 and other hybrid models.
+    public func draftCandidates(for spec: ModelSpec) async -> [ModelSpec] {
+        guard spec.engine == .mlx, let folder = await store.folder(for: spec.id), Self.rewindable(folder),
+              let mine = Self.tokenizerHash(folder) else { return [] }
+        var out: [ModelSpec] = []
+        for d in await store.downloaded.compactMap(Catalog.spec) where d.engine == .mlx && d.id != spec.id && d.approxMB < spec.approxMB {
+            if let f = await store.folder(for: d.id), Self.rewindable(f), Self.tokenizerHash(f) == mine { out.append(d) }
+        }
+        return out.sorted { $0.approxMB < $1.approxMB }
+    }
+
+    /// Speculative decoding rewinds rejected draft tokens, which needs every cache layer to be trimmable: recurrent
+    /// layers (Qwen3.5's linear attention, LFM's conv) never are, and sliding-window layers stop being once the window
+    /// fills. So only models whose layers are all full attention qualify; configs without `layer_types` are.
+    static func rewindable(_ folder: URL) -> Bool {
+        guard let data = try? Data(contentsOf: folder.appending(path: "config.json")),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        let text = config["text_config"] as? [String: Any] ?? [:]
+        let types = (text["layer_types"] ?? config["layer_types"]) as? [String] ?? []
+        return types.allSatisfy { $0 == "full_attention" }
+    }
+
+    private static func tokenizerHash(_ folder: URL) -> Data? {
+        (try? Data(contentsOf: folder.appending(path: "tokenizer.json"))).map { Data(SHA256.hash(data: $0)) }
+    }
 
     /// Cached prompts were built at the old precision, so they are dropped, and idle models unload so llama.cpp and
     /// mlx-vlm restart with the new cache type on next use.
@@ -257,7 +294,10 @@ public actor ChatService {
             let container = lease.value
             let cache = cacheable ? await self.promptCache(spec.id) : nil
             let params = Self.parameters(options, await self.kvPrecision)
-            return try await self.run(lease: lease, stripThinking: !options.enableThinking, progress: progress) {
+            // shortcut: speculative decoding is text-only, like the prompt cache it builds on.
+            let draftLease = cacheable ? try await self.draftLease(for: spec, progress: progress) : nil
+            let draft: DraftModel? = if let draftLease { await DraftModel(draftLease.value) } else { nil }
+            return try await self.run(lease: lease, draftLease: draftLease, stripThinking: !options.enableThinking, progress: progress) {
                 try await container.perform { ctx in
                     let input = try Self.userInput(messages, options)
                     let tools = input.tools
@@ -268,7 +308,8 @@ public actor ChatService {
                     // request starts with exactly those tokens, however the reply is re-rendered.
                     let boundary = (ctx.tokenizer as? TokenizerBridge)?.generationPrompt(context: context)
                         .flatMap { gp in tokens.count > gp.count && Array(tokens.suffix(gp.count)) == gp ? tokens.count - gp.count : nil }
-                    return try await Self.generate(ctx, lm, tokens: tokens, boundary: boundary, cache: cache, params: params, tools: tools)
+                    return try await Self.generate(ctx, lm, tokens: tokens, boundary: boundary, cache: cache, params: params, tools: tools,
+                                                   draft: draft)
                 }
             }
         }
@@ -380,7 +421,7 @@ public actor ChatService {
             let container = lease.value
             let cache = await self.promptCache(spec.id)
             let params = Self.parameters(options, await self.kvPrecision)
-            return try await self.run(lease: lease, stripThinking: false, progress: progress) {
+            return try await self.run(lease: lease, draftLease: nil, stripThinking: false, progress: progress) {
                 try await container.perform { ctx in
                     let tokens = ctx.tokenizer.encode(text: prompt)
                     // Raw text has no template, so a longer prompt extends this one directly.
@@ -405,13 +446,14 @@ public actor ChatService {
         let cachedTokens: Int
         /// Runs after the last token, still under the GPU gate (saving a checkpoint to disk).
         var afterward: (@Sendable () async -> Void)? = nil
+        var drafted = false
     }
 
     /// Prefills through the prompt cache and starts generating. Runs inside `perform`, where the model and the
     /// non-Sendable KV caches live. `boundary` is where to leave a checkpoint (nil: none).
     static func generate(_ ctx: ModelContext, _ lm: consuming sending LMInput, tokens: [Int], boundary: Int?,
                          cache: PromptCache?, params: GenerateParameters,
-                         tools: [[String: any Sendable]]?) async throws -> Started {
+                         tools: [[String: any Sendable]]?, draft: DraftModel? = nil) async throws -> Started {
         guard let cache, tokens.count > 1 else {
             return Started(generation: try MLXLMCommon.generate(input: lm, parameters: params, context: ctx, tools: tools),
                            promptTokens: tokens.count, cachedTokens: 0)
@@ -433,8 +475,30 @@ public actor ChatService {
         }
         await cache.record(prompt: tokens.count, cached: hit?.reused ?? 0)
         let rest = LMInput(tokens: MLXArray(tokens[fed...].map(Int32.init)))
-        let generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx, tools: tools)
+        let generation: AsyncStream<Generation>
+        var drafted = false
+        if let draft {
+            // shortcut: the draft re-reads the cached prefix every request (it is small, so this is cheap); give it its
+            // own prompt-cache entries if long prompts make that prefill show up in time to first token.
+            let draftKV = try makePromptCache(model: draft.model, parameters: params)
+            if fed > 0 {
+                _ = try TokenIterator(input: LMInput(tokens: MLXArray(tokens[0..<fed].map(Int32.init))), model: draft.model,
+                                      cache: draftKV, parameters: params)
+            }
+            do {
+                generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx,
+                                                      draftModel: draft.model, draftCache: draftKV, numDraftTokens: 3, tools: tools)
+                drafted = true
+            } catch where "\(error)".contains("requires trimmable KV caches") {
+                // The iterator checks this before touching either cache, so `kv` is as it was: decode without the
+                // draft rather than fail the request. (The library's error type is internal, hence the message match.)
+                generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx, tools: tools)
+            }
+        } else {
+            generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx, tools: tools)
+        }
         var started = Started(generation: generation, promptTokens: tokens.count, cachedTokens: hit?.reused ?? 0)
+        started.drafted = drafted
         if let boundary {
             let prefix = Array(tokens[0..<boundary])
             started.afterward = { await cache.persist(prefix) }
@@ -443,8 +507,8 @@ public actor ChatService {
     }
 
     /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.
-    private func run(lease: ModelLease<ModelContainer>, stripThinking: Bool, progress: Progress,
-                     start: () async throws -> Started) async throws -> AsyncThrowingStream<ChatEvent, Error> {
+    private func run(lease: ModelLease<ModelContainer>, draftLease: ModelLease<ModelContainer>?, stripThinking: Bool,
+                     progress: Progress, start: () async throws -> Started) async throws -> AsyncThrowingStream<ChatEvent, Error> {
         await GPUGate.shared.acquire()
         let releaseGate = GateRelease()
         let started: Started
@@ -456,10 +520,11 @@ public actor ChatService {
         } catch {
             releaseGate()
             lease.release()
+            draftLease?.release()
             throw error
         }
         let generation = started.generation, promptTokens = started.promptTokens, cachedTokens = started.cachedTokens
-        let afterward = started.afterward
+        let afterward = started.afterward, drafted = started.drafted
 
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -475,8 +540,10 @@ public actor ChatService {
                         if !tail.isEmpty { continuation.yield(.delta(tail)) }
                         let reason = info.stopReason == .length ? "length" : "stop"
                         // info counts only the tokens fed after the cached prefix.
-                        continuation.yield(.done(finishReason: reason, usage: ChatUsage(
-                            promptTokens: promptTokens, completionTokens: info.generationTokenCount, cachedTokens: cachedTokens)))
+                        var usage = ChatUsage(promptTokens: promptTokens, completionTokens: info.generationTokenCount,
+                                              cachedTokens: cachedTokens)
+                        usage.drafted = drafted
+                        continuation.yield(.done(finishReason: reason, usage: usage))
                     case .toolCall(let call):
                         let args = (try? JSONEncoder().encode(call.function.arguments)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
                         continuation.yield(.toolCall(name: call.function.name, arguments: args))
@@ -493,6 +560,7 @@ public actor ChatService {
                 task.cancel()
                 releaseGate()
                 lease.release()
+                draftLease?.release()
             }
         }
     }
@@ -551,6 +619,19 @@ public actor ChatService {
         processing.maxPixels = 1024 * 1024
         return UserInput(chat: chat, processing: processing, tools: options.tools.isEmpty ? nil : options.tools.map(\.spec),
                               additionalContext: ["enable_thinking": options.enableThinking])
+    }
+
+    /// The draft model for `spec`, if one is set and downloaded. It loads text-only (MLXLLM), so it carries no
+    /// vision state into its cache, and it is leased like any model, so it counts toward the memory budget.
+    private func draftLease(for spec: ModelSpec, progress: @escaping Progress) async throws -> ModelLease<ModelContainer>? {
+        guard let id = draftModels[spec.id], let draft = Catalog.spec(id),
+              let folder = await store.folder(for: id) else { return nil }
+        return try await models.lease("draft:\(id)", as: ModelContainer.self, estimatedBytes: draft.estimatedResidentBytes,
+                                      measure: { await Self.weightBytes($0) }) {
+            try await Self.timed(progress) {
+                (try await LLMModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader()), unload: {})
+            }
+        }
     }
 
     private func containerLease(for spec: ModelSpec, progress: @escaping Progress) async throws -> ModelLease<ModelContainer> {
