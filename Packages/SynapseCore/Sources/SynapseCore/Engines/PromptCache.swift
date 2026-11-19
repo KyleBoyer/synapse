@@ -38,6 +38,7 @@ actor PromptCache {
         var lastUsed: Date
     }
 
+    static let minStoredTokens = 256
     private var entries: [Entry] = []
     private var counters = Stats()
     private(set) var byteLimit: Int
@@ -243,8 +244,10 @@ struct DiskPromptCache: Sendable {
     }
 
     /// Total size of every model's checkpoints, and how many there are.
-    func usage() -> (bytes: Int, entries: Int) {
-        let files = Self.checkpoints(in: root)
+    func usage() -> (bytes: Int, entries: Int) { Self.usage(root: root) }
+
+    static func usage(root: URL) -> (bytes: Int, entries: Int) {
+        let files = checkpoints(in: root)
         return (files.reduce(0) { $0 + $1.bytes }, files.count)
     }
 

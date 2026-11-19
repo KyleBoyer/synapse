@@ -52,13 +52,26 @@ public struct Settings: Codable, Sendable, Equatable {
     public var voomCheckout: String?
     /// Models added from Hugging Face in Models; they join the catalog under their repo id.
     public var customModels: [CustomModel] = []
+    /// Models loaded at launch and kept loaded (see ModelManager.Config.pinned).
+    public var keepWarm: [String] = []
+    /// Memory each chat model may use for cached prompts; nil = 1.5 GB on 16 GB Macs, 4 GB above.
+    public var promptCacheGB: Double?
+    /// Disk for saved prompt checkpoints, all models together; 0 turns saving off.
+    public var diskCacheGB: Double = 10
+    public var kvPrecision: KVPrecision = .full
+    /// Main model id -> draft model id for speculative decoding.
+    public var draftModels: [String: String] = [:]
 
     public init() {}
+
+    public var promptCacheBytes: Int { promptCacheGB.map { Int($0 * 1_073_741_824) } ?? ChatService.defaultPromptCacheBytes }
+    public var diskCacheBytes: Int { Int(max(0, diskCacheGB) * 1_073_741_824) }
 
     public var modelManagerConfig: ModelManager.Config {
         var c = ModelManager.Config.default
         if let gb = memoryBudgetGB, gb > 0 { c.budgetBytes = Int(gb * 1_073_741_824) }
         c.idleUnloadAfter = idleUnloadMinutes > 0 ? .seconds(idleUnloadMinutes * 60) : nil
+        c.pinned = Set(keepWarm)
         return c
     }
 
@@ -82,6 +95,11 @@ public struct Settings: Codable, Sendable, Equatable {
         hfToken = try c.decodeIfPresent(String.self, forKey: .hfToken)
         voomCheckout = try c.decodeIfPresent(String.self, forKey: .voomCheckout)
         customModels = try c.decodeIfPresent([CustomModel].self, forKey: .customModels) ?? []
+        keepWarm = try c.decodeIfPresent([String].self, forKey: .keepWarm) ?? d.keepWarm
+        promptCacheGB = try c.decodeIfPresent(Double.self, forKey: .promptCacheGB)
+        diskCacheGB = try c.decodeIfPresent(Double.self, forKey: .diskCacheGB) ?? d.diskCacheGB
+        kvPrecision = try c.decodeIfPresent(KVPrecision.self, forKey: .kvPrecision) ?? d.kvPrecision
+        draftModels = try c.decodeIfPresent([String: String].self, forKey: .draftModels) ?? d.draftModels
     }
 
     public var modelsRoot: URL {

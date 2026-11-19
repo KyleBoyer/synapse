@@ -71,6 +71,29 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertEqual(b?.measured, false)
     }
 
+    func testPinnedModelsSurviveIdlenessAndAreEvictedLast() async throws {
+        let log = Log()
+        let m = ModelManager(config: .init(budgetBytes: 100, idleUnloadAfter: .milliseconds(10), pinned: ["a"]))
+        // Leases are released on their own task; let each land before the next load looks for idle models.
+        func settle() async throws { try await Task.sleep(for: .milliseconds(20)) }
+        try await m.use("a", as: String.self, estimatedBytes: 40, load: loader("a", log)) { _ in }
+        try await settle()
+        try await m.use("b", as: String.self, estimatedBytes: 40, load: loader("b", log)) { _ in }
+        try await settle()
+        // "a" is older, but pinned: making room for "c" takes "b".
+        try await m.use("c", as: String.self, estimatedBytes: 40, load: loader("c", log)) { _ in }
+        var unloads = await log.unloads
+        XCTAssertEqual(unloads, ["b"])
+        try await Task.sleep(for: .milliseconds(20))
+        await m.reapIdle()
+        unloads = await log.unloads
+        XCTAssertEqual(unloads, ["b", "c"], "the reaper leaves pinned models")
+        // With only pinned models idle, they still give way rather than overcommit.
+        try await m.use("d", as: String.self, estimatedBytes: 80, load: loader("d", log)) { _ in }
+        unloads = await log.unloads
+        XCTAssertEqual(unloads, ["b", "c", "a"])
+    }
+
     func testProcessTreeFootprintCountsChildren() throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")

@@ -80,6 +80,23 @@ public actor ImageService {
     private let models: ModelManager
     private let engineFactory: EngineFactory
 
+    private func engineLease(_ spec: ModelSpec, _ folder: URL) async throws -> ModelLease<any ImageEngine> {
+        let factory = engineFactory
+        return try await models.lease(spec.id, as: (any ImageEngine).self, estimatedBytes: spec.estimatedResidentBytes,
+                                      measure: { [weak self] in await self?.resident(spec.id, $0) }) {
+            await self.noteBaseline(spec.id, MLX.Memory.activeMemory)
+            let engine = try await factory(spec, folder)
+            return (engine, unload: { await engine.unload() })
+        }
+    }
+
+    /// Loads an image model without generating, for keep-warm. (Engines that load weights lazily finish on first use.)
+    public func preload(_ spec: ModelSpec) async throws {
+        guard spec.isImage else { throw ResolveError.wrongKind(spec.id) }
+        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        try await engineLease(spec, folder).release()
+    }
+
     private func noteBaseline(_ id: String, _ bytes: Int) { mlxBaseline[id] = bytes; mlxPeak[id] = nil }
 
     private func resident(_ id: String, _ engine: any ImageEngine) async -> Int? {
@@ -212,13 +229,7 @@ public actor ImageService {
         guard spec.isImage else { throw ResolveError.wrongKind(spec.id) }
         if request.isEdit && !spec.canEditImages { throw ImageError.editUnsupported(spec.id) }
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
-        let factory = engineFactory
-        let lease = try await models.lease(spec.id, as: (any ImageEngine).self, estimatedBytes: spec.estimatedResidentBytes,
-                                           measure: { [weak self] in await self?.resident(spec.id, $0) }) {
-            await self.noteBaseline(spec.id, MLX.Memory.activeMemory)
-            let engine = try await factory(spec, folder)
-            return (engine, unload: { await engine.unload() })
-        }
+        let lease = try await engineLease(spec, folder)
         defer { lease.release() }
         var images: [Data] = []
         for i in 0..<count {

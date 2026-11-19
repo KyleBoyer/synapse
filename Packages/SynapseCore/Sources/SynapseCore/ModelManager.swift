@@ -25,9 +25,11 @@ public actor ModelManager {
     public struct Config: Sendable, Equatable {
         public var budgetBytes: Int
         public var idleUnloadAfter: Duration?
+        /// Models kept loaded: never unloaded for idleness, and evicted for room only after every other idle model.
+        public var pinned: Set<String>
 
-        public init(budgetBytes: Int, idleUnloadAfter: Duration? = .seconds(15 * 60)) {
-            self.budgetBytes = budgetBytes; self.idleUnloadAfter = idleUnloadAfter
+        public init(budgetBytes: Int, idleUnloadAfter: Duration? = .seconds(15 * 60), pinned: Set<String> = []) {
+            self.budgetBytes = budgetBytes; self.idleUnloadAfter = idleUnloadAfter; self.pinned = pinned
         }
 
         /// 75% of physical memory, leaving room for the OS and the app.
@@ -175,8 +177,10 @@ public actor ModelManager {
 
     private func makeRoom(for bytes: Int, excluding id: String) async {
         while residentBytes + bytes > config.budgetBytes {
-            guard let victim = entries.filter({ $0.value.leases == 0 && $0.key != id })
-                .min(by: { $0.value.lastUsed < $1.value.lastUsed })?.key else { break }
+            let idle = entries.filter { $0.value.leases == 0 && $0.key != id }
+            let unpinned = idle.filter { !config.pinned.contains($0.key) }
+            guard let victim = (unpinned.isEmpty ? idle : unpinned).min(by: { $0.value.lastUsed < $1.value.lastUsed })?.key
+            else { break }
             await unload(victim)
         }
         overcommitted = residentBytes + bytes > config.budgetBytes
@@ -198,7 +202,7 @@ public actor ModelManager {
     func reapIdle() async {
         guard let ttl = config.idleUnloadAfter else { return }
         let cutoff = Date().addingTimeInterval(-Double(ttl.components.seconds))
-        for (id, e) in entries where e.leases == 0 && e.lastUsed < cutoff { await unload(id) }
+        for (id, e) in entries where e.leases == 0 && e.lastUsed < cutoff && !config.pinned.contains(id) { await unload(id) }
     }
 }
 

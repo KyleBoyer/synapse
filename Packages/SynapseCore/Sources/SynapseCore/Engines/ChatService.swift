@@ -175,12 +175,15 @@ public actor ChatService {
     private var kvPrecision: KVPrecision = .full
     /// Main model id -> draft model id for speculative decoding.
     private var draftModels: [String: String] = [:]
-    nonisolated var diskCacheRoot: URL { store.root.appending(path: "cache", directoryHint: .isDirectory) }
+    public nonisolated var diskCacheRoot: URL { store.root.appending(path: "cache", directoryHint: .isDirectory) }
 
     public init(store: ModelStore, models: ModelManager = ModelManager(), promptCacheBytes: Int = ChatService.defaultPromptCacheBytes,
                 diskCacheBytes: Int = 10 << 30) {
         self.store = store; self.models = models; self.promptCacheBytes = promptCacheBytes; self.diskCacheBytes = diskCacheBytes
     }
+
+    /// Saved checkpoints on disk, all models together, whether or not a model has run this session.
+    public nonisolated func diskCacheUsage() -> (bytes: Int, entries: Int) { DiskPromptCache.usage(root: diskCacheRoot) }
 
     /// Takes effect for models loaded from now on; caches of loaded models keep their current disk setting.
     public func setDiskCacheLimit(_ bytes: Int) { diskCacheBytes = bytes }
@@ -358,18 +361,45 @@ public actor ChatService {
 
     /// Omni models run in their own mlx-vlm server; the lease keeps it alive and eviction stops it. Tool calls are not
     /// passed through: mlx-vlm parses them per model and only Qwen3.5's format is verified here.
-    private func streamMLXVLM(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
-                              _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
-    {
+    private func mlxvlmLease(_ spec: ModelSpec, _ folder: URL, _ progress: @escaping Progress) async throws -> ModelLease<MLXVLMServer> {
         let cacheBytes = promptCacheBytes, diskBytes = diskCacheBytes, kv = kvPrecision
-        let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedResidentBytes,
-                                           measure: { ProcessMemory.footprint(tree: $0.pid) }) {
+        return try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedResidentBytes,
+                                      measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
                 try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
                 let server = try await MLXVLMServer.launch(folder: folder, cacheBytes: cacheBytes, diskBytes: diskBytes, kv: kv)
                 return (server, unload: { server.terminate() })
             }
         }
+    }
+
+    private func llamaLease(_ spec: ModelSpec, _ folder: URL, _ progress: @escaping Progress) async throws -> ModelLease<LlamaServer> {
+        let files = spec.files ?? [], cacheMiB = promptCacheBytes >> 20, kv = kvPrecision
+        return try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedResidentBytes,
+                                      measure: { ProcessMemory.footprint(tree: $0.pid) }) {
+            try await Self.timed(progress) {
+                let server = try await LlamaServer.launch(folder: folder, files: files, cacheMiB: cacheMiB, kv: kv)
+                return (server, unload: { server.terminate() })
+            }
+        }
+    }
+
+    /// Loads a chat model (and its draft) without generating, for keep-warm. It stays until evicted or unloaded.
+    public func preload(_ spec: ModelSpec) async throws {
+        guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
+        switch spec.engine {
+        case .mlxvlm: try await mlxvlmLease(spec, folder, { _ in }).release()
+        case .gguf: try await llamaLease(spec, folder, { _ in }).release()
+        default:
+            try await containerLease(for: spec, progress: { _ in }).release()
+            try await draftLease(for: spec, progress: { _ in })?.release()
+        }
+    }
+
+    private func streamMLXVLM(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
+                              _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        let lease = try await mlxvlmLease(spec, folder, progress)
         let body: Data
         do { body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath) } catch { lease.release(); throw error }
         await GPUGate.shared.acquire()
@@ -399,14 +429,7 @@ public actor ChatService {
     private func streamLlama(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
                              _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        let files = spec.files ?? [], cacheMiB = promptCacheBytes >> 20, kv = kvPrecision
-        let lease = try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedResidentBytes,
-                                           measure: { ProcessMemory.footprint(tree: $0.pid) }) {
-            try await Self.timed(progress) {
-                let server = try await LlamaServer.launch(folder: folder, files: files, cacheMiB: cacheMiB, kv: kv)
-                return (server, unload: { server.terminate() })
-            }
-        }
+        let lease = try await llamaLease(spec, folder, progress)
         let body: Data
         do {
             body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath, promptProgress: true)
@@ -480,7 +503,9 @@ public actor ChatService {
         var kv = try hit?.cache ?? makePromptCache(model: ctx.model, parameters: params)
         var state = hit?.state
         var fed = hit?.reused ?? 0
-        if let boundary, boundary > fed, boundary < tokens.count {
+        // Short histories re-read in milliseconds; a checkpoint would still cost the full recurrent state (19 MB on
+        // Qwen3.5 0.8B), so only longer ones are kept.
+        if let boundary, boundary >= PromptCache.minStoredTokens, boundary > fed, boundary < tokens.count {
             // TokenIterator's init prefills its whole input into `kv` (it also samples one token, which is dropped).
             let it = try TokenIterator(input: LMInput(tokens: MLXArray(tokens[fed..<boundary].map(Int32.init))),
                                        model: ctx.model, cache: kv, state: state, parameters: params)

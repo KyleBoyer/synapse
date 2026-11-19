@@ -153,6 +153,8 @@ struct MainView: View {
             state.tryRequest = .init(pane: target, modelID: id)
             pane = target
         }
+        // `-openSettings YES` opens Settings after launch, for captures.
+        .task { if UserDefaults.standard.bool(forKey: "openSettings") { state.showingSettings = true } }
         #endif
         .containerBackground(.clear, for: .window)
         .sheet(isPresented: Binding(get: { state.showingSettings }, set: { state.showingSettings = $0 })) {

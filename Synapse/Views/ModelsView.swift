@@ -53,6 +53,8 @@ struct ModelsView: View {
         #if DEBUG
         // `-addModel <org/name>` opens the sheet with the repo filled in and checked, for captures.
         .onAppear { if UserDefaults.standard.string(forKey: "addModel") != nil { adding = true } }
+        // `-selectModel <id>` opens that model's datasheet.
+        .onAppear { if let id = UserDefaults.standard.string(forKey: "selectModel") { selection = id } }
         #endif
         .task { await state.refreshModels() }
         .confirmationDialog("Delete \(confirmDelete?.displayName ?? "")?", isPresented: .constant(confirmDelete != nil),
@@ -89,6 +91,8 @@ struct Datasheet: View {
     let spec: ModelSpec
     let openPane: (Pane) -> Void
     @Binding var confirmDelete: ModelSpec?
+    /// Smaller models with the same tokenizer that can draft for this one (speculative decoding).
+    @State private var drafts: [ModelSpec] = []
 
     private var metrics: [Metric] {
         if spec.isTTS { return [.ttsFirstAudio, .ttsSpeed] }
@@ -97,7 +101,7 @@ struct Datasheet: View {
         if spec.isVideoGen { return [.videoTime] }
         if spec.isAudioGen { return [.soundSpeed] }
         if spec.isAudioEdit || spec.engine == .imagetool { return [] }
-        if spec.isChat { return [.loadTime, .firstToken, .decodeRate, .prefillRate, .firstAudio] }
+        if spec.isChat { return [.loadTime, .firstToken, .firstTokenCached, .decodeRate, .prefillRate, .firstAudio] }
         if spec.isTranscription { return [.realtimeSpeed] }
         if spec.isImage { return [.secondsPerStep, .imageTime] }
         return [.firstAudio]
@@ -133,6 +137,7 @@ struct Datasheet: View {
             header
             Divider()
             if !metrics.isEmpty { characteristics }
+            if spec.isChat || spec.isImage, case .ready = state.modelStates[spec.id] { running }
             VStack(alignment: .leading, spacing: 8) {
                 Text("API").font(.headline)
                 ForEach(api, id: \.self) { Text($0).font(.mono(.callout)).textSelection(.enabled) }
@@ -140,6 +145,106 @@ struct Datasheet: View {
             }
         }
         .frame(maxWidth: 760, alignment: .leading)
+        .task(id: spec.id) { drafts = spec.isChat ? await state.chat.draftCandidates(for: spec) : [] }
+    }
+
+    private var keepLoaded: Binding<Bool> {
+        Binding(get: { state.settings.keepWarm.contains(spec.id) },
+                set: { on in
+                    state.settings.keepWarm.removeAll { $0 == spec.id }
+                    if on { state.settings.keepWarm.append(spec.id) }
+                })
+    }
+
+    private var draft: Binding<String> {
+        Binding(get: { state.settings.draftModels[spec.id] ?? "" },
+                set: { state.settings.draftModels[spec.id] = $0.isEmpty ? nil : $0 })
+    }
+
+    /// How this model is kept and run: residency, speculative decoding, and its prompt cache (every request counts).
+    private var running: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Running").font(.headline)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep loaded")
+                    Text("Loads when Synapse starts and is never unloaded for being idle.").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if state.resident(spec.id) == nil {
+                    Button("Load Now") { state.preload([spec.id]) }.buttonStyle(.glass)
+                }
+                Toggle("Keep loaded", isOn: keepLoaded).toggleStyle(.switch).labelsHidden()
+            }
+            if spec.isChat {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Draft model")
+                        Text(drafts.isEmpty
+                             ? "Needs a smaller downloaded model with the same tokenizer, both using only full attention (not Qwen3.5)."
+                             : "Proposes tokens this model checks in one pass: faster replies, same output.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if !drafts.isEmpty {
+                        ChoiceMenu(title: "Draft model", selection: draft,
+                                   options: [("", "None")] + drafts.map { ($0.id, $0.displayName) })
+                    }
+                }
+                promptCache
+            }
+        }
+    }
+
+    @ViewBuilder private var promptCache: some View {
+        let s = state.cacheStats[spec.id] ?? PromptCacheStats()
+        let rows: [(String, String, String)] = {
+            guard s.requests > 0 else { return [] }
+            var r = [("Hit rate", "\(Int((Double(s.hits) / Double(s.requests) * 100).rounded())) %", "\(s.hits) of \(s.requests) requests reused a prompt")]
+            if s.promptTokens > 0 {
+                r.append(("Tokens reused", "\(Int((Double(s.cachedTokens) / Double(s.promptTokens) * 100).rounded())) %",
+                          "\(s.cachedTokens.formatted()) of \(s.promptTokens.formatted()) prompt tokens came from the cache"))
+            }
+            return r
+        }()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Prompt cache").font(.subheadline.weight(.semibold))
+                Text("since launch · API requests included").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear Cache") { state.clearPromptCache(spec.id, disk: true) }.buttonStyle(.borderless).font(.callout)
+                    .disabled(s.entries == 0 && state.diskCache.entries == 0)
+            }
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                ForEach(rows, id: \.0) { row in
+                    GridRow(alignment: .firstTextBaseline) {
+                        Text(row.0)
+                        Text(row.1).font(.mono(.body, weight: .bold)).gridColumnAlignment(.trailing)
+                        Text(row.2).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("In memory")
+                    Text(byteSize(s.bytes)).font(.mono()).gridColumnAlignment(.trailing)
+                    Text("\(s.entries) conversation\(s.entries == 1 ? "" : "s"), up to \(gigabytes(state.settings.promptCacheBytes))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if spec.engine == .mlx {
+                    GridRow(alignment: .firstTextBaseline) {
+                        Text("On disk")
+                        Text(byteSize(state.diskCache.bytes)).font(.mono()).gridColumnAlignment(.trailing)
+                        Text(state.settings.diskCacheGB > 0 ? "\(state.diskCache.entries) saved prompt\(state.diskCache.entries == 1 ? "" : "s"), all models" : "saving is off in Settings")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if s.requests == 0 {
+                Text("No requests yet. Follow-up turns reuse the conversation so far instead of reading it again.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
     }
 
     private var header: some View {

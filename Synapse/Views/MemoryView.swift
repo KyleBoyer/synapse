@@ -44,8 +44,21 @@ struct MemoryView: View {
                         Divider()
                         HStack(spacing: 14) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(Catalog.spec(r.id)?.displayName ?? r.id)
+                                HStack(spacing: 6) {
+                                    Text(Catalog.spec(r.id)?.displayName ?? r.id)
+                                    if state.settings.keepWarm.contains(r.id) {
+                                        Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary).help("Kept loaded")
+                                    }
+                                }
                                 Text(r.id).font(.mono(.caption)).foregroundStyle(.secondary)
+                                if let c = state.cacheStats[r.id], c.requests > 0 || c.entries > 0 {
+                                    HStack(spacing: 8) {
+                                        Text("prompt cache \(byteSize(c.bytes)) · \(c.entries) cached · \(c.hits) of \(c.requests) hit")
+                                            .font(.mono(.caption)).foregroundStyle(.secondary)
+                                        Button("Clear") { state.clearPromptCache(r.id, disk: false) }
+                                            .buttonStyle(.borderless).font(.caption).disabled(c.entries == 0)
+                                    }
+                                }
                             }
                             Spacer()
                             if r.leases > 0 { Label("in use", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(Color.live) }
@@ -57,11 +70,30 @@ struct MemoryView: View {
                         .padding(.vertical, 10)
                     }
                 }
+                diskCache
             }
             .padding(28)
             .frame(maxWidth: 820, alignment: .leading)
         }
         .navigationTitle("Memory")
+    }
+
+    /// Saved prompt checkpoints on the models drive (in-process MLX chat models; mlx-vlm keeps its own).
+    private var diskCache: some View {
+        let disk = state.diskCache
+        return HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Saved prompts").font(.headline)
+                Text(state.settings.diskCacheGB > 0
+                     ? "\(disk.entries) on disk, up to \(Int(state.settings.diskCacheGB)) GB. Long prompts stay warm after a model unloads or Synapse quits."
+                     : "Off. Turn on Save prompts to disk in Settings to keep long prompts warm across restarts.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(byteSize(disk.bytes)).font(.mono(.body, weight: .medium))
+            Button("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([state.chat.diskCacheRoot]) }.buttonStyle(.glass)
+            Button("Clear All") { state.clearPromptCache(nil, disk: true) }.buttonStyle(.glass)
+        }
     }
 
     /// The budget as a bar, one segment per loaded model, so the biggest consumer is obvious.

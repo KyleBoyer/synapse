@@ -68,7 +68,7 @@ final class AppState {
         let (updates, sink) = AsyncStream.makeStream(of: JobSnapshot.self)
         queue = JobQueue(store: store, decoder: decoder, settings: settingsBox, models: models, onChange: { sink.yield($0) })
         let queue = queue
-        chat = ChatService(store: store, models: models)
+        chat = ChatService(store: store, models: models, promptCacheBytes: s.promptCacheBytes, diskCacheBytes: s.diskCacheBytes)
         images = ImageService(store: store, models: models, engineFactory: ImageEngines.real)
         realtime = .real(store: store, models: models, chat: chat, transcribe: RealtimeServices.turnTranscriber(queue))
         speech = SpeechService(store: store, models: models, transcribe: SpeechService.transcriber(queue))
@@ -156,7 +156,30 @@ final class AppState {
     func refreshResidents() async {
         residents = await models.residents()
         memoryOvercommitted = await models.overcommitted
+        cacheStats = await chat.cacheStats()
+        diskCache = chat.diskCacheUsage()
+        // The server reports running from its own callback, after start() returns, so the status is re-read here.
+        serverStatus = await server.status
     }
+
+    /// Prompt-cache counters per chat model since launch, every request included (refreshed with the residents).
+    private(set) var cacheStats: [String: PromptCacheStats] = [:]
+    private(set) var diskCache: (bytes: Int, entries: Int) = (0, 0)
+
+    /// Loads keep-warm models one at a time, so each finishes before the next takes memory.
+    func preload(_ ids: [String]) {
+        let chat = chat, images = images
+        Task {
+            for id in ids {
+                guard let spec = Catalog.spec(id), await store.folder(for: id) != nil else { continue }
+                // A model that fails to load here is retried, with its error shown, on first real use.
+                if spec.isChat { try? await chat.preload(spec) } else if spec.isImage { try? await images.preload(spec) }
+                await refreshResidents()
+            }
+        }
+    }
+
+    func clearPromptCache(_ id: String?, disk: Bool) { Task { await chat.clearCache(id, disk: disk); await refreshResidents() } }
     func unloadModel(_ id: String) { Task { await models.unload(id); await refreshResidents() } }
     func unloadAllIdle() { Task { await models.unloadAllIdle(); await refreshResidents() } }
 
@@ -220,9 +243,20 @@ final class AppState {
                 serverStatus = await server.status
             }
         }
-        if old?.memoryBudgetGB != s.memoryBudgetGB || old?.idleUnloadMinutes != s.idleUnloadMinutes {
+        if old?.memoryBudgetGB != s.memoryBudgetGB || old?.idleUnloadMinutes != s.idleUnloadMinutes || old?.keepWarm != s.keepWarm {
             let config = s.modelManagerConfig
             Task { await models.update(config: config) }
+        }
+        // Launch loads every keep-warm model; later, only the ones just added.
+        let added = s.keepWarm.filter { !(old?.keepWarm ?? []).contains($0) }
+        if !added.isEmpty { preload(added) }
+        if let old, old.promptCacheGB != s.promptCacheGB { let b = s.promptCacheBytes; Task { await chat.setPromptCacheLimit(b) } }
+        if let old, old.diskCacheGB != s.diskCacheGB { let b = s.diskCacheBytes; Task { await chat.setDiskCacheLimit(b) } }
+        if old?.kvPrecision != s.kvPrecision { let p = s.kvPrecision; Task { await chat.setKVPrecision(p) } }
+        if old?.draftModels != s.draftModels {
+            let ids = Set(s.draftModels.keys).union(old?.draftModels.keys ?? [:].keys)
+            let drafts = s.draftModels
+            Task { for id in ids { await chat.setDraftModel(drafts[id], for: id) } }
         }
         if old == nil || old?.watchFolders != s.watchFolders || old?.watchingPaused != s.watchingPaused {
             Task { await watcher.update(folders: s.watchFolders, paused: s.watchingPaused) }

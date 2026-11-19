@@ -22,17 +22,24 @@ struct SettingsView: View {
                 Button("Done") { dismiss() }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 12)
-            ScrollView {
-                VStack(spacing: 14) {
-                    appearancePanel
-                    generalPanel
-                    memoryPanel
-                    subtitlesPanel
-                    storagePanel
-                    voomPanel
-                    aboutPanel
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 14) {
+                        appearancePanel
+                        generalPanel
+                        memoryPanel
+                        runningPanel.id("running")
+                        subtitlesPanel
+                        storagePanel
+                        voomPanel
+                        aboutPanel
+                    }
+                    .padding(.horizontal, 24).padding(.bottom, 24)
                 }
-                .padding(.horizontal, 24).padding(.bottom, 24)
+                #if DEBUG
+                // `-settingsScrollTo running` brings that panel into view, for captures.
+                .task { if let id = UserDefaults.standard.string(forKey: "settingsScrollTo") { proxy.scrollTo(id, anchor: .top) } }
+                #endif
             }
         }
         .frame(width: 620, height: 560)
@@ -107,6 +114,40 @@ struct SettingsView: View {
                 Spacer(minLength: 12)
                 Button("Use Default (75%)") { state.settings.memoryBudgetGB = nil }
                     .buttonStyle(.glass).disabled(state.settings.memoryBudgetGB == nil)
+            }
+        }
+    }
+
+    /// Prompt caching and KV precision, for every chat engine.
+    private var runningPanel: some View {
+        @Bindable var state = state
+        return Panel("Running models") {
+            PanelRow("Prompt cache memory") {
+                Picker("Prompt cache memory", selection: $state.settings.promptCacheGB) {
+                    Text("Automatic (\(gigabytes(ChatService.defaultPromptCacheBytes)))").tag(Double?.none)
+                    ForEach([0.5, 1, 2, 4, 8], id: \.self) { Text(String(format: "%g GB", $0)).tag(Double?.some($0)) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            PanelRow("Save prompts to disk") {
+                Picker("Save prompts to disk", selection: $state.settings.diskCacheGB) {
+                    Text("Off").tag(0.0)
+                    ForEach([5.0, 10, 20, 50], id: \.self) { Text("Up to \(Int($0)) GB").tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            PanelRow("KV cache precision") {
+                Picker("KV cache precision", selection: $state.settings.kvPrecision) {
+                    ForEach(KVPrecision.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text("Follow-up turns reuse the conversation so far instead of reading it again. 8-bit and 4-bit store "
+                     + "attention in less memory for longer contexts, at a small quality cost; changing it unloads idle chat models.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                Button("Clear Cache") { state.clearPromptCache(nil, disk: true) }.buttonStyle(.glass)
             }
         }
     }

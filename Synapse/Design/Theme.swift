@@ -29,6 +29,11 @@ func timecode(_ t: Double) -> String {
 
 func gigabytes(_ bytes: Int) -> String { String(format: "%.1f GB", Double(bytes) / 1_073_741_824) }
 
+/// "48 MB" below a gigabyte, "1.4 GB" above (cache sizes span both).
+func byteSize(_ bytes: Int) -> String {
+    bytes < 1 << 30 ? String(format: "%.0f MB", Double(bytes) / 1_048_576) : gigabytes(bytes)
+}
+
 extension ResidentInfo {
     /// "≈" until the model's real memory has been measured (the estimate comes from the catalog).
     var memory: String { (measured ? "" : "≈") + gigabytes(bytes) }

@@ -37,10 +37,12 @@ struct ChatView: View {
             let t = (ended ?? Date()).timeIntervalSince(f)
             return t > 0.05 && tokens > 0 ? tokens / t : nil
         }
+        /// Only for runs that read the whole prompt: a cached prefix would make it look far faster than the model is.
         var promptRate: Double? {
-            guard let u = usage, let ttft = firstTokenSeconds, ttft > 0 else { return nil }
+            guard let u = usage, u.cachedTokens == 0, let ttft = firstTokenSeconds, ttft > 0 else { return nil }
             return Double(u.promptTokens) / ttft
         }
+        var cached: Bool { (usage?.cachedTokens ?? 0) > 0 }
     }
 
     @State private var modelID = ""
@@ -122,13 +124,15 @@ struct ChatView: View {
             readings: [
                 reading("Load", r?.loadSeconds.map { String(format: "%.2f s", $0) }
                             ?? (r?.promptStart != nil ? "already loaded" : nil), .loadTime, live: r?.phase == .loading),
-                reading("First token", r?.firstTokenSeconds.map { String(format: "%.2f s", $0) }, .firstToken),
+                reading("First token", r?.firstTokenSeconds.map { String(format: "%.2f s", $0) }, r?.cached == true ? .firstTokenCached : .firstToken),
                 reading("Decode", r?.decodeRate.map { Metric.decodeRate.format($0) + " tok/s" }, .decodeRate, live: generating),
                 reading("Prompt", r?.usage.map { u in
-                    "\(u.promptTokens) tok" + (r?.promptRate.map { " · " + Metric.prefillRate.format($0) + "/s" } ?? "")
+                    "\(u.promptTokens) tok" + (u.cachedTokens > 0 ? " · \(u.cachedTokens) cached"
+                                                : r?.promptRate.map { " · " + Metric.prefillRate.format($0) + "/s" } ?? "")
                 }, .prefillRate),
                 Reading(label: "Output", value: r.map { "\($0.usage?.completionTokens ?? $0.chunks) tok" } ?? "–"),
-            ] + (lines.last(where: { $0.message.role == .user })?.message.videos.isEmpty == false
+            ] + (r?.usage?.drafted == true ? [Reading(label: "Draft", value: state.settings.draftModels[spec.id] ?? "on")] : [])
+              + (lines.last(where: { $0.message.role == .user })?.message.videos.isEmpty == false
                  ? [Reading(label: "Video", value: "\(ChatOptions().videoFrames ?? 8) frames")] : []) + [
                 Reading(label: "Resident", value: resident.map { $0.memory } ?? "not loaded"),
             ],
@@ -299,7 +303,7 @@ struct ChatView: View {
                 }
                 if let r = run {
                     r.loadSeconds.map { metrics.record(spec.id, .loadTime, $0) }
-                    r.firstTokenSeconds.map { metrics.record(spec.id, .firstToken, $0) }
+                    r.firstTokenSeconds.map { metrics.record(spec.id, r.cached ? .firstTokenCached : .firstToken, $0) }
                     r.decodeRate.map { metrics.record(spec.id, .decodeRate, $0) }
                     r.promptRate.map { metrics.record(spec.id, .prefillRate, $0) }
                 }

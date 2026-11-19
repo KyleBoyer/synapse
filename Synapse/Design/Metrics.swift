@@ -4,13 +4,14 @@ import Observation
 /// A measured characteristic of a model. Each case carries its datasheet row: label, unit, test conditions,
 /// and how to print it, so every pane and the Models datasheet read from one table.
 enum Metric: String, Codable, CaseIterable, Identifiable {
-    case loadTime, firstToken, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed, embedRate, videoTime, soundSpeed
+    case loadTime, firstToken, firstTokenCached, decodeRate, prefillRate, realtimeSpeed, secondsPerStep, imageTime, firstAudio, ttsFirstAudio, ttsSpeed, embedRate, videoTime, soundSpeed
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .loadTime: "Load time"
         case .firstToken: "Time to first token"
+        case .firstTokenCached: "Time to first token, cached"
         case .decodeRate: "Decode rate"
         case .prefillRate: "Prompt rate"
         case .realtimeSpeed: "Transcription speed"
@@ -27,7 +28,7 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
 
     var unit: String {
         switch self {
-        case .loadTime, .firstToken, .secondsPerStep, .imageTime, .firstAudio, .ttsFirstAudio, .videoTime: "s"
+        case .loadTime, .firstToken, .firstTokenCached, .secondsPerStep, .imageTime, .firstAudio, .ttsFirstAudio, .videoTime: "s"
         case .decodeRate, .prefillRate, .embedRate: "tok/s"
         case .realtimeSpeed, .ttsSpeed, .soundSpeed: "× realtime"
         }
@@ -36,9 +37,10 @@ enum Metric: String, Codable, CaseIterable, Identifiable {
     var conditions: String {
         switch self {
         case .loadTime: "from disk until ready, when the model was not loaded"
-        case .firstToken: "prompt processing, model load excluded"
+        case .firstToken: "whole prompt processed, model load excluded"
+        case .firstTokenCached: "earlier turns read from the prompt cache"
         case .decodeRate: "output tokens after the first"
-        case .prefillRate: "prompt tokens ÷ time to first token"
+        case .prefillRate: "prompt tokens ÷ time to first token, uncached runs"
         case .realtimeSpeed: "audio length ÷ processing time, decode included"
         case .secondsPerStep: "wall time per step, after model load"
         case .imageTime: "one image, after model load"
