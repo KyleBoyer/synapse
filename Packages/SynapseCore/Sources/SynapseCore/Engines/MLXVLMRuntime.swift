@@ -51,17 +51,24 @@ public final class MLXVLMServer: @unchecked Sendable {
         let p = Process()
         p.executableURL = rt.python
         p.arguments = ["-c", watchdog, "--host", "127.0.0.1", "--port", String(port), "--model", folder.path]
-        p.environment = ProcessInfo.processInfo.environment.merging([
-            "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
-            // Automatic prefix caching (follow-up turns reuse the history's KV blocks), off by default in mlx-vlm. It
-            // admits a request only when system-wide free RAM covers it, and refuses it otherwise; on a 16 GB Mac with
-            // other models loaded that happened on most requests in testing, so it is only turned on with room to spare.
-            "APC_ENABLED": MLXVLMServer.prefixCache ? "1" : "0", "APC_MEMORY_MAX_GB": String(Double(cacheBytes) / Double(1 << 30)),
-            // Its own folder: Synapse's disk cache evicts by its own file layout and must not touch these blocks.
-            "APC_DISK_ENABLED": MLXVLMServer.prefixCache && diskBytes > 0 ? "1" : "0", "APC_DISK_PATH": rt.dir.appending(path: "apc").path,
-            "APC_DISK_MAX_GB": String(Double(diskBytes) / Double(1 << 30)),
-            "HF_HOME": rt.dir.appending(path: "hf").path,
-        ].merging(kv.mlxVLMBits.map { ["KV_BITS": $0] } ?? [:]) { $1 }) { $1 }
+        // Built one entry at a time: as a single literal this takes the Release compiler too long to type-check.
+        var env = ProcessInfo.processInfo.environment
+        env["HF_HUB_OFFLINE"] = "1"
+        env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        env["TOKENIZERS_PARALLELISM"] = "false"
+        env["HF_HOME"] = rt.dir.appending(path: "hf").path
+        // Automatic prefix caching (follow-up turns reuse the history's KV blocks), off by default in mlx-vlm. It
+        // admits a request only when system-wide free RAM covers it, and refuses it otherwise; on a 16 GB Mac with
+        // other models loaded that happened on most requests in testing, so it is only turned on with room to spare.
+        let apc = MLXVLMServer.prefixCache
+        env["APC_ENABLED"] = apc ? "1" : "0"
+        env["APC_MEMORY_MAX_GB"] = String(Double(cacheBytes) / 1_073_741_824)
+        // Its own folder: Synapse's disk cache evicts by its own file layout and must not touch these blocks.
+        env["APC_DISK_ENABLED"] = apc && diskBytes > 0 ? "1" : "0"
+        env["APC_DISK_PATH"] = rt.dir.appending(path: "apc").path
+        env["APC_DISK_MAX_GB"] = String(Double(diskBytes) / 1_073_741_824)
+        if let bits = kv.mlxVLMBits { env["KV_BITS"] = bits }
+        p.environment = env
         let logURL = FileManager.default.temporaryDirectory.appending(path: "synapse-mlxvlm-\(port).log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let log = try FileHandle(forWritingTo: logURL)
