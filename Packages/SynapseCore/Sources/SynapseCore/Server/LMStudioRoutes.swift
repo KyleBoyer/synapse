@@ -60,6 +60,7 @@ func addLMStudioRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, con
         var options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature, topP: body.top_p,
                                   enableThinking: thinking)
         sampling.apply(to: &options)
+        if thinking, let level = body.reasoning?.string { options.thinkingBudget = reasoning(level).budget }
         let responseID = body.store == false ? nil
             : "resp_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let events = try await chat.stream(model: spec, messages: messages, options: options)

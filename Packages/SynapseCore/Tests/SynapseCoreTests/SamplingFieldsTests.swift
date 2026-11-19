@@ -44,3 +44,23 @@ final class SamplingFieldsTests: XCTestCase {
         XCTAssertNil(j["presence_penalty"])
     }
 }
+
+final class ReasoningEffortTests: XCTestCase {
+    func testEffortMapsToThinkingAndBudget() {
+        XCTAssertEqual(reasoning(nil).enabled, false)
+        XCTAssertEqual(reasoning("minimal").enabled, false)
+        XCTAssertEqual(reasoning("low").budget, 1024)
+        XCTAssertEqual(reasoning("medium").budget, 4096)
+        XCTAssertEqual(reasoning("high").enabled, true)
+        XCTAssertNil(reasoning("high").budget)
+    }
+
+    func testServerBodyCarriesTheBudgetOnlyWithThinkingOn() throws {
+        var o = ChatOptions(enableThinking: true); o.thinkingBudget = 512
+        let on = try XCTUnwrap(try JSONSerialization.jsonObject(with: try MLXVLMChat.body([ChatMessage(role: .user, text: "hi")], options: o, model: "m")) as? [String: Any])
+        XCTAssertEqual(on["thinking_budget"] as? Int, 512); XCTAssertEqual(on["thinking_budget_tokens"] as? Int, 512)
+        o.enableThinking = false
+        let off = try XCTUnwrap(try JSONSerialization.jsonObject(with: try MLXVLMChat.body([ChatMessage(role: .user, text: "hi")], options: o, model: "m")) as? [String: Any])
+        XCTAssertNil(off["thinking_budget"])
+    }
+}

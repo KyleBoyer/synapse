@@ -435,8 +435,10 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.chatMessages(body.messages))
         try await requireMediaSupport(chat, spec, messages)
+        let effort = reasoning(body.reasoning_effort)
         var options = ChatOptions(maxTokens: body.max_completion_tokens ?? body.max_tokens, temperature: body.temperature,
-                                  topP: body.top_p, enableThinking: thinking(body.reasoning_effort))
+                                  topP: body.top_p, enableThinking: effort.enabled)
+        options.thinkingBudget = effort.budget
         sampling.apply(to: &options)
         options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
         let id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -504,9 +506,10 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.responseMessages(body.input, instructions: body.instructions))
         try await requireMediaSupport(chat, spec, messages)
-        let effort = body.reasoning?["effort"]?.string
+        let effort = reasoning(body.reasoning?["effort"]?.string)
         var options = ChatOptions(maxTokens: body.max_output_tokens, temperature: body.temperature,
-                                  topP: body.top_p, enableThinking: thinking(effort))
+                                  topP: body.top_p, enableThinking: effort.enabled)
+        options.thinkingBudget = effort.budget
         sampling.apply(to: &options)
         options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
         let hasTools = !options.tools.isEmpty
@@ -617,9 +620,15 @@ struct AnyEncodableDict: Encodable, Sendable {
     }
 }
 
-private func thinking(_ effort: String?) -> Bool {
-    guard let effort else { return false }
-    return !["none", "minimal"].contains(effort)
+/// OpenAI reasoning effort as thinking on/off plus a token budget: none/minimal off, low 1024, medium 4096,
+/// high (and anything else) unlimited. Absent means off, as on Synapse's other routes.
+func reasoning(_ effort: String?) -> (enabled: Bool, budget: Int?) {
+    switch effort {
+    case nil, "none", "minimal": (false, nil)
+    case "low": (true, 1024)
+    case "medium": (true, 4096)
+    default: (true, nil)
+    }
 }
 
 func resolveChat(_ chat: ChatService, _ model: String?) async throws -> ModelSpec {

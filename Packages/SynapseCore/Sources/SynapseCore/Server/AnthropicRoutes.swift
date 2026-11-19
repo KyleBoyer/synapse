@@ -248,6 +248,7 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
         let messages = try await ImageFetcher.messages(try AnthropicParse.messages(body))
         let thinking = ["enabled", "adaptive"].contains(body.thinking?["type"]?.string ?? "")
         var options = ChatOptions(maxTokens: body.max_tokens, temperature: body.temperature, topP: body.top_p, enableThinking: thinking)
+        if body.thinking?["type"]?.string == "enabled" { options.thinkingBudget = body.thinking?["budget_tokens"]?.number.map { Int($0) } }
         if let k = body.top_k {
             guard k >= 0 else { throw HTTPError(.badRequest, message: "top_k must be 0 or more.") }
             options.topK = k

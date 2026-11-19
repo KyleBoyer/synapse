@@ -33,6 +33,8 @@ public struct ChatOptions: Sendable, Equatable {
     public var tools: [ChatTool]
     /// Frames sampled evenly across each video (nil = 8).
     public var videoFrames: Int?
+    /// Most tokens the model may spend thinking before it is made to answer (nil: no limit). Only used with thinking on.
+    public var thinkingBudget: Int?
     /// More sampling controls; nil leaves each at the engine's default (top-k and min-p off, no penalties, random seed).
     public var topK: Int?
     public var minP: Float?
@@ -316,7 +318,7 @@ public actor ChatService {
                     let boundary = (ctx.tokenizer as? TokenizerBridge)?.generationPrompt(context: context)
                         .flatMap { gp in tokens.count > gp.count && Array(tokens.suffix(gp.count)) == gp ? tokens.count - gp.count : nil }
                     return try await Self.generate(ctx, lm, tokens: tokens, boundary: boundary, cache: cache, params: params, tools: tools,
-                                                   draft: draft)
+                                                   draft: draft, thinkingBudget: options.enableThinking ? options.thinkingBudget : nil)
                 }
             }
         }
@@ -468,9 +470,10 @@ public actor ChatService {
     /// non-Sendable KV caches live. `boundary` is where to leave a checkpoint (nil: none).
     static func generate(_ ctx: ModelContext, _ lm: consuming sending LMInput, tokens: [Int], boundary: Int?,
                          cache: PromptCache?, params: GenerateParameters,
-                         tools: [[String: any Sendable]]?, draft: DraftModel? = nil) async throws -> Started {
+                         tools: [[String: any Sendable]]?, draft: DraftModel? = nil, thinkingBudget: Int? = nil) async throws -> Started {
+        let components = try thinkingComponents(ctx, budget: thinkingBudget, maxTokens: params.maxTokens)
         guard let cache, tokens.count > 1 else {
-            return Started(generation: try MLXLMCommon.generate(input: lm, parameters: params, context: ctx, tools: tools),
+            return Started(generation: try MLXLMCommon.generate(input: lm, parameters: params, context: ctx, components: components, tools: tools),
                            promptTokens: tokens.count, cachedTokens: 0)
         }
         let hit = await cache.lookup(tokens)
@@ -502,15 +505,18 @@ public actor ChatService {
             }
             do {
                 generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx,
-                                                      draftModel: draft.model, draftCache: draftKV, numDraftTokens: 3, tools: tools)
+                                                      draftModel: draft.model, draftCache: draftKV, numDraftTokens: 3,
+                                                      components: components, tools: tools)
                 drafted = true
             } catch where "\(error)".contains("requires trimmable KV caches") {
                 // The iterator checks this before touching either cache, so `kv` is as it was: decode without the
                 // draft rather than fail the request. (The library's error type is internal, hence the message match.)
-                generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx, tools: tools)
+                generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx,
+                                                      components: components, tools: tools)
             }
         } else {
-            generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx, tools: tools)
+            generation = try MLXLMCommon.generate(input: rest, cache: kv, state: state, parameters: params, context: ctx,
+                                                  components: components, tools: tools)
         }
         var started = Started(generation: generation, promptTokens: tokens.count, cachedTokens: hit?.reused ?? 0)
         started.drafted = drafted
@@ -519,6 +525,21 @@ public actor ChatService {
             started.afterward = { await cache.persist(prefix) }
         }
         return started
+    }
+
+    /// A hard cap on thinking tokens: when it runs out, the model's own end delimiter (`</think>`) is inserted and
+    /// the answer follows. Qwen3.5's reasoning config declares no budget transition, so Synapse opts in with
+    /// `.immediate`: no text of Synapse's goes into the model's output. On Qwen3.5 0.8B and 2B the cap holds, but
+    /// what follows a forced stop is often more reasoning rather than a clean answer (Qwen's suggested hand-off
+    /// sentence did not fix that either; see ThinkingBudgetE2ETests). The budget is trimmed to leave room for an
+    /// answer inside max_tokens, which the library otherwise rejects.
+    static func thinkingComponents(_ ctx: ModelContext, budget: Int?, maxTokens: Int?) throws -> GenerationComponents {
+        guard let budget, let reasoning = ctx.configuration.reasoningConfig else { return GenerationComponents() }
+        let answer = 64, headroom = 16
+        let capped = maxTokens.map { min(budget, max(0, $0 - answer - headroom)) } ?? budget
+        let config = try ThinkingBudgetConfiguration(maximumTokenCount: capped, minimumAnswerTokenCount: answer,
+                                                     transitionOverride: reasoning.budgetTransition == nil ? .immediate : nil)
+        return try GenerationComponents().applyingThinkingBudget(config, reasoning: reasoning, tokenizer: ctx.tokenizer)
     }
 
     /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.

@@ -143,6 +143,8 @@ enum MLXVLMChat {
         // mlx-vlm's name, then llama.cpp's; each server ignores the other's.
         if let v = options.repetitionPenalty { o["repetition_penalty"] = v; o["repeat_penalty"] = v }
         if promptProgress { o["return_progress"] = true }
+        // mlx-vlm's name, then llama.cpp's.
+        if options.enableThinking, let b = options.thinkingBudget { o["thinking_budget"] = b; o["thinking_budget_tokens"] = b }
         // Both servers parse calls per model (mlx-vlm's tool parsers, llama.cpp's --jinja templates).
         if !options.tools.isEmpty { o["tools"] = options.tools.map(\.spec) }
         return try JSONSerialization.data(withJSONObject: o)
