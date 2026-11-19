@@ -182,15 +182,14 @@ struct VideoView: View {
                     Label(j.error ?? "Generation failed.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .queued, .in_progress:
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 14).fill(.quaternary)
+                    RoundedRectangle(cornerRadius: 14).fill(.quaternary).overlay(alignment: .bottom) {
                         // Each clip runs in a fresh process, so progress stays 0 until the model is loaded.
                         if j.status == .queued {
-                            LiveProgress(label: "Queued")
+                            LiveProgress(label: "Queued").strip()
                         } else if j.progress == 0 {
-                            LiveProgress(label: "Loading model")
+                            LiveProgress(label: "Loading model").strip()
                         } else {
-                            LiveProgress(label: "Generating · \(j.progress)%", fraction: Double(j.progress) / 100)
+                            LiveProgress(label: "Generating · \(j.progress)%", fraction: Double(j.progress) / 100).strip()
                         }
                     }
                 }

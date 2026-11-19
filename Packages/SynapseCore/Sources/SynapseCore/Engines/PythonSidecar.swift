@@ -9,6 +9,7 @@ final class PythonSidecar: @unchecked Sendable {
     let ready: [String: Any]
     let logName: String
     private let process: Process
+    public var pid: Int32 { process.processIdentifier }
     private let input: FileHandle
     private let lines: LineQueue
     private let serial = AsyncSerial()

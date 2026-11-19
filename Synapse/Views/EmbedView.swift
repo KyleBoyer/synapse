@@ -162,7 +162,7 @@ struct EmbedView: View {
                 } ?? Reading(label: "Rate", value: state.metrics.typical(spec.id, .embedRate) ?? "–", muted: true),
                 Reading(label: "Time", value: m.seconds.map { String(format: "%.0f ms", $0 * 1000) } ?? "–"),
                 Reading(label: "Reranker", value: reranker?.id ?? "none downloaded"),
-                Reading(label: "Resident", value: state.resident(spec.id).map { gigabytes($0.bytes) } ?? "not loaded"),
+                Reading(label: "Resident", value: state.resident(spec.id).map { $0.memory } ?? "not loaded"),
             ],
             history: state.metrics.history(spec.id, .embedRate), historyMetric: .embedRate,
             running: m.running,

@@ -62,7 +62,8 @@ public actor VOOMRuntime {
     /// Ensures the server is up and returns a lease that keeps it resident for the request.
     public func lease() async throws -> ModelLease<VOOMProcess> {
         let checkout = checkout, port = port, base = baseURL, modelsRoot = modelsRoot
-        return try await models.lease(Self.residentID, as: VOOMProcess.self, estimatedBytes: Self.estimatedBytes) {
+        return try await models.lease(Self.residentID, as: VOOMProcess.self, estimatedBytes: Self.estimatedBytes,
+                                      measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             let process = try VOOMProcess.launch(checkout: checkout, port: port,
                                                  imageModelDirs: modelsRoot.map { $0.appending(path: "mlx").path })
             do { try await process.waitUntilReady(base: base) } catch { process.terminate(); throw error }
@@ -74,6 +75,7 @@ public actor VOOMRuntime {
 /// The vOOM server subprocess.
 public final class VOOMProcess: @unchecked Sendable {
     private let process: Process
+    public var pid: Int32 { process.processIdentifier }
     private let log: FileHandle?
 
     private init(process: Process, log: FileHandle?) { self.process = process; self.log = log }

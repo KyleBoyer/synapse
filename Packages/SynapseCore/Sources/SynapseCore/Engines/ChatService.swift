@@ -196,7 +196,8 @@ public actor ChatService {
     private func streamMLXVLM(_ spec: ModelSpec, _ folder: URL, _ messages: [ChatMessage], _ options: ChatOptions,
                               _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
-        let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedBytes) {
+        let lease = try await models.lease(spec.id, as: MLXVLMServer.self, estimatedBytes: spec.estimatedResidentBytes,
+                                           measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
                 try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
                 let server = try await MLXVLMServer.launch(folder: folder)
@@ -215,7 +216,8 @@ public actor ChatService {
                              _ progress: @escaping Progress) async throws -> AsyncThrowingStream<ChatEvent, Error>
     {
         let files = spec.files ?? []
-        let lease = try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedBytes) {
+        let lease = try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedResidentBytes,
+                                           measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
                 let server = try await LlamaServer.launch(folder: folder, files: files)
                 return (server, unload: { server.terminate() })
@@ -334,6 +336,11 @@ public actor ChatService {
         }
     }
 
+    /// Bytes of the loaded weights (quantized tensors count at their packed size).
+    static func weightBytes(_ container: ModelContainer) async -> Int {
+        await container.perform { ctx in ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes } }
+    }
+
     private static func userInput(_ messages: [ChatMessage], _ options: ChatOptions) throws -> UserInput {
         let chat: [Chat.Message] = try messages.map { m in
             let images = try m.images.map { data -> UserInput.Image in
@@ -357,7 +364,8 @@ public actor ChatService {
 
     private func containerLease(for spec: ModelSpec, progress: @escaping Progress) async throws -> ModelLease<ModelContainer> {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
-        return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedBytes) { try await Self.timed(progress) {
+        return try await models.lease(spec.id, as: ModelContainer.self, estimatedBytes: spec.estimatedResidentBytes,
+                                      measure: { await Self.weightBytes($0) }) { try await Self.timed(progress) {
             // Vision-language architectures load through MLXVLM; text-only ones (Llama, Mistral, ... added from
             // Hugging Face) are only in MLXLLM's registry.
             let config = (try? Data(contentsOf: folder.appending(path: "config.json")))

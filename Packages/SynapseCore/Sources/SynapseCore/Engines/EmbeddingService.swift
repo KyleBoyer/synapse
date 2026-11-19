@@ -159,7 +159,7 @@ struct MLXEmbeddingBackend: EmbeddingBackend {
     func embed(_ spec: ModelSpec, folder: URL, inputs: [EmbeddingInput]) async throws -> EmbeddingResult {
         if EmbeddingService.takesImages(spec) { return try await ImageTextEmbedder.embed(spec, folder: folder, inputs: inputs, models: models) }
         let texts = inputs.compactMap(\.text)
-        let lease = try await models.lease(spec.id, as: EmbedderModelContainer.self, estimatedBytes: spec.estimatedBytes) {
+        let lease = try await models.lease(spec.id, as: EmbedderModelContainer.self, estimatedBytes: spec.estimatedResidentBytes) {
             (try await EmbedderModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader()), unload: {})
         }
         defer { lease.release() }
@@ -188,7 +188,7 @@ struct MLXEmbeddingBackend: EmbeddingBackend {
     }
 
     func scores(_ spec: ModelSpec, folder: URL, query: String, documents: [String]) async throws -> [Double] {
-        let lease = try await models.lease(spec.id, as: RerankerContainer.self, estimatedBytes: spec.estimatedBytes) {
+        let lease = try await models.lease(spec.id, as: RerankerContainer.self, estimatedBytes: spec.estimatedResidentBytes) {
             (try await RerankerModelFactory.shared.loadContainer(from: folder, using: TransformersTokenizerLoader()), unload: {})
         }
         defer { lease.release() }

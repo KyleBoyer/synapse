@@ -69,6 +69,9 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
 
     /// Resident-size estimate for memory accounting (quantized weights load at about their on-disk size).
     public var estimatedBytes: Int { approxMB * 1_048_576 }
+    /// Pre-load memory guess: the RAM recommendation when it is below the download size (downloads can ship
+    /// full-precision parts the engine never loads), otherwise the download size. Measurement replaces it after load.
+    public var estimatedResidentBytes: Int { min(estimatedBytes, recommendedRAMGB.map { $0 << 30 } ?? .max) }
 
     public func supports(language: String?) -> Bool {
         guard let language, let languages else { return true }

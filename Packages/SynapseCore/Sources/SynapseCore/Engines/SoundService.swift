@@ -140,7 +140,7 @@ public actor SoundService {
         // shortcut: stereo input is mixed to mono; keep channels if music separation needs stereo output.
         let wav = try await decoder?.decodeToWAV(.media(input), into: work, sampleRate: 48000) ?? input
         let runner = editRunner
-        try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes) {
+        try await models.reserve(spec.id, estimatedBytes: spec.estimatedResidentBytes) {
             try await GPUGate.shared.run { try await runner(spec, folder, wav, prompt, out) }
         }
         let files = try FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)
@@ -182,7 +182,7 @@ public actor SoundService {
             try await GPUGate.shared.run { try await engine.generate(prompt: prompt, seconds: seconds, seed: seed, to: wav) }
         }
         if SoundEngines.mock { try await run() } else {
-            try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes, during: run)
+            try await models.reserve(spec.id, estimatedBytes: spec.estimatedResidentBytes, during: run)
         }
         return try Self.read(wav)
     }

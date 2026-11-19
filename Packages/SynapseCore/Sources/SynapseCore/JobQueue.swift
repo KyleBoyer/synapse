@@ -198,7 +198,7 @@ public actor JobQueue {
             throw JobError.diarizerMissing
         }
         let factory = diarizerFactory
-        let lease = try await models.lease(Self.diarizerID, as: (any SpeakerDiarizing).self, estimatedBytes: spec.estimatedBytes) {
+        let lease = try await models.lease(Self.diarizerID, as: (any SpeakerDiarizing).self, estimatedBytes: spec.estimatedResidentBytes) {
             (try await factory(folder), unload: {})
         }
         defer { lease.release() }
@@ -207,7 +207,7 @@ public actor JobQueue {
 
     private func engineLease(for spec: ModelSpec, folder: URL) async throws -> ModelLease<any TranscriptionEngine> {
         let factory = engineFactory
-        return try await models.lease(spec.id, as: (any TranscriptionEngine).self, estimatedBytes: spec.estimatedBytes) {
+        return try await models.lease(spec.id, as: (any TranscriptionEngine).self, estimatedBytes: spec.estimatedResidentBytes) {
             let engine = try await factory(spec, folder)
             return (engine, unload: { await engine.unload() })
         }

@@ -139,7 +139,7 @@ public actor VideoService {
             // The generator is a separate process MLX cannot see, so its memory is reserved for the run only.
             // The mock uses none.
             if VideoEngines.mock { try await generate() } else {
-                try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes, during: generate)
+                try await models.reserve(spec.id, estimatedBytes: spec.estimatedResidentBytes, during: generate)
             }
             try Task.checkCancellation()
             update(job.id) { $0.status = .completed; $0.progress = 100; $0.completedAt = Date(); $0.file = output }

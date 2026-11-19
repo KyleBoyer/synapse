@@ -121,7 +121,7 @@ struct TranscribeView: View {
         if let lang = job.transcript?.language { readings.append(Reading(label: "Language", value: Languages.name(lang))) }
         let speakers = Set(job.transcript?.segments.compactMap(\.speaker) ?? [])
         if !speakers.isEmpty { readings.append(Reading(label: "Speakers", value: "\(speakers.count)")) }
-        if let spec, let r = state.resident(spec.id) { readings.append(Reading(label: "Resident", value: gigabytes(r.bytes))) }
+        if let spec, let r = state.resident(spec.id) { readings.append(Reading(label: "Resident", value: r.memory)) }
         return VStack(spacing: 12) {
             BurnIn(name: spec?.displayName ?? "Default model", modelID: spec?.id ?? state.settings.defaultModelID,
                    readings: readings,
@@ -145,7 +145,7 @@ struct TranscribeView: View {
                 Reading(label: "Speed", value: state.metrics.typical(id, .realtimeSpeed) ?? "no runs yet", muted: true),
                 Reading(label: "Languages", value: spec.map { $0.languages.map { $0 == ["en"] ? "English" : "\($0.count)" } ?? "99" } ?? "–"),
                 Reading(label: "Translate", value: spec?.canTranslate == true ? "to English" : "no"),
-                Reading(label: "Resident", value: state.resident(id).map { gigabytes($0.bytes) } ?? "not loaded"),
+                Reading(label: "Resident", value: state.resident(id).map { $0.memory } ?? "not loaded"),
             ],
             history: state.metrics.history(id, .realtimeSpeed), historyMetric: .realtimeSpeed,
             api: "POST /v1/audio/transcriptions\nmodel: \(id)")

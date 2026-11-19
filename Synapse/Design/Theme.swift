@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import SynapseCore
 
 extension Color {
     /// The one reserved color: only for what is happening now (streaming text, the active job, the open mic).
@@ -27,6 +28,11 @@ func timecode(_ t: Double) -> String {
 }
 
 func gigabytes(_ bytes: Int) -> String { String(format: "%.1f GB", Double(bytes) / 1_073_741_824) }
+
+extension ResidentInfo {
+    /// "≈" until the model's real memory has been measured (the estimate comes from the catalog).
+    var memory: String { (measured ? "" : "≈") + gigabytes(bytes) }
+}
 
 /// A model shown the way API clients name it: display name, then the id they send.
 struct ModelTitle: View {
@@ -373,6 +379,8 @@ struct WorkAreaGlass: NSViewRepresentable {
 struct LiveProgress: View {
     let label: String
     var fraction: Double?
+    /// nil lets the bar fill its container (the progress strip over a running placeholder).
+    var barMaxWidth: CGFloat? = 280
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -380,9 +388,16 @@ struct LiveProgress: View {
             Group {
                 if let fraction { ProgressView(value: min(max(fraction, 0), 1)) } else { ProgressView() }
             }
-            .progressViewStyle(.linear).tint(Color.live).frame(maxWidth: 280)
+            .progressViewStyle(.linear).tint(Color.live).frame(maxWidth: barMaxWidth ?? .infinity)
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// A full-width glass strip along the bottom of a running placeholder (Images, Video).
+    func strip() -> some View {
+        LiveProgress(label: label, fraction: fraction, barMaxWidth: nil)
+            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular, in: .rect(cornerRadius: 12)).padding(12)
     }
 }
 

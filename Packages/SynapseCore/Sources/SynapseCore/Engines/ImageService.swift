@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+@preconcurrency import MLX
 @preconcurrency import Vision
 
 public struct ImageRequest: Sendable, Equatable {
@@ -50,10 +51,13 @@ public protocol ImageEngine: Actor {
     /// Returns one PNG-encoded image.
     func generate(_ request: ImageRequest, progress: @escaping @Sendable (ImageProgress) -> Void) async throws -> Data
     func unload() async
+    /// Memory held by a helper process; nil for in-process engines, which ImageService measures from MLX's peak.
+    func residentBytes() async -> Int?
 }
 
 extension ImageEngine {
     public func unload() async {}
+    public func residentBytes() async -> Int? { nil }
 }
 
 public enum ImageError: Error, LocalizedError, Equatable {
@@ -76,6 +80,13 @@ public actor ImageService {
     private let models: ModelManager
     private let engineFactory: EngineFactory
 
+    private func noteBaseline(_ id: String, _ bytes: Int) { mlxBaseline[id] = bytes; mlxPeak[id] = nil }
+
+    private func resident(_ id: String, _ engine: any ImageEngine) async -> Int? {
+        if let bytes = await engine.residentBytes() { return bytes }
+        return mlxPeak[id]
+    }
+
     public init(store: ModelStore, models: ModelManager, engineFactory: @escaping EngineFactory) {
         self.store = store; self.models = models; self.engineFactory = engineFactory
     }
@@ -89,12 +100,15 @@ public actor ImageService {
 
     private var depthModel: (id: String, model: VNCoreMLModel)?
     private var upscaler: (id: String, model: RealESRGAN)?
+    /// MLX active memory before an in-process engine loaded, and its peak above that during the last image.
+    // shortcut: a model loaded into this process after the image engine counts toward its peak; attribute by tensor when that skews the budget.
+    private var mlxBaseline: [String: Int] = [:], mlxPeak: [String: Int] = [:]
 
     /// The image ×4. nil picks the downloaded upscaler. Holds the GPU while it runs (MLX).
     public func upscale(_ image: Data, model requested: String?) async throws -> (ModelSpec, Data) {
         let spec = try await tool(requested, \.isUpscaler, missing: .noUpscaler)
         let model = try await upscalerModel(spec)
-        let png = try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes + (1 << 30)) {
+        let png = try await models.reserve(spec.id, estimatedBytes: spec.estimatedResidentBytes + (1 << 30)) {
             try await GPUGate.shared.run { try await Task.detached { try ImageTools.upscale(image, model: model) }.value }
         }
         return (spec, png)
@@ -169,7 +183,7 @@ public actor ImageService {
         let run: @Sendable () async throws -> Void = {
             try await GPUGate.shared.run { try await VideoTransform.run(input: input, output: output, scale: factor, frame: frame, progress: progress) }
         }
-        if let spec { try await models.reserve(spec.id, estimatedBytes: spec.estimatedBytes + (1 << 30), during: run) } else { try await run() }
+        if let spec { try await models.reserve(spec.id, estimatedBytes: spec.estimatedResidentBytes + (1 << 30), during: run) } else { try await run() }
         return spec
     }
 
@@ -199,7 +213,9 @@ public actor ImageService {
         if request.isEdit && !spec.canEditImages { throw ImageError.editUnsupported(spec.id) }
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
         let factory = engineFactory
-        let lease = try await models.lease(spec.id, as: (any ImageEngine).self, estimatedBytes: spec.estimatedBytes) {
+        let lease = try await models.lease(spec.id, as: (any ImageEngine).self, estimatedBytes: spec.estimatedResidentBytes,
+                                           measure: { [weak self] in await self?.resident(spec.id, $0) }) {
+            await self.noteBaseline(spec.id, MLX.Memory.activeMemory)
             let engine = try await factory(spec, folder)
             return (engine, unload: { await engine.unload() })
         }
@@ -210,7 +226,12 @@ public actor ImageService {
             var r = request
             if let s = request.seed { r.seed = s &+ UInt64(i) }
             let engine = lease.value, req = r
-            images.append(try await GPUGate.shared.run { try await engine.generate(req) { p in progress(i, p) } })
+            let (png, peak) = try await GPUGate.shared.run {
+                MLX.Memory.peakMemory = 0   // the setter resets the peak to current use
+                return (try await engine.generate(req) { p in progress(i, p) }, MLX.Memory.peakMemory)
+            }
+            images.append(png)
+            mlxPeak[spec.id] = max(0, peak - (mlxBaseline[spec.id] ?? 0))
         }
         return images
     }

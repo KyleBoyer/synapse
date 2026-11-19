@@ -50,7 +50,7 @@ struct MemoryView: View {
                             Spacer()
                             if r.leases > 0 { Label("in use", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(Color.live) }
                             else { (Text("idle, used ") + Text(r.lastUsed, format: .relative(presentation: .named))).foregroundStyle(.secondary) }
-                            Text(gigabytes(r.bytes)).font(.mono(.body, weight: .medium)).frame(width: 80, alignment: .trailing)
+                            Text(r.memory).font(.mono(.body, weight: .medium)).frame(width: 80, alignment: .trailing)
                             Button("Unload") { state.unloadModel(r.id) }.buttonStyle(.glass).disabled(r.leases > 0)
                         }
                         .font(.callout)
@@ -75,7 +75,7 @@ struct MemoryView: View {
                         Rectangle()
                             .fill(r.leases > 0 ? Color.live : Color.primary.opacity(0.55))
                             .frame(width: max(2, Double(r.bytes) * scale - 2))
-                            .help("\(Catalog.spec(r.id)?.displayName ?? r.id): \(gigabytes(r.bytes))")
+                            .help("\(Catalog.spec(r.id)?.displayName ?? r.id): \(r.memory)")
                     }
                 }
                 .clipShape(Capsule())

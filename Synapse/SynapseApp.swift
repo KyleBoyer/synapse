@@ -196,7 +196,10 @@ struct SidebarFooter: View {
             VStack(alignment: .leading, spacing: 3) {
                 ProgressView(value: Double(min(used, budget)), total: Double(max(budget, 1)))
                     .tint(used > budget ? .orange : state.residents.contains { $0.leases > 0 } ? Color.live : .secondary)
-                Text("\(gigabytes(used)) of \(gigabytes(budget)) loaded").font(.mono(.caption2)).foregroundStyle(.secondary)
+                let approx = state.residents.contains { !$0.measured } ? "≈" : ""
+                Text("\(approx)\(String(format: "%.1f", Double(used) / 1_073_741_824)) / \(gigabytes(budget)) loaded")
+                    .font(.mono(.caption2)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+                if used > budget { Text("over budget").font(.mono(.caption2)).foregroundStyle(.orange) }
             }
         }
         .padding(10)

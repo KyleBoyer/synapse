@@ -57,6 +57,34 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertTrue(ok)
     }
 
+    func testMeasuredSizeReplacesEstimateAndDrivesEviction() async throws {
+        let log = Log()
+        let m = ModelManager(config: .init(budgetBytes: 100, idleUnloadAfter: nil))
+        // Estimated at 90, but it measures 30: a 60-byte model must then fit without evicting it.
+        try await m.use("a", as: String.self, estimatedBytes: 90, measure: { _ in 30 }, load: loader("a", log)) { _ in }
+        let a = await m.residents().first { $0.id == "a" }
+        XCTAssertEqual(a?.bytes, 30); XCTAssertEqual(a?.measured, true)
+        try await m.use("b", as: String.self, estimatedBytes: 60, load: loader("b", log)) { _ in }
+        let unloads = await log.unloads
+        XCTAssertEqual(unloads, [])
+        let b = await m.residents().first { $0.id == "b" }
+        XCTAssertEqual(b?.measured, false)
+    }
+
+    func testProcessTreeFootprintCountsChildren() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 5 & wait"]
+        try p.run()
+        defer { p.terminate() }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(ProcessMemory.children(of: p.processIdentifier).count, 1)
+        let own = try XCTUnwrap(ProcessMemory.footprint(p.processIdentifier))
+        let tree = try XCTUnwrap(ProcessMemory.footprint(tree: p.processIdentifier))
+        XCTAssertGreaterThan(tree, own)
+        XCTAssertNil(ProcessMemory.footprint(tree: -1))
+    }
+
     func testConcurrentLeasesShareOneLoad() async throws {
         let log = Log()
         let m = ModelManager(config: .init(budgetBytes: 100, idleUnloadAfter: nil))

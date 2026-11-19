@@ -130,7 +130,7 @@ struct ChatView: View {
                 Reading(label: "Output", value: r.map { "\($0.usage?.completionTokens ?? $0.chunks) tok" } ?? "–"),
             ] + (lines.last(where: { $0.message.role == .user })?.message.videos.isEmpty == false
                  ? [Reading(label: "Video", value: "\(ChatOptions().videoFrames ?? 8) frames")] : []) + [
-                Reading(label: "Resident", value: resident.map { gigabytes($0.bytes) } ?? "not loaded"),
+                Reading(label: "Resident", value: resident.map { $0.memory } ?? "not loaded"),
             ],
             history: state.metrics.history(spec.id, .decodeRate), historyMetric: .decodeRate,
             running: generating,

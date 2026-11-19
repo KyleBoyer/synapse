@@ -6,6 +6,7 @@ public final class LlamaServer: @unchecked Sendable {
     let base: URL
     let modelPath: String
     private let process: Process
+    public var pid: Int32 { process.processIdentifier }
     private let logURL: URL
 
     private init(base: URL, modelPath: String, process: Process, logURL: URL) {

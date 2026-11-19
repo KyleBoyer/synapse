@@ -430,13 +430,13 @@ extension RealtimeServices {
             special: { spec in
                 let dir = try await folder(spec.id)
                 if spec.id.hasPrefix("hibiki") {
-                    let lease = try await models.lease("duplex:\(spec.id)", as: TranslatorBox.self, estimatedBytes: spec.estimatedBytes) {
+                    let lease = try await models.lease("duplex:\(spec.id)", as: TranslatorBox.self, estimatedBytes: spec.estimatedResidentBytes) {
                         let e = try await DuplexEngines.translator(spec, dir)
                         return (TranslatorBox(engine: e), unload: { await e.unload() })
                     }
                     return RealtimeSpecialModel(translator: lease.value.engine, keepAlive: lease)
                 }
-                let lease = try await models.lease("duplex:\(spec.id)", as: DuplexBox.self, estimatedBytes: spec.estimatedBytes) {
+                let lease = try await models.lease("duplex:\(spec.id)", as: DuplexBox.self, estimatedBytes: spec.estimatedResidentBytes) {
                     let e = try await DuplexEngines.duplex(spec, dir)
                     return (DuplexBox(engine: e), unload: { await e.unload() })
                 }

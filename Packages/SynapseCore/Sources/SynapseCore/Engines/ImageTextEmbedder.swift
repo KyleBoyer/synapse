@@ -10,7 +10,8 @@ enum ImageTextEmbedder {
 
     static func embed(_ spec: ModelSpec, folder: URL, inputs: [EmbeddingInput], models: ModelManager) async throws -> EmbeddingResult {
         let lease = try await models.lease(spec.id, as: PythonSidecar.self,
-                                           estimatedBytes: spec.recommendedRAMGB.map { $0 << 30 } ?? spec.estimatedBytes) {
+                                           estimatedBytes: spec.recommendedRAMGB.map { $0 << 30 } ?? spec.estimatedBytes,
+                                           measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             let s = try await PythonSidecar.launch(runtime: runtime, script: script, folder: folder, logName: "synapse-embed-\(spec.id).log")
             return (s, unload: { s.terminate() })
         }

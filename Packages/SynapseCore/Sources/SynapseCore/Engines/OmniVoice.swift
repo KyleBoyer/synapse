@@ -28,7 +28,7 @@ public enum OmniVoices {
     static func lease(_ spec: ModelSpec, store: ModelStore, models: ModelManager) async throws -> ModelLease<OmniVoice> {
         guard let folder = await store.folder(for: spec.id) else { throw ResolveError.notDownloaded(spec.id) }
         try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
-        return try await models.lease("voice:\(spec.id)", as: OmniVoice.self, estimatedBytes: spec.estimatedBytes) {
+        return try await models.lease("voice:\(spec.id)", as: OmniVoice.self, estimatedBytes: spec.estimatedResidentBytes) {
             let v = try await OmniVoice.launch(folder: folder, modelID: spec.id)
             return (v, unload: { v.terminate() })
         }

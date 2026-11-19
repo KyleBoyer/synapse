@@ -7,6 +7,8 @@ import Synchronization
 public struct ResidentInfo: Sendable, Equatable, Identifiable {
     public let id: String
     public let bytes: Int
+    /// False while `bytes` is still the pre-load estimate.
+    public let measured: Bool
     public let leases: Int
     public let lastUsed: Date
     public let loadedAt: Date
@@ -14,7 +16,8 @@ public struct ResidentInfo: Sendable, Equatable, Identifiable {
 
 /// Shared loader/unloader for every model kind (transcription, chat, image, speech).
 ///
-/// Accounting uses each model's estimated resident size. Before a load, idle models are evicted
+/// Accounting starts from each model's estimated resident size and switches to a measured size once the loader's
+/// `measure` reports one (after load and after each use). Before a load, idle models are evicted
 /// least-recently-used first until the new model fits the budget. Models with active leases are
 /// never evicted. When nothing more can be evicted the load proceeds anyway (overcommit), letting
 /// macOS page; `overcommitted` reports that so the UI can warn.
@@ -35,13 +38,16 @@ public actor ModelManager {
 
     private final class Entry: @unchecked Sendable {
         let value: any Sendable
-        let bytes: Int
+        var bytes: Int
+        var measured = false
         let unload: @Sendable () async -> Void
+        let measure: (@Sendable () async -> Int?)?
         var leases = 0
         var lastUsed = Date()
         let loadedAt = Date()
-        init(value: any Sendable, bytes: Int, unload: @escaping @Sendable () async -> Void) {
-            self.value = value; self.bytes = bytes; self.unload = unload
+        init(value: any Sendable, bytes: Int, unload: @escaping @Sendable () async -> Void,
+             measure: (@Sendable () async -> Int?)? = nil) {
+            self.value = value; self.bytes = bytes; self.unload = unload; self.measure = measure
         }
     }
 
@@ -71,7 +77,7 @@ public actor ModelManager {
     public var residentBytes: Int { entries.values.reduce(0) { $0 + $1.bytes } }
 
     public func residents() -> [ResidentInfo] {
-        entries.map { ResidentInfo(id: $0.key, bytes: $0.value.bytes, leases: $0.value.leases,
+        entries.map { ResidentInfo(id: $0.key, bytes: $0.value.bytes, measured: $0.value.measured, leases: $0.value.leases,
                                    lastUsed: $0.value.lastUsed, loadedAt: $0.value.loadedAt) }
             .sorted { $0.id < $1.id }
     }
@@ -79,7 +85,9 @@ public actor ModelManager {
     public func isLoaded(_ id: String) -> Bool { entries[id] != nil }
 
     /// Returns a lease on the model, loading it if needed. Call `release()` when done.
+    /// `measure` reports the model's real resident bytes; it runs after load and after each lease ends.
     public func lease<T: Sendable>(_ id: String, as type: T.Type = T.self, estimatedBytes: Int,
+                                   measure: (@Sendable (T) async -> Int?)? = nil,
                                    load: @escaping @Sendable () async throws -> (T, unload: @Sendable () async -> Void))
         async throws -> ModelLease<T>
     {
@@ -93,12 +101,15 @@ public actor ModelManager {
             await makeRoom(for: estimatedBytes, excluding: id)
             let task = Task<Entry, Error> {
                 let (value, unload) = try await load()
-                return Entry(value: value, bytes: estimatedBytes, unload: unload)
+                var bound: (@Sendable () async -> Int?)?
+                if let measure { bound = { await measure(value) } }
+                return Entry(value: value, bytes: estimatedBytes, unload: unload, measure: bound)
             }
             loading[id] = task
             defer { loading[id] = nil }
             entry = try await task.value
             entries[id] = entry
+            await remeasure(id)
         }
         guard let value = entry.value as? T else {
             throw EngineError.unsupported("Model \(id) is loaded as a different type")
@@ -124,9 +135,10 @@ public actor ModelManager {
 
     /// Scoped use: lease, run, release.
     public func use<T: Sendable, R: Sendable>(_ id: String, as type: T.Type = T.self, estimatedBytes: Int,
+                                              measure: (@Sendable (T) async -> Int?)? = nil,
                                               load: @escaping @Sendable () async throws -> (T, unload: @Sendable () async -> Void),
                                               _ body: (T) async throws -> R) async throws -> R {
-        let lease = try await lease(id, as: type, estimatedBytes: estimatedBytes, load: load)
+        let lease = try await lease(id, as: type, estimatedBytes: estimatedBytes, measure: measure, load: load)
         defer { lease.release() }
         return try await body(lease.value)
     }
@@ -147,10 +159,18 @@ public actor ModelManager {
         for id in entries.filter({ $0.value.leases == 0 }).map(\.key) { await unload(id) }
     }
 
-    private func release(_ id: String) {
+    private func release(_ id: String) async {
         guard let e = entries[id] else { return }
         e.leases = max(0, e.leases - 1)
         e.lastUsed = Date()
+        await remeasure(id)
+    }
+
+    private func remeasure(_ id: String) async {
+        guard let e = entries[id], let measure = e.measure, let bytes = await measure(), bytes > 0, entries[id] === e else { return }
+        e.bytes = bytes
+        e.measured = true
+        recomputeOvercommit()
     }
 
     private func makeRoom(for bytes: Int, excluding id: String) async {

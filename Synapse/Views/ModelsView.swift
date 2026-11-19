@@ -151,7 +151,7 @@ struct Datasheet: View {
                     Text(summary)
                     Text(sizeText(spec)).font(.mono(.callout))
                     if let gb = spec.recommendedRAMGB { Text("needs ~\(gb) GB RAM").font(.mono(.callout)) }
-                    if let r = state.resident(spec.id) { Text("loaded · \(gigabytes(r.bytes))").font(.mono(.callout)).foregroundStyle(Color.live) }
+                    if let r = state.resident(spec.id) { Text("loaded · \(r.memory)").font(.mono(.callout)).foregroundStyle(Color.live) }
                 }
                 .font(.callout).foregroundStyle(.secondary)
                 if spec.engine == .whisper, spec.variant == ModelStore.recommendedWhisperVariant {

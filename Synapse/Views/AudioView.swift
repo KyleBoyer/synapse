@@ -422,7 +422,7 @@ struct AudioView: View {
                     Reading(label: "Audio length", value: m.audioSeconds > 0 ? String(format: "%.1f s", m.audioSeconds)
                                 : last.map { String(format: "%.1f s", $0.seconds) } ?? "–", live: running),
                     Reading(label: "Sample rate", value: m.rate > 0 ? String(format: "%.0f kHz", Double(m.rate) / 1000) : "–"),
-                    Reading(label: "Resident", value: state.resident("speech:\(spec.id)").map { gigabytes($0.bytes) } ?? "not loaded"),
+                    Reading(label: "Resident", value: state.resident("speech:\(spec.id)").map { $0.memory } ?? "not loaded"),
                 ],
                 history: state.metrics.history(spec.id, .ttsSpeed), historyMetric: .ttsSpeed,
                 running: running,

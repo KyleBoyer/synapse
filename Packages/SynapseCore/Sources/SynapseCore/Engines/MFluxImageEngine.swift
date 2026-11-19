@@ -21,6 +21,8 @@ public actor MFluxImageEngine: ImageEngine {
         sidecar = try await startSidecar()
     }
 
+    public func residentBytes() async -> Int? { sidecar.flatMap { ProcessMemory.footprint(tree: $0.pid) } }
+
     private var is21: Bool { spec.id.contains("2.1") }
     private var kind: String {
         if spec.canEditImages { return spec.id.contains("2511") ? "qwen-edit-2511" : "qwen-edit" }
@@ -92,6 +94,7 @@ public actor MFluxImageEngine: ImageEngine {
 /// A running Python sidecar speaking JSON lines. Requests are issued one at a time by the engine.
 final class MFluxSidecar: @unchecked Sendable {
     private let process = Process()
+    var pid: Int32 { process.processIdentifier }
     private let stdin = Pipe()
     private let stderrTail = MFluxBuffer()
     private let lock = NSLock()

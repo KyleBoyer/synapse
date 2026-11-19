@@ -322,7 +322,7 @@ struct LiveView: View {
             ] + (mode == .call ? [Reading(label: "Camera", value: model.camera != nil ? "on · 512 px" : "off", live: model.camera != nil),
                                   Reading(label: "Voice", value: ownVoice ? "model's own" : voiceLabel)] : [])
               + (mode == .duplex ? [] : [Reading(label: "Recognizer", value: recognizer.isEmpty ? "–" : recognizer)]) + [
-                Reading(label: "Resident", value: state.resident(speakerID).map { gigabytes($0.bytes) } ?? "not loaded"),
+                Reading(label: "Resident", value: state.resident(speakerID).map { $0.memory } ?? "not loaded"),
             ],
             history: state.metrics.history(speakerID, .firstAudio), historyMetric: .firstAudio,
             running: model.running,

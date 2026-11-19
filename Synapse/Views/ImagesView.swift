@@ -122,7 +122,7 @@ struct ImagesView: View {
                 Reading(label: "Elapsed", value: started.map { String(format: "%.1f s", Date().timeIntervalSince($0)) } ?? "–", live: running),
                 last.map { Reading(label: "Last run", value: String(format: "%.1f s", $0.seconds)) }
                     ?? Reading(label: "Image time", value: state.metrics.typical(spec.id, .imageTime) ?? "–", muted: true),
-                Reading(label: "Resident", value: state.resident(spec.id).map { gigabytes($0.bytes) } ?? "not loaded"),
+                Reading(label: "Resident", value: state.resident(spec.id).map { $0.memory } ?? "not loaded"),
             ],
             history: state.metrics.history(spec.id, .secondsPerStep), historyMetric: .secondsPerStep,
             running: running,
@@ -170,20 +170,17 @@ struct ImagesView: View {
                             RoundedRectangle(cornerRadius: 14).fill(.quaternary).aspectRatio(aspect, contentMode: .fit)
                         }
                     }
-                    .overlay(alignment: .bottomLeading) {
-                        Group {
-                            if preparing {
-                                LiveProgress(label: "Loading model")
-                            } else if let p = progress, p.totalSteps > 0 {
-                                LiveProgress(label: "Step \(p.step) / \(p.totalSteps)", fraction: Double(p.step) / Double(p.totalSteps))
-                            } else {
-                                LiveProgress(label: "Starting")
-                            }
+                    .overlay(alignment: .bottom) {
+                        if preparing {
+                            LiveProgress(label: "Loading model").strip()
+                        } else if let p = progress, p.totalSteps > 0 {
+                            LiveProgress(label: "Step \(p.step) / \(p.totalSteps)", fraction: Double(p.step) / Double(p.totalSteps)).strip()
+                        } else {
+                            LiveProgress(label: "Starting").strip()
                         }
-                        .padding(12).frame(width: 300, alignment: .leading)
-                        .glassEffect(.regular, in: .rect(cornerRadius: 12)).padding(12)
                     }
                     .frame(maxHeight: 520).clipShape(.rect(cornerRadius: 14))
+                    .frame(maxWidth: .infinity)
                 }
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
                 if history.isEmpty && !running {
