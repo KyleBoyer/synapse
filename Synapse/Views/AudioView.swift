@@ -732,6 +732,8 @@ struct AudioView: View {
         }
         .padding(.horizontal, 6).padding(.vertical, 4)
         .glassBar()
+        // Clone Voice records here, so an open mic link stays open while Audio is on screen.
+        .onChange(of: paneShown, initial: true) { LiveAudio.hold("audio", paneShown) }
     }
 
     private func chooseRecording() {

@@ -1,3 +1,4 @@
+import os
 import AVFoundation
 import SwiftUI
 import SynapseCore
@@ -16,11 +17,14 @@ struct CloneVoiceSheet: View {
     @State private var name = ""
     @State private var cloning = false
     @State private var error: String?
-    @State private var recorder: AVAudioRecorder?
+    @State private var recording = false
+    @State private var stopRequested = false
     @State private var recorded: TimeInterval = 0
+    @AppStorage(AudioDevices.inputKey) private var inputUID = ""
+    @AppStorage(AudioDevices.outputKey) private var outputUID = ""
 
     private var ready: Bool {
-        sample != nil && !cloning && recorder == nil && !name.trimmingCharacters(in: .whitespaces).isEmpty
+        sample != nil && !cloning && !recording &&  !name.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
@@ -33,7 +37,7 @@ struct CloneVoiceSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 PanelRow("Sample") {
                     HStack(spacing: 8) {
-                        if recorder != nil {
+                        if recording {
                             Label(String(format: "Recording %.1f s", recorded), systemImage: "record.circle")
                                 .font(.mono()).foregroundStyle(Color.live)
                             Button("Stop") { stopRecording() }
@@ -48,6 +52,7 @@ struct CloneVoiceSheet: View {
                         }
                     }
                 }
+                AudioDevicePicker("Microphone", input: true).disabled(recording)
                 if let seconds, seconds < 3 {
                     Label("Short samples clone poorly; 5 to 10 seconds works best.", systemImage: "exclamationmark.triangle.fill")
                         .font(.callout).foregroundStyle(.orange)
@@ -60,7 +65,7 @@ struct CloneVoiceSheet: View {
             }
             .padding(14)
             .glassEffect(.regular, in: .rect(cornerRadius: 18))
-            .onDisappear { recorder?.stop() }
+            .onDisappear { stopRequested = true }
             if cloning {
                 LiveProgress(label: "Cloning the voice")
             }
@@ -104,35 +109,42 @@ struct CloneVoiceSheet: View {
         if p.runModal() == .OK, let url = p.url { pick(url) }
     }
 
-    /// Records up to 10 seconds (all PocketTTS reads) to a WAV in the temp folder; Stop ends it sooner.
+    /// Records up to 10 seconds (all PocketTTS reads) from the chosen mic, through the app's shared audio link, to a
+    /// WAV in the temp folder; Stop ends it sooner.
     private func record() async {
         error = nil
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
             error = "Synapse can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone."
             return
         }
-        let url = FileManager.default.temporaryDirectory.appending(path: "Synapse-voice-\(UUID().uuidString).wav")
-        let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 24000, AVNumberOfChannelsKey: 1,
-                                       AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false]
+        let samples = OSAllocatedUnfairLock(initialState: [Int16]())
+        let link: LiveAudio
         do {
-            let r = try AVAudioRecorder(url: url, settings: settings)
-            guard r.record(forDuration: 10) else { throw CocoaError(.fileWriteUnknown) }
-            recorder = r; recorded = 0
-            if name.isEmpty { name = "My voice" }
-            while r.isRecording {
-                recorded = r.currentTime
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            guard recorder === r else { return }
-            recorder = nil
+            link = try await LiveAudio.acquire(.init(input: inputUID, output: outputUID, voiceProcessing: false),
+                                         onChunk: { pcm in samples.withLock { $0 += pcm } }, onLevel: { _ in })
+        } catch {
+            self.error = "Recording failed: \(error.localizedDescription)"
+            return
+        }
+        recording = true; stopRequested = false; recorded = 0
+        if name.isEmpty { name = "My voice" }
+        while !stopRequested && recorded < 10 {
+            try? await Task.sleep(for: .milliseconds(100))
+            recorded = Double(samples.withLock { $0.count }) / 24000
+        }
+        link.release()
+        recording = false
+        let pcm = samples.withLock { $0 }
+        let url = FileManager.default.temporaryDirectory.appending(path: "Synapse-voice-\(UUID().uuidString).wav")
+        do {
+            try SpeakModel.writeWAV(.init(text: "", model: "", voice: "", samples: pcm.map { Float($0) / 32768 }, rate: 24000), to: url)
             pick(url, keepName: true)
         } catch {
-            recorder = nil
             self.error = "Recording failed: \(error.localizedDescription)"
         }
     }
 
-    private func stopRecording() { recorder?.stop() }
+    private func stopRecording() { stopRequested = true }
 
     private func pick(_ url: URL, keepName: Bool = false) {
         sample = url; seconds = nil; error = nil

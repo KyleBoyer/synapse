@@ -8,7 +8,28 @@ import CoreAudio
 /// own engine: an engine drives input and output through one unit, so it cannot read a mic that has no output side
 /// (a Bluetooth headset's) unless that mic is the system default.
 final class LiveAudio: @unchecked Sendable {
-    nonisolated(unsafe) private static weak var claim: LiveAudio?
+    /// The devices a link is open on; a call that asks for the same ones reuses it.
+    struct Config: Equatable {
+        var input: String          // Core Audio UIDs; "" is the system default
+        var output: String
+        var voiceProcessing: Bool  // asked for; `echoCancel` says whether it came up
+    }
+
+    // One link to the mic and speaker for the whole app (Live's calls, Clone Voice's recording). Opening and closing
+    // a Bluetooth headset blocks for seconds, so Stop only detaches the caller: the link stays open while a pane
+    // that uses it is on screen and closes `idleRelease` after the last one is left, off the main thread.
+    @MainActor private static var current: LiveAudio?
+    @MainActor private static var holders = Set<String>()
+    @MainActor private static var releaseTask: Task<Void, Never>?
+    /// Device pairs whose voice-processing unit refused to start; calls there reuse the plain link.
+    @MainActor private static var refusesEchoCancel = Set<String>()
+    static let idleRelease: Duration = .seconds(10)
+
+    private(set) var config: Config
+    private(set) var echoCancel = false
+    @MainActor private var attached = false
+    private var onChunk: (@Sendable ([Int16]) -> Void)?
+    private var onLevel: (@Sendable (Float) -> Void)?
     private var engine: AVAudioEngine?
     private var capture: AVCaptureSession?
     private var captureReader: CaptureReader?
@@ -19,31 +40,85 @@ final class LiveAudio: @unchecked Sendable {
     private var playing = false
     private let prebuffer = 3600       // 150 ms
 
-    /// Starts on the devices with these Core Audio UIDs ("" is the system default). Returns whether echo
-    /// cancellation is on: the voice-processing unit refuses some devices (error -10875, for example a Bluetooth
-    /// headset's 8 kHz mic), and then the session runs without it.
-    func start(inputUID: String, outputUID: String, voiceProcessing: Bool,
-               onChunk: @escaping @Sendable ([Int16]) -> Void, onLevel: @escaping @Sendable (Float) -> Void) throws -> Bool {
-        // One claim on the mic and speaker for the whole app: a session left running (a pane kept alive, a call that
-        // ended on its own) is stopped before this one opens the devices.
-        if let other = Self.claim, other !== self { other.stop() }
-        Self.claim = self
-        let deliver: @Sendable ([Int16]) -> Void = { samples in
-            guard !samples.isEmpty else { return }
-            let rms = (samples.reduce(0) { $0 + Float($1) * Float($1) } / Float(samples.count)).squareRoot() / 32768
-            onLevel(min(1, rms * 4))
-            onChunk(samples)
+    private init(_ config: Config) { self.config = config }
+
+    @MainActor static var isOpen: Bool { current != nil }
+
+    /// The open link on these devices (reused, or opened now, closing one on other devices), feeding this caller.
+    /// Opening runs off the main thread: a Bluetooth headset takes seconds to start.
+    @MainActor static func acquire(_ config: Config, onChunk: @escaping @Sendable ([Int16]) -> Void,
+                                   onLevel: @escaping @Sendable (Float) -> Void) async throws -> LiveAudio {
+        releaseTask?.cancel(); releaseTask = nil
+        var config = config
+        let pair = config.input + "|" + config.output
+        if refusesEchoCancel.contains(pair) { config.voiceProcessing = false }
+        if let c = current, c.config != config { current = nil; c.close() }
+        var link: LiveAudio
+        if let c = current {
+            link = c
+        } else {
+            let l = LiveAudio(config)
+            try await Task.detached(priority: .userInitiated) { try l.open() }.value
+            if config.voiceProcessing && !l.echoCancel { refusesEchoCancel.insert(pair); l.config.voiceProcessing = false }
+            link = l
+            // Another caller opened a link while this one was opening: keep one.
+            if let other = current {
+                if other.config == l.config { l.close(); link = other } else { current = nil; other.close() }
+            }
         }
-        let output = AudioDevices.device(uid: outputUID, input: false)
-        if voiceProcessing {
+        current = link
+        link.flush()
+        link.lock.withLock { link.onChunk = onChunk; link.onLevel = onLevel }
+        link.attached = true
+        return link
+    }
+
+    /// The call is over: stop feeding it and drop its queued audio. The devices stay open (see `current`).
+    @MainActor func release() {
+        lock.withLock { onChunk = nil; onLevel = nil }
+        flush()
+        attached = false
+        Self.scheduleRelease()
+    }
+
+    /// While a pane that uses the mic is on screen (`pane` names it), an idle link stays open.
+    @MainActor static func hold(_ pane: String, _ on: Bool) {
+        if on { holders.insert(pane); releaseTask?.cancel(); releaseTask = nil } else { holders.remove(pane); scheduleRelease() }
+    }
+
+    @MainActor private static func scheduleRelease() {
+        guard holders.isEmpty, let c = current, !c.attached else { return }
+        releaseTask?.cancel()
+        releaseTask = Task { @MainActor in
+            try? await Task.sleep(for: idleRelease)
+            guard !Task.isCancelled, current === c, !c.attached, holders.isEmpty else { return }
+            current = nil
+            c.close()
+        }
+    }
+
+    /// Opens the devices. Echo cancellation needs mic and playback on one voice-processing engine; it refuses some
+    /// devices (error -10875, for example a Bluetooth headset's 8 kHz mic), and then the link runs without it.
+    private func open() throws {
+        let deliver: @Sendable ([Int16]) -> Void = { [weak self] samples in
+            guard let self, !samples.isEmpty else { return }
+            let (chunk, level) = self.lock.withLock { (self.onChunk, self.onLevel) }
+            guard let chunk else { return }
+            let rms = (samples.reduce(0) { $0 + Float($1) * Float($1) } / Float(samples.count)).squareRoot() / 32768
+            level?(min(1, rms * 4))
+            chunk(samples)
+        }
+        let output = AudioDevices.device(uid: config.output, input: false)
+        if config.voiceProcessing {
             let e = AVAudioEngine()
             do {
                 try e.inputNode.setVoiceProcessingEnabled(true)
-                if let id = AudioDevices.device(uid: inputUID, input: true) { try e.inputNode.auAudioUnit.setDeviceID(id) }
+                if let id = AudioDevices.device(uid: config.input, input: true) { try e.inputNode.auAudioUnit.setDeviceID(id) }
                 try tap(e.inputNode, deliver)
                 try startPlayback(on: e, output)
                 engine = e
-                return true
+                echoCancel = true
+                return
             } catch {
                 e.inputNode.removeTap(onBus: 0)
                 e.stop()
@@ -51,11 +126,10 @@ final class LiveAudio: @unchecked Sendable {
                 try? e.inputNode.setVoiceProcessingEnabled(false)
             }
         }
-        try startCapture(inputUID, deliver)
+        try startCapture(config.input, deliver)
         let e = AVAudioEngine()
-        do { try startPlayback(on: e, output) } catch { stop(); throw error }
+        do { try startPlayback(on: e, output) } catch { close(); throw error }
         engine = e
-        return false
     }
 
     private func startPlayback(on e: AVAudioEngine, _ device: AudioDeviceID?) throws {
@@ -133,17 +207,21 @@ final class LiveAudio: @unchecked Sendable {
         player.scheduleBuffer(b, completionHandler: nil)
     }
 
-    func stop() {
-        capture?.stopRunning()
-        capture = nil
-        captureReader = nil
-        player.stop()
-        if let e = engine {
-            e.inputNode.removeTap(onBus: 0)
-            e.stop()
-            try? e.inputNode.setVoiceProcessingEnabled(false)
+    /// Closes the devices on a background queue: stopping a Bluetooth headset's capture and output blocks for seconds.
+    private func close() {
+        let capture = capture, engine = engine, player = player, echoCancel = echoCancel
+        self.capture = nil; self.engine = nil; captureReader = nil
+        nonisolated(unsafe) let parts = (capture, engine, player)
+        DispatchQueue.global(qos: .utility).async {
+            let (capture, engine, player) = parts
+            capture?.stopRunning()
+            player.stop()
+            if let engine {
+                if echoCancel { engine.inputNode.removeTap(onBus: 0) }
+                engine.stop()
+                if echoCancel { try? engine.inputNode.setVoiceProcessingEnabled(false) }
+            }
         }
-        engine = nil
     }
 }
 

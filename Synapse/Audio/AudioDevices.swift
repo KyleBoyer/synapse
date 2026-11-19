@@ -1,5 +1,5 @@
 import CoreAudio
-import Foundation
+import SwiftUI
 
 /// The Mac's audio devices, from Core Audio. Choices are stored by UID, which survives reconnects and reboots
 /// (device IDs do not).
@@ -10,6 +10,8 @@ struct AudioDevice: Identifiable, Hashable {
 }
 
 enum AudioDevices {
+    /// The app-wide choices (UIDs, "" for the system default), set in Live and Clone Voice.
+    static let inputKey = "liveInputDevice", outputKey = "liveOutputDevice"
     static func list(input: Bool) -> [AudioDevice] {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -68,5 +70,35 @@ enum AudioDevices {
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr else { return nil }
         return value?.takeRetainedValue() as String?
+    }
+}
+
+/// The microphone or speaker menu: the system default first, then each connected device. A saved device that is
+/// unplugged stays listed so the choice is not silently lost.
+struct AudioDevicePicker: View {
+    let title: String
+    let input: Bool
+    @AppStorage private var uid: String
+    @State private var devices: [AudioDevice] = []
+    @State private var watch: AnyObject?
+
+    init(_ title: String, input: Bool) {
+        self.title = title
+        self.input = input
+        _uid = AppStorage(wrappedValue: "", input ? AudioDevices.inputKey : AudioDevices.outputKey)
+    }
+
+    var body: some View {
+        Picker(title, selection: $uid) {
+            Text("System Default").tag("")
+            Divider()
+            ForEach(devices) { Text($0.name).tag($0.uid) }
+            if !uid.isEmpty && !devices.contains(where: { $0.uid == uid }) { Text("Disconnected device").tag(uid) }
+        }
+        .onAppear {
+            devices = AudioDevices.list(input: input)
+            let input = input
+            watch = AudioDevices.observe { Task { @MainActor in devices = AudioDevices.list(input: input) } }
+        }
     }
 }

@@ -64,13 +64,13 @@ final class LiveModel {
             s = RealtimeSession(model: duplexModel, services: services)
             update["output_modalities"] = ["audio"]
         }
-        let a = LiveAudio()
         let wantsAEC = mode == .call || mode == .duplex
+        let a: LiveAudio
         do {
-            let aec = try a.start(inputUID: inputUID, outputUID: outputUID, voiceProcessing: wantsAEC,   // AEC; see LiveAudio
-                                  onChunk: { pcm in Task { await s.appendAudio(pcm24k: pcm) } },
-                                  onLevel: { l in Task { @MainActor [weak self] in self?.level = l } })
-            echoCancel = wantsAEC ? aec : nil
+            a = try await LiveAudio.acquire(.init(input: inputUID, output: outputUID, voiceProcessing: wantsAEC),   // AEC; see LiveAudio
+                                      onChunk: { pcm in Task { await s.appendAudio(pcm24k: pcm) } },
+                                      onLevel: { l in Task { @MainActor [weak self] in self?.level = l } })
+            echoCancel = wantsAEC ? a.echoCancel : nil
         } catch {
             self.error = "Could not start the microphone: \(error.localizedDescription) Try another microphone or speaker in the options."
             await s.close(); return
@@ -79,7 +79,7 @@ final class LiveModel {
             let cam = LiveCamera()
             do { try await cam.start(); camera = cam } catch {
                 self.error = error.localizedDescription
-                a.stop(); await s.close(); return
+                a.release(); await s.close(); return
             }
         }
         session = s; audio = a; running = true; preparing = true; muted = false; started = Date()
@@ -91,7 +91,7 @@ final class LiveModel {
     }
 
     func stop() {
-        audio?.stop(); audio = nil
+        audio?.release(); audio = nil
         camera?.stop(); camera = nil
         let s = session; session = nil
         Task { await s?.close() }   // ends the events stream, which calls finish()
@@ -102,7 +102,7 @@ final class LiveModel {
     private func finish(_ ended: RealtimeSession) {
         guard session === ended else { return }   // Stop already cleaned up, and a newer session may be running
         task = nil; running = false; preparing = false; level = 0
-        audio?.stop(); audio = nil; session = nil
+        audio?.release(); audio = nil; session = nil
         camera?.stop(); camera = nil
     }
 
@@ -168,11 +168,8 @@ struct LiveView: View {
     @State private var recognizer = ""
     @State private var voiceModel = ""
     /// Device UIDs; "" is the system default.
-    @AppStorage("liveInputDevice") private var inputUID = ""
-    @AppStorage("liveOutputDevice") private var outputUID = ""
-    @State private var inputs: [AudioDevice] = []
-    @State private var outputs: [AudioDevice] = []
-    @State private var deviceWatch: AnyObject?
+    @AppStorage(AudioDevices.inputKey) private var inputUID = ""
+    @AppStorage(AudioDevices.outputKey) private var outputUID = ""
     private let languages = ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "English"]
 
     /// Needs more memory than this Mac has; it would page to disk and never keep up.
@@ -245,10 +242,6 @@ struct LiveView: View {
         } }
         .sheet(item: $pastCall) { CallTranscriptSheet(item: $0) }
         .task { await state.refreshModels(); customVoices = await state.speech.voices.voices() }
-        .onAppear {
-            refreshDevices()
-            deviceWatch = AudioDevices.observe { Task { @MainActor in refreshDevices() } }
-        }
         .onAppear { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: state.downloadedChatSpecs.count) { if chatModel.isEmpty { chatModel = state.downloadedChatSpecs.first?.id ?? "" } }
         .onChange(of: recognizers.map(\.0), initial: true) { _, ids in if !ids.contains(recognizer) { recognizer = ids.first ?? "" } }
@@ -266,6 +259,7 @@ struct LiveView: View {
         }
         .onChange(of: model.latency) { if let l = model.latency, !chatModel.isEmpty { state.metrics.record(chatModel, .firstAudio, l) } }
         .onDisappear { if model.running { model.stop() } }
+        .onChange(of: paneShown, initial: true) { LiveAudio.hold("live", paneShown) }
         #if DEBUG
         // `-liveMode "Voice call" -liveCamera YES` preselects a mode and the camera, so the options can be captured.
         .onAppear {
@@ -374,27 +368,10 @@ struct LiveView: View {
             apiCopy: "ws://127.0.0.1:\(state.settings.port)/v1/realtime?model=\(speakerID)" + (mode == .captions ? "&intent=transcription" : ""))
     }
 
-    private func refreshDevices() {
-        inputs = AudioDevices.list(input: true)
-        outputs = AudioDevices.list(input: false)
-    }
-
-    /// A device menu: the system default first, then each device; a saved device that is unplugged stays listed.
-    private func devicePicker(_ title: String, _ uid: Binding<String>, _ devices: [AudioDevice]) -> some View {
-        Picker(title, selection: uid) {
-            Text("System Default").tag("")
-            Divider()
-            ForEach(devices) { Text($0.name).tag($0.uid) }
-            if !uid.wrappedValue.isEmpty && !devices.contains(where: { $0.uid == uid.wrappedValue }) {
-                Text("Disconnected device").tag(uid.wrappedValue)
-            }
-        }
-    }
-
     private var options: some View {
         VStack(alignment: .leading, spacing: 10) {
-            devicePicker("Microphone", $inputUID, inputs)
-            if plays { devicePicker("Speaker", $outputUID, outputs) }
+            AudioDevicePicker("Microphone", input: true)
+            if plays { AudioDevicePicker("Speaker", input: false) }
             if needsChat {
                 Picker("Chat model", selection: $chatModel) {
                     ForEach(state.downloadedChatSpecs) { Text($0.displayName).tag($0.id) }
@@ -466,7 +443,7 @@ struct LiveView: View {
         Task { await model.start(mode: mode, services: state.realtime, chatModel: chatModel,
                                  duplexModel: duplexModel, recognizer: recognizer, language: language, spoken: spoken,
                                  voiceModel: voiceModel, voice: voice, camera: cameraOn,
-                                 inputUID: inputUID, outputUID: plays ? outputUID : "") }
+                                 inputUID: inputUID, outputUID: outputUID) }
     }
 
     private var micBar: some View {

@@ -39,51 +39,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 fputs("playTest: done\n", stderr)
             }
         }
-        // `-liveRepeatTest YES` repeats what the panes do in one process: play a clip and stop it, then start a Live
-        // call (echo cancellation asked for) and stop it, printing each step.
+        // `-liveRepeatTest YES` drives the shared audio link as the panes do: a call (echo cancellation asked for),
+        // Stop, another call, a Clone Voice recording, then leaving the panes; prints each step's time.
         if UserDefaults.standard.bool(forKey: "liveRepeatTest") {
             Task { @MainActor in
-                let p = SpeakPlayer()
-                p.deviceUID = UserDefaults.standard.string(forKey: "repOut")
-                for round in 1...4 {
-                    p.begin(rate: 44100)
-                    p.enqueue([Float](repeating: 0, count: 44100), final: true)
-                    try? await Task.sleep(for: .seconds(0.5))
-                    p.stop()
-                    let a = LiveAudio()
-                    let n = OSAllocatedUnfairLock(initialState: 0)
+                let input = UserDefaults.standard.string(forKey: "repIn") ?? "", output = UserDefaults.standard.string(forKey: "repOut") ?? ""
+                func timed<T>(_ label: String, _ f: () throws -> T) rethrows -> T {
+                    let t = Date(); defer { fputs(String(format: "liveRepeatTest: %@ %.2f s\n", label, Date().timeIntervalSince(t)), stderr) }
+                    return try f()
+                }
+                LiveAudio.hold("live", true)
+                for (round, vp) in [(1, true), (2, true), (3, false)] {
+                    let peak = OSAllocatedUnfairLock(initialState: 0)
                     do {
-                        let aec = try a.start(inputUID: UserDefaults.standard.string(forKey: "repIn") ?? "", outputUID: UserDefaults.standard.string(forKey: "repOut") ?? "", voiceProcessing: true,
-                                              onChunk: { s in n.withLock { $0 = max($0, s.map { abs(Int($0)) }.max() ?? 0) } }, onLevel: { _ in })
+                        let t = Date()
+                        let a = try await LiveAudio.acquire(.init(input: input, output: output, voiceProcessing: vp),
+                                                            onChunk: { s in peak.withLock { $0 = max($0, s.map { abs(Int($0)) }.max() ?? 0) } }, onLevel: { _ in })
+                        fputs(String(format: "liveRepeatTest: round \(round) acquire (echo cancel asked: \(vp)) %.2f s\n", Date().timeIntervalSince(t)), stderr)
                         a.play(pcm16: Data(count: 48000))
                         try? await Task.sleep(for: .seconds(1))
-                        fputs("liveRepeatTest: round \(round) started, aec \(aec), peak \(n.withLock { $0 })\n", stderr)
+                        fputs("liveRepeatTest: round \(round) echo cancel \(a.echoCancel), peak \(peak.withLock { $0 })\n", stderr)
+                        timed("round \(round) release") { a.release() }
                     } catch { fputs("liveRepeatTest: round \(round) failed \(error)\n", stderr) }
-                    a.stop()
                 }
+                LiveAudio.hold("live", false)
+                fputs("liveRepeatTest: left the panes, open \(LiveAudio.isOpen)\n", stderr)
+                try? await Task.sleep(for: LiveAudio.idleRelease + .seconds(1))
+                fputs("liveRepeatTest: after idle, open \(LiveAudio.isOpen)\n", stderr)
                 fputs("liveRepeatTest: done\n", stderr)
-            }
-        }
-        // `-liveAudioTest YES` starts and stops Live's audio on the default devices and on each microphone, printing
-        // whether echo cancellation came up.
-        if UserDefaults.standard.bool(forKey: "liveAudioTest") {
-            Task {
-                let mics = AudioDevices.list(input: true), speakers = AudioDevices.list(input: false)
-                var runs: [(String, String, String)] = [("default", "", "")]
-                runs += mics.map { ("mic \($0.name)", $0.uid, "") } + speakers.map { ("speaker \($0.name)", "", $0.uid) }
-                runs += mics.flatMap { m in speakers.map { ("\(m.name) -> \($0.name)", m.uid, $0.uid) } }
-                for (name, mic, speaker) in runs {
-                    let a = LiveAudio()
-                    let chunks = OSAllocatedUnfairLock(initialState: 0)
-                    do {
-                        let aec = try a.start(inputUID: mic, outputUID: speaker, voiceProcessing: true,
-                                              onChunk: { s in chunks.withLock { $0 += s.count } }, onLevel: { _ in })
-                        a.play(pcm16: Data(count: 24000 * 2 / 4))
-                        try? await Task.sleep(for: .seconds(1))
-                        fputs("liveAudioTest: \(name): started, echo cancel \(aec), \(chunks.withLock { $0 }) samples in 1 s\n", stderr)
-                    } catch { fputs("liveAudioTest: \(name): failed \(error)\n", stderr) }
-                    a.stop()
-                }
             }
         }
         guard UserDefaults.standard.bool(forKey: "composerKeyTest") else { return }
