@@ -8,6 +8,7 @@ import CoreAudio
 /// own engine: an engine drives input and output through one unit, so it cannot read a mic that has no output side
 /// (a Bluetooth headset's) unless that mic is the system default.
 final class LiveAudio: @unchecked Sendable {
+    nonisolated(unsafe) private static weak var claim: LiveAudio?
     private var engine: AVAudioEngine?
     private var capture: AVCaptureSession?
     private var captureReader: CaptureReader?
@@ -23,6 +24,10 @@ final class LiveAudio: @unchecked Sendable {
     /// headset's 8 kHz mic), and then the session runs without it.
     func start(inputUID: String, outputUID: String, voiceProcessing: Bool,
                onChunk: @escaping @Sendable ([Int16]) -> Void, onLevel: @escaping @Sendable (Float) -> Void) throws -> Bool {
+        // One claim on the mic and speaker for the whole app: a session left running (a pane kept alive, a call that
+        // ended on its own) is stopped before this one opens the devices.
+        if let other = Self.claim, other !== self { other.stop() }
+        Self.claim = self
         let deliver: @Sendable ([Int16]) -> Void = { samples in
             guard !samples.isEmpty else { return }
             let rms = (samples.reduce(0) { $0 + Float($1) * Float($1) } / Float(samples.count)).squareRoot() / 32768
@@ -146,9 +151,18 @@ final class LiveAudio: @unchecked Sendable {
 private final class CaptureReader: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     let queue = DispatchQueue(label: "Synapse.LiveAudio.capture")
     private let deliver: @Sendable ([Int16]) -> Void
+    #if DEBUG
+    private var loggedFormat = false
+    #endif
     init(_ deliver: @escaping @Sendable ([Int16]) -> Void) { self.deliver = deliver }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        #if DEBUG
+        if !loggedFormat, let f = sampleBuffer.formatDescription?.audioStreamBasicDescription {
+            loggedFormat = true
+            fputs("LiveAudio capture format: \(f)\n", stderr)
+        }
+        #endif
         try? sampleBuffer.withAudioBufferList { list, _ in
             guard let buffer = list.first, let data = buffer.mData else { return }
             deliver(Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: Int16.self),

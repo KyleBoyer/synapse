@@ -39,6 +39,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 fputs("playTest: done\n", stderr)
             }
         }
+        // `-liveRepeatTest YES` repeats what the panes do in one process: play a clip and stop it, then start a Live
+        // call (echo cancellation asked for) and stop it, printing each step.
+        if UserDefaults.standard.bool(forKey: "liveRepeatTest") {
+            Task { @MainActor in
+                let p = SpeakPlayer()
+                p.deviceUID = UserDefaults.standard.string(forKey: "repOut")
+                for round in 1...4 {
+                    p.begin(rate: 44100)
+                    p.enqueue([Float](repeating: 0, count: 44100), final: true)
+                    try? await Task.sleep(for: .seconds(0.5))
+                    p.stop()
+                    let a = LiveAudio()
+                    let n = OSAllocatedUnfairLock(initialState: 0)
+                    do {
+                        let aec = try a.start(inputUID: UserDefaults.standard.string(forKey: "repIn") ?? "", outputUID: UserDefaults.standard.string(forKey: "repOut") ?? "", voiceProcessing: true,
+                                              onChunk: { s in n.withLock { $0 = max($0, s.map { abs(Int($0)) }.max() ?? 0) } }, onLevel: { _ in })
+                        a.play(pcm16: Data(count: 48000))
+                        try? await Task.sleep(for: .seconds(1))
+                        fputs("liveRepeatTest: round \(round) started, aec \(aec), peak \(n.withLock { $0 })\n", stderr)
+                    } catch { fputs("liveRepeatTest: round \(round) failed \(error)\n", stderr) }
+                    a.stop()
+                }
+                fputs("liveRepeatTest: done\n", stderr)
+            }
+        }
         // `-liveAudioTest YES` starts and stops Live's audio on the default devices and on each microphone, printing
         // whether echo cancellation came up.
         if UserDefaults.standard.bool(forKey: "liveAudioTest") {

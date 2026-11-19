@@ -85,7 +85,7 @@ final class LiveModel {
         session = s; audio = a; running = true; preparing = true; muted = false; started = Date()
         task = Task { [weak self] in
             for await data in s.events { self?.handle(data, session: s, mode: mode) }
-            self?.finish()
+            self?.finish(s)
         }
         if let d = try? JSONSerialization.data(withJSONObject: ["type": "session.update", "session": update]) { await s.handle(d) }
     }
@@ -98,7 +98,13 @@ final class LiveModel {
         running = false; preparing = false; level = 0
     }
 
-    private func finish() { task = nil; running = false; preparing = false; level = 0; camera?.stop(); camera = nil }
+    /// The session ended (Stop, or on its own after an error): release the mic, speaker and camera.
+    private func finish(_ ended: RealtimeSession) {
+        guard session === ended else { return }   // Stop already cleaned up, and a newer session may be running
+        task = nil; running = false; preparing = false; level = 0
+        audio?.stop(); audio = nil; session = nil
+        camera?.stop(); camera = nil
+    }
 
     /// Puts what the camera sees into the conversation as the user starts talking, so it precedes their words.
     private func sendFrame(_ s: RealtimeSession) {
@@ -475,7 +481,8 @@ struct LiveView: View {
             if model.running {
                 ProgressView(value: Double(model.level)).tint(.live).frame(width: 140).accessibilityLabel("Microphone level")
                 Text(model.preparing ? "Loading models…" : "Listening").foregroundStyle(.secondary)
-            } else if let e = model.error {
+            }
+            if let e = model.error {
                 Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).lineLimit(2)
             }
             Spacer()
