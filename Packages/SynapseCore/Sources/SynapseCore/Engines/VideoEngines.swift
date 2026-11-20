@@ -25,8 +25,9 @@ public enum VideoEngines {
     /// `SYNAPSE_MOCK_VIDEO=1` swaps in the mock engine (tests, and Macs without the RAM for LTX).
     public static var mock: Bool { ProcessInfo.processInfo.environment["SYNAPSE_MOCK_VIDEO"] == "1" }
 
-    public static let real: @Sendable (ModelSpec, URL) async throws -> any VideoEngine = { _, folder in
-        mock ? MockVideoEngine() : MLXVideoEngine(folder: folder)
+    public static let real: @Sendable (ModelSpec, URL) async throws -> any VideoEngine = { spec, folder in
+        if mock { return MockVideoEngine() }
+        return Wan.handles(spec) ? WanVideoEngine(folder: folder) as any VideoEngine : MLXVideoEngine(folder: folder)
     }
 
     /// LTX-2.3 publishes its transformer twice (18 shards, which its index names, and 8) plus files only the dev
@@ -53,6 +54,7 @@ public enum VideoEngines {
     static func download(_ spec: ModelSpec, to dir: URL, root: URL, token: String?,
                          physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory,
                          progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        if Wan.handles(spec) { return try await Wan.download(spec, to: dir, token: token, progress: progress) }
         // shortcut: progress splits evenly by repo, not by bytes; the two halves are about the same size.
         _ = try await HFDownloader.download(repo: spec.variant, to: dir, exclude: ltxUnused, token: token) { progress($0 * 0.5) }
         guard lowMemory(physicalMemory) else {
@@ -148,6 +150,71 @@ final class LTXProgress: @unchecked Sendable {
             if pct < last { stage += 1 }
             last = pct
             return min(1, (Double(stage) + Double(pct) / 100) / Self.stages)
+        }
+    }
+}
+
+/// Wan 2.2 TI2V-5B (Apache-2.0) through mlx-video's Wan pipeline: text or a start image to video, 24 fps. The
+/// pipeline loads its tokenizer by Hub name at run time, so the tokenizer files are fetched beside the model and a
+/// small wrapper points the lookup there (the run stays offline).
+enum Wan {
+    static let tokenizerRepo = "google/umt5-xxl", tokenizerFolder = "umt5-tokenizer"
+    static func handles(_ spec: ModelSpec) -> Bool { spec.variant.contains("Wan2.2") }
+
+    static func download(_ spec: ModelSpec, to dir: URL, token: String?, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        let folder = try await HFDownloader.download(repo: spec.variant, to: dir, token: token, progress: progress)
+        _ = try await HFDownloader.download(repo: tokenizerRepo, to: folder.appending(path: tokenizerFolder, directoryHint: .isDirectory),
+                                            only: ["spiece.model", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"],
+                                            token: token) { _ in }
+        return folder
+    }
+
+    static let script = """
+    import os, sys, runpy, transformers
+    _load = transformers.AutoTokenizer.from_pretrained
+    transformers.AutoTokenizer.from_pretrained = lambda name, *a, **k: _load(os.environ["SYNAPSE_WAN_TOKENIZER"] if name == "\(tokenizerRepo)" else name, *a, **k)
+    sys.argv = ["wan"] + sys.argv[1:]
+    runpy.run_module("mlx_video.models.wan_2.generate", run_name="__main__")
+    """
+}
+
+actor WanVideoEngine: VideoEngine {
+    let folder: URL
+    init(folder: URL) { self.folder = folder }
+
+    func generate(_ r: VideoRequest, to output: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
+        let rt = try await PythonRuntime.shared.ensureInstalled(
+            .init(name: "mlx-video", requirements: ["mlx-video @ git+https://github.com/Blaizzy/mlx-video.git@\(MLXVideoEngine.commit)"]),
+            storeRoot: try PythonRuntime.storeRoot(above: folder))
+        // Sizes are multiples of 32 (VAE stride 16, patch 2) and frame counts 4n+1.
+        let w = max(32, r.width / 32 * 32), h = max(32, r.height / 32 * 32), frames = max(5, (r.frames - 1) / 4 * 4 + 1)
+        var args = ["-c", Wan.script, "--model-dir", folder.path, "--prompt", r.prompt, "--width", "\(w)", "--height", "\(h)",
+                    "--num-frames", "\(frames)", "--output-path", output.path]
+        // The auto tiling decodes every frame at once and runs out of GPU memory on 16 GB (after the whole denoise);
+        // small spatial and 32-frame tiles decode an 832x480, 49-frame clip in ~4.5 min there.
+        if VideoEngines.lowMemory() { args += ["--tiling", "aggressive"] }
+        if let seed = r.seed { args += ["--seed", "\(seed % UInt64(Int32.max))"] }
+        var startImage: URL?
+        if let image = r.inputImage {
+            let f = FileManager.default.temporaryDirectory.appending(path: "synapse-start-\(UUID().uuidString).png")
+            try image.write(to: f)
+            startImage = f
+            args += ["--image", f.path]
+        }
+        defer { if let startImage { try? FileManager.default.removeItem(at: startImage) } }
+        let env = [
+            "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
+            "HF_HOME": rt.dir.appending(path: "hf").path,
+            "SYNAPSE_WAN_TOKENIZER": folder.appending(path: Wan.tokenizerFolder).path,
+        ]
+        try await PythonRuntime.runStreaming(rt.python, args, env: env) { line in
+            // tqdm: "Diffusion:  53%|█████▎    | 16/30 [...]"
+            guard line.contains("Diffusion"), let m = line.range(of: "([0-9]{1,3})%", options: .regularExpression),
+                  let pct = Double(line[m].dropLast()) else { return }
+            progress(pct / 100)
+        }
+        guard FileManager.default.fileExists(atPath: output.path) else {
+            throw MFluxError.runtime("mlx-video finished without writing \(output.lastPathComponent).")
         }
     }
 }

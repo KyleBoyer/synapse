@@ -73,6 +73,9 @@ public enum Catalog {
         // Under 64 GB it runs in low-memory mode instead (8 GB 4-bit Gemma, transformer quantized while loading; ~55 GB
         // download); verified on a 16 GB M4. LTX-2 Community License. The name stays short so the toolbar's menu fits.
         hf("ltx-2.3-distilled", "LTX-2.3 Distilled", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 16),
+        // Text or a start image to video at 24 fps (Apache-2.0); 8-bit transformer, bf16 UMT5 text encoder (freed before
+        // denoising). On a 16 GB M4 an 832x480, 2 s clip takes about 36 s per step, 40 steps.
+        hf("wan2.2-ti2v-5b", "Wan 2.2 TI2V 5B", .videogen, "Anes1032/Wan2.2-TI2V-5B-mlx-q8", 19600, ramGB: 16),
         // Stability AI Community License (free under $1M annual revenue). The cards show a license prompt but the
         // repos are not gated, so no token is needed. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),
@@ -81,6 +84,8 @@ public enum Catalog {
         hf("stable-audio-3-medium", "Stable Audio 3 Medium", .audiogen, "mlx-community/stable-audio-3-medium", 5833, ramGB: 12),
         // Full songs from a style caption, with sung vocals when lyrics are given (MiniMax Music 3 Community License).
         hf("minimax-music3-4bit", "MiniMax Music 3 (songs, vocals)", .audiogen, "mlx-community/MiniMax-Music3-4bit", 9211, ramGB: 16),
+        // Instrumental music from a style caption, 48 kHz stereo (MIT). A 20 s clip takes ~10 s on a 16 GB M4.
+        hf("ace-step-1.5-4bit", "ACE-Step 1.5 (instrumental)", .audiogen, "mlx-community/ACE-Step1.5-MLX-4bit", 5300, ramGB: 12),
         ModelSpec(id: "depth-anything-v2-small", engine: .imagetool, displayName: "Depth Anything V2 small (depth maps)",
                   variant: "apple/coreml-depth-anything-v2-small", approxMB: 50, languages: nil, canTranslate: false,
                   canDetectLanguage: false, files: ["DepthAnythingV2SmallF16.mlpackage/"]),

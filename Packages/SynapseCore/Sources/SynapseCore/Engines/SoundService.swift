@@ -45,8 +45,9 @@ public enum SoundEngines {
     /// `SYNAPSE_MOCK_SOUND=1` swaps in a sine generator (tests, and Macs without the model).
     public static var mock: Bool { ProcessInfo.processInfo.environment["SYNAPSE_MOCK_SOUND"] == "1" }
 
-    public static let real: @Sendable (ModelSpec, URL) async throws -> any SoundEngine = { _, folder in
-        mock ? MockSoundEngine() : MLXAudioSoundEngine(folder: folder)
+    public static let real: @Sendable (ModelSpec, URL) async throws -> any SoundEngine = { spec, folder in
+        if mock { return MockSoundEngine() }
+        return ACEStep.handles(spec) ? ACEStepSoundEngine(folder: folder) as any SoundEngine : MLXAudioSoundEngine(folder: folder)
     }
 }
 
@@ -79,6 +80,50 @@ actor MLXAudioSoundEngine: SoundEngine {
         if let seed { args += ["--seed", "\(seed % UInt64(Int32.max))"] }
         if let lyrics, !lyrics.isEmpty { args += ["--lyrics", lyrics] }
         try await PythonRuntime.run(rt.python, args, env: [
+            "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
+            "HF_HOME": rt.dir.appending(path: "hf").path,
+        ])
+    }
+}
+
+/// ACE-Step 1.5 (MIT): music from a style caption, 48 kHz stereo, faster than real time. Lyrics are not offered: with
+/// the 4-bit weights no sung words came through in tests (empty transcripts, no vocal track when separated), where
+/// MiniMax Music 3's lyrics transcribe back word for word. It lives on an mlx-audio
+/// branch that never reached a release (it predates 0.6.6 by ~1,150 commits), so it gets its own runtime pinned to
+/// that branch's merge. Its optional 5 Hz planning LM is left off: it plans a full-length song whatever duration is
+/// asked (186 s for a 20 s request, so a short clip came out as the intro), and makes generation 4x slower.
+enum ACEStep {
+    static let commit = "1e8264a48"
+    static func handles(_ spec: ModelSpec) -> Bool { spec.variant.contains("ACE-Step") }
+
+    /// argv: model folder, caption, lyrics ("" for none), seconds, seed (-1 random), output WAV.
+    static let script = """
+    import sys, wave, numpy as np, mlx.core as mx
+    from mlx_audio.tts import load
+    folder, caption, lyrics, seconds, seed, out = sys.argv[1:7]
+    model = load(folder)
+    chunks, rate = [], 48000
+    for r in model.generate(text=caption, lyrics=lyrics, duration=float(seconds), seed=None if seed == "-1" else int(seed),
+                            use_lm=False, verbose=False):
+        chunks.append(np.array(r.audio.astype(mx.float32))); rate = r.sample_rate
+    a = np.clip(np.concatenate(chunks, 0), -1, 1)
+    with wave.open(out, "wb") as w:
+        w.setnchannels(a.shape[1] if a.ndim == 2 else 1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes((a * 32767).astype(np.int16).tobytes())
+    """
+}
+
+actor ACEStepSoundEngine: SoundEngine {
+    let folder: URL
+    init(folder: URL) { self.folder = folder }
+
+    func generate(prompt: String, lyrics: String?, seconds: Double, seed: UInt64?, to wav: URL) async throws {
+        let rt = try await PythonRuntime.shared.ensureInstalled(
+            .init(name: "mlx-audio-ace", requirements: ["mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@\(ACEStep.commit)"]),
+            storeRoot: try PythonRuntime.storeRoot(above: folder))
+        let seedArg = seed.map { "\($0 % UInt64(Int32.max))" } ?? "-1"
+        try await PythonRuntime.run(rt.python, ["-c", ACEStep.script, folder.path, prompt, lyrics ?? "",
+                                                String(format: "%.2f", seconds), seedArg, wav.path], env: [
             "HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TOKENIZERS_PARALLELISM": "false",
             "HF_HOME": rt.dir.appending(path: "hf").path,
         ])

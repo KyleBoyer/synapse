@@ -104,6 +104,12 @@ Editing, restyling, upscaling. Heavy on 16 GB; may be Mac Studio only.
 - [x] Frame by frame: `POST /v1/videos/transform` (`depth`, `mask`, `upscale`) and Video → Transform; H.264 at the source's frame timing, the source's sound passed through. Verified on zebra.mp4 with sound: mask (Vision) 20 frames in 0.7 s, depth 1.2 s, ×4 to 1280 px with general-x4v3 in 12 s; same frame count, duration and sound (VideoTransformTests, ImageToolsE2ETests); app captures.
 - [ ] Restyle with LTX-2 (video to video with a prompt): Mac Studio
 
+## More video and music models (done)
+
+- [x] Wan 2.2 TI2V 5B (`Anes1032/Wan2.2-TI2V-5B-mlx-q8`, Apache-2.0) through mlx-video's Wan pipeline (same pinned commit as LTX). Its UMT5 tokenizer is fetched beside the model and a wrapper points the pipeline at it, so runs stay offline. The auto VAE tiling ran out of GPU memory on 16 GB after an 18-minute denoise; aggressive tiling (256 px, 32 frames) decodes. Verified over `/v1/videos`: a 4 s 768x512 fox in snow in 66 minutes on the 16 GB M4.
+- [x] ACE-Step 1.5 4-bit (MIT) through its own runtime pinned to mlx-audio's unreleased `pc/add-ace` merge (1e8264a48). Verified over `/v1/audio/generations`: 30 s of 48 kHz stereo in 18 s. Instrumental only: its 5 Hz planning LM plans a full-length song whatever duration is asked, and with or without it no sung lyrics came through (empty transcripts with Parakeet and Whisper, no vocal track from SAM-Audio), where MiniMax Music 3's lyrics transcribe back.
+- [ ] Not added, each needs a new runtime: LTX-2.5 (MLX build has a ~25 GB memory floor), YuE2-3B (Swift port; CC BY-NC), MusicGen (mlx-audiogen; CC BY-NC), CogVideoX-Fun 5B.
+
 ## Shipping (done)
 
 - [x] Public repo at github.com/KyleBoyer/synapse; history scanned for secrets (gitleaks, clean).
