@@ -49,7 +49,8 @@ final class HFModelInspectorTests: XCTestCase {
         for (info, config, phrase) in [
             (files([("model_index.json", 1), ("unet/model.safetensors", 1)]), nil, "diffusers"),
             (files([("pytorch_model.bin", 1)]), ["model_type": "llama"], "no safetensors or GGUF"),
-            (files([("model.safetensors", 1)]), nil, "model_type"),
+            (files([("model.safetensors", 1), ("config.json", 1)]), nil, "model_type"),
+            (files([("1068055/3373587/style_epoch_10.safetensors", 1), ("1068055/3373587/README.md", 1)]), nil, "LoRA adapters"),
         ] as [([String: Any], [String: Any]?, String)] {
             do { _ = try await classify(info, config); XCTFail("expected refusal: \(phrase)") } catch {
                 XCTAssertTrue(error.localizedDescription.contains(phrase), error.localizedDescription)

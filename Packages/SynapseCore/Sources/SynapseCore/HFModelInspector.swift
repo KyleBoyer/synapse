@@ -136,6 +136,15 @@ public enum HFModelInspector {
             }
             throw InspectError.unsupported("\(repo) has no safetensors or GGUF weights.")
         }
+        // No config.json means LoRA adapters or loose checkpoints (e.g. a Civitai mirror), not a loadable model.
+        guard config?["model_type"] != nil || names.contains("config.json") else {
+            let count = names.filter { $0.hasSuffix(".safetensors") }.count
+            let card = info["cardData"] as? [String: Any]
+            let base = (card?["base_model"] as? String) ?? (card?["base_model"] as? [String])?.first
+            throw InspectError.unsupported("\(repo) has no config.json, so it is not a complete model: its \(count) safetensors "
+                + "file\(count == 1 ? "" : "s") look like add-ons (LoRA adapters or loose checkpoints)"
+                + (base.map { " for \($0)" } ?? "") + ", which Synapse cannot load on their own.")
+        }
         guard let modelType = config?["model_type"] as? String else {
             throw InspectError.unsupported("\(repo) has no model_type in its config.json, so its architecture is unknown.")
         }
