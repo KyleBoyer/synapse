@@ -110,18 +110,17 @@ actor PythonRuntime {
         let reader = pipe.fileHandleForReading
         let status: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
-                // An empty read is end of file; left set, the handler would re-fire in a tight loop until exit.
+                // Output is read only by the handler, so lines stay in order; resume once both end of file and exit arrive.
+                let done = DispatchGroup()
+                done.enter(); done.enter()
                 reader.readabilityHandler = { h in
                     let d = h.availableData
-                    if d.isEmpty { h.readabilityHandler = nil } else { tail.append(d); pending.feed(d) }
+                    // An empty read is end of file; left set, the handler would re-fire in a tight loop.
+                    if d.isEmpty { h.readabilityHandler = nil; pending.flush(); done.leave() } else { tail.append(d); pending.feed(d) }
                 }
-                p.terminationHandler = { p in
-                    reader.readabilityHandler = nil
-                    let rest = (try? reader.readToEnd()) ?? Data()
-                    tail.append(rest); pending.feed(rest); pending.flush()
-                    cont.resume(returning: p.terminationStatus)
-                }
-                do { try p.run() } catch { reader.readabilityHandler = nil; cont.resume(throwing: error) }
+                p.terminationHandler = { _ in done.leave() }
+                do { try p.run() } catch { reader.readabilityHandler = nil; cont.resume(throwing: error); return }
+                done.notify(queue: .global()) { cont.resume(returning: p.terminationStatus) }
             }
         } onCancel: { if p.isRunning { p.terminate() } }
         let text = String(decoding: tail.data, as: UTF8.self)
