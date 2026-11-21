@@ -145,6 +145,7 @@ final class MLXVLMBackendTests: XCTestCase {
         XCTAssertNil((try JSONSerialization.jsonObject(with: plain) as? [String: Any])?["return_progress"])
         let kwargs = (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["chat_template_kwargs"] as? [String: Any]
         XCTAssertEqual(kwargs?["reasoning_effort"] as? String, "none", "thinking off reaches Inkling's template")
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["thinking_budget_tokens"] as? Int, 0, "llama.cpp ends thinking Inkling starts anyway")
     }
 
     /// mlx-vlm reports failures mid-stream as a data line; they must reach the client, not end as an empty answer.

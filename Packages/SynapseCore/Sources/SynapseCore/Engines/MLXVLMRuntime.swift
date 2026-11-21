@@ -160,6 +160,8 @@ enum MLXVLMChat {
             // The thinking switch goes to the GGUF's own template: Qwen's reads enable_thinking, Inkling's reads
             // reasoning_effort (it thinks at "high" unless told "none"). Each template ignores the other's name.
             o["chat_template_kwargs"] = options.enableThinking ? ["enable_thinking": true] : ["enable_thinking": false, "reasoning_effort": "none"]
+            // Inkling still thinks at effort "none" (more so with a LoRA); a zero budget makes llama.cpp end it at once.
+            if !options.enableThinking { o["thinking_budget_tokens"] = 0 }
         }
         // mlx-vlm's name, then llama.cpp's.
         if options.enableThinking, let b = options.thinkingBudget { o["thinking_budget"] = b; o["thinking_budget_tokens"] = b }
@@ -229,7 +231,8 @@ enum MLXVLMChat {
                         let content = delta?["content"] as? String
                         let f = choice["finish_reason"] as? String
                         let toolCalls = delta?["tool_calls"] as? [[String: Any]] ?? []
-                        if reading, (content?.isEmpty == false) || f != nil || !toolCalls.isEmpty { reading = false; c.yield(.progress(.promptDone)) }
+                        let thinking = (delta?["reasoning_content"] as? String)?.isEmpty == false
+                        if reading, (content?.isEmpty == false) || thinking || f != nil || !toolCalls.isEmpty { reading = false; c.yield(.progress(.promptDone)) }
                         for tc in toolCalls {
                             let i = tc["index"] as? Int ?? 0, fn = tc["function"] as? [String: Any]
                             if let n = fn?["name"] as? String { calls[i, default: ("", "")].name += n }
