@@ -134,4 +134,22 @@ final class HFModelInspectorTests: XCTestCase {
         let s = try JSONDecoder().decode(Settings.self, from: Data(#"{"port": 9000}"#.utf8))
         XCTAssertEqual(s.customModels, [])
     }
+
+    /// AtomicChat's repo: full quantizations plus a LoRA for Inkling 2 Mini. The LoRA is picked and runs on the built-in base.
+    func testGGUFLoRAsRunOnTheirBuiltInBase() throws {
+        let gb: Int64 = 1_000_000_000
+        let files: [(String, Int64)] = [("Inkling-2-Mini-Uncensored-AD-IQ2_M.gguf", 8 * gb), ("Inkling-2-Mini-Uncensored-AD-Q4_K.gguf", 16 * gb),
+                                        ("Inkling-2-Mini-Uncensored-LoRA.gguf", 44_000_000), ("mmproj-Inkling-2-Mini-Uncensored-F16.gguf", 639_000_000)]
+        let r = try HFModelInspector.gguf(repo: "AtomicChat/Inkling-2-Mini-Uncensored-GGUF", files: files, gated: false,
+                                          card: ["base_model": "thinkingmachines/Inkling-2-Mini"], physicalMemory: 16 << 30)
+        XCTAssertEqual(r.model.baseModel, "inkling-2-mini")
+        XCTAssertEqual(r.model.files, ["Inkling-2-Mini-Uncensored-LoRA.gguf"], "the base brings its own projector")
+        XCTAssertEqual(r.model.id, "AtomicChat/Inkling-2-Mini-Uncensored-GGUF/Inkling-2-Mini-Uncensored-LoRA")
+        XCTAssertEqual(r.ggufChoices.count, 3)
+        let full = r.choosing(try XCTUnwrap(r.ggufChoices.first { $0.label == "IQ2_M" }))
+        XCTAssertNil(full.model.baseModel)
+        XCTAssertEqual(full.model.files, ["Inkling-2-Mini-Uncensored-AD-IQ2_M.gguf", "mmproj-Inkling-2-Mini-Uncensored-F16.gguf"])
+        let unknownBase = try HFModelInspector.gguf(repo: "o/m", files: files, gated: false, card: ["base_model": "someone/else"])
+        XCTAssertTrue(unknownBase.ggufChoices.allSatisfy { $0.base == nil && !$0.label.contains("LoRA") }, "a LoRA with no base is not offered")
+    }
 }

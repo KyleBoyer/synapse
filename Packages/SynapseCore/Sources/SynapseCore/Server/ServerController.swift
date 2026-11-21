@@ -6,7 +6,7 @@ import NIOCore
 public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil,
                          images: ImageService? = nil, speech: SpeechService? = nil,
                          embeddings: EmbeddingService? = nil, videos: VideoService? = nil,
-                         sound: SoundService? = nil) -> Router<SynapseContext> {
+                         sound: SoundService? = nil, myModels: MyModels = MyModels()) -> Router<SynapseContext> {
     let chat = chat ?? ChatService(store: store)
     let images = images ?? ImageService(store: store, models: ModelManager(), engineFactory: ImageEngines.real)
     let speech = speech ?? SpeechService(store: store, models: ModelManager(), transcribe: SpeechService.transcriber(queue))
@@ -41,6 +41,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addEmbeddingRoutes(to: group, embeddings: embeddings)
         addVideoRoutes(to: group, videos: videos)
         addSoundRoutes(to: group, sound: sound)
+        addMyModelRoutes(to: group, models: myModels, settings: settings)
     }
     return router
 }
@@ -71,6 +72,8 @@ public actor ServerController {
     private let videos: VideoService
     private let sound: SoundService
     private let realtime: RealtimeServices
+    /// The app installs its handlers here (see MyModels).
+    public nonisolated let myModels = MyModels()
 
     public init(queue: JobQueue, store: ModelStore, settings: SettingsBox, chat: ChatService? = nil, images: ImageService? = nil,
                 realtime: RealtimeServices? = nil, speech: SpeechService? = nil, embeddings: EmbeddingService? = nil,
@@ -95,7 +98,7 @@ public actor ServerController {
         let port = s.port
         let app = Application(
             router: buildRouter(queue: queue, store: store, settings: box, chat: chat, images: images, speech: speech, embeddings: embeddings,
-                                 videos: videos, sound: sound),
+                                 videos: videos, sound: sound, myModels: myModels),
             server: .http1WebSocketUpgrade(webSocketRouter: buildRealtimeRouter(services: realtime, settings: box),
                                            configuration: realtimeWebSocketConfiguration),
             configuration: .init(address: .hostname(host, port: port)),

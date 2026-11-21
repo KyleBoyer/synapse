@@ -374,12 +374,23 @@ public actor ChatService {
     }
 
     private func llamaLease(_ spec: ModelSpec, _ folder: URL, _ progress: @escaping Progress) async throws -> ModelLease<LlamaServer> {
-        let files = spec.files ?? [], cacheMiB = promptCacheBytes >> 20, kv = kvPrecision
-        return try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedResidentBytes,
+        let cacheMiB = promptCacheBytes >> 20, kv = kvPrecision
+        // A LoRA add-on runs its base model's files with the adapter from its own folder.
+        let (weights, dir, lora): (ModelSpec, URL, URL?)
+        if let baseID = spec.baseModel {
+            guard let base = Catalog.spec(baseID), let baseDir = await store.folder(for: baseID) else {
+                throw EngineError.unsupported("\(spec.displayName) is a LoRA for \(Catalog.spec(baseID)?.displayName ?? baseID); download that model in Models first.")
+            }
+            (weights, dir, lora) = (base, baseDir, folder.appending(path: spec.files?.first ?? ""))
+        } else {
+            (weights, dir, lora) = (spec, folder, nil)
+        }
+        let files = weights.files ?? []
+        return try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: weights.estimatedResidentBytes,
                                       measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
-                try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
-                let server = try await LlamaServer.launch(folder: folder, files: files, cacheMiB: cacheMiB, kv: kv)
+                try await ModelPrep.prepareIfNeeded(weights, folder: dir)   // downloaded before prep existed
+                let server = try await LlamaServer.launch(folder: dir, files: files, lora: lora, cacheMiB: cacheMiB, kv: kv)
                 return (server, unload: { server.terminate() })
             }
         }

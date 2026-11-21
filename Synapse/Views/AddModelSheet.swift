@@ -127,9 +127,8 @@ struct AddModelSheet: View {
 
     private func add(download: Bool) {
         guard let m = report?.model else { return }
-        state.addCustom(m)
+        state.addCustom(m, download: download)
         onAdded(m.id)
-        if download { state.download(m.id) }
         dismiss()
     }
 }

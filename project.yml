@@ -22,6 +22,8 @@ targets:
       - package: SynapseCore
         product: SynapseCore
       - package: Sparkle
+      - target: synapse-cli
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.synapse.mac
@@ -57,6 +59,17 @@ targets:
               codesign --force --options runtime -s "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/$TOOL"
             fi
           done
+      - name: Embed the synapse command-line tool
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          # Helpers, not MacOS: macOS folders ignore case, so "synapse" would collide with the app's "Synapse".
+          DEST="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
+          mkdir -p "$DEST"
+          cp "$BUILT_PRODUCTS_DIR/synapse" "$DEST/synapse"
+          if [ "${CODE_SIGNING_ALLOWED:-YES}" = "YES" ]; then
+            codesign --force --options runtime -s "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$DEST/synapse"
+          fi
       - name: Embed ffmpeg
         basedOnDependencyAnalysis: false
         script: |
@@ -67,3 +80,16 @@ targets:
           if [ "${CODE_SIGNING_ALLOWED:-YES}" = "YES" ]; then
             codesign --force --options runtime -s "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/ffmpeg"
           fi
+  synapse-cli:
+    type: tool
+    platform: macOS
+    sources:
+      - path: SynapseCLI
+    settings:
+      base:
+        PRODUCT_NAME: synapse
+        ARCHS: arm64
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        SWIFT_VERSION: "6.0"

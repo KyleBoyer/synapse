@@ -22,7 +22,13 @@ import NIOCore
 public struct SynapseContext: RequestContext {
     public var coreContext: CoreRequestContextStorage
 
-    public init(source: Source) { self.coreContext = .init(source: source) }
+    /// The client's address: nil only for in-process test requests.
+    public let remoteAddress: SocketAddress?
+
+    public init(source: Source) {
+        self.coreContext = .init(source: source)
+        self.remoteAddress = source.channel.remoteAddress
+    }
 
     // shortcut: multipart bodies are collected in memory up to 1 GiB; stream to disk if users upload huge files (path jobs avoid this).
     public var maxUploadSize: Int { 1 << 30 }

@@ -70,7 +70,9 @@ struct ModelFacts: Sendable {
         let q = (config?["quantization"] ?? config?["quantization_config"]) as? [String: Any]
         f.bits = q?["bits"] as? Int
         f.quantization = f.bits.map { "\($0)bit" }
-        if spec.engine == .gguf, let weights = spec.files?.first(where: { !$0.lowercased().contains("mmproj") }) {
+        if spec.engine == .gguf, spec.isAddOn {
+            f.quantization = "LoRA"
+        } else if spec.engine == .gguf, let weights = spec.files?.first(where: { !$0.lowercased().contains("mmproj") }) {
             f.quantization = HFModelInspector.quantLabel(weights)
             f.bits = f.quantization.flatMap { $0.firstMatch(of: /\d+/) }.flatMap { Int($0.output) }
             // ModelPrep requantized the file in place, so its name no longer says what it holds (3.6 bits per weight).
@@ -85,7 +87,7 @@ struct ModelFacts: Sendable {
             f.reasoning = template.contains("<think>") || template.contains("enable_thinking")
             f.tools = template.contains("tools")
             f.vision = switch spec.engine {
-            case .gguf: spec.files?.contains { $0.lowercased().contains("mmproj") } == true
+            case .gguf: (spec.baseModel.flatMap(Catalog.spec) ?? spec).files?.contains { $0.lowercased().contains("mmproj") } == true
             case .mlxvlm: true
             default: fm.fileExists(atPath: folder.appending(path: "preprocessor_config.json").path)
             }

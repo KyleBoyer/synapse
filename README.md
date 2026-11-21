@@ -388,7 +388,18 @@ A voice call is three choices, each per session:
 <details>
 <summary><b>Any model from Hugging Face, Python runtimes and vOOM</b></summary>
 
-**Models → +** takes a Hugging Face repo (`org/name`) or its link. Synapse reads the repo's files and `config.json` and tells you how it would run it before anything downloads: chat and vision models whose architecture the Swift MLX libraries know run in-process (text-only architectures such as Llama included); other architectures run through mlx-vlm; embedding models run in Embed. GGUF repos run through a bundled llama.cpp server: Synapse lists the quantizations, picks Q4_K_M (or the largest that fits this Mac), downloads only that file plus any vision projector, and lets you pick another in the sheet. Diffusers pipelines and speech or image generators are refused with the reason. Added models appear under "Added from Hugging Face", download like catalog models, and are called by their repo id (`"model": "mlx-community/Llama-3.2-1B-Instruct-4bit"`).
+**Models → +** takes a Hugging Face repo (`org/name`) or its link. Synapse reads the repo's files and `config.json` and tells you how it would run it before anything downloads: chat and vision models whose architecture the Swift MLX libraries know run in-process (text-only architectures such as Llama included); other architectures run through mlx-vlm; embedding models run in Embed. GGUF repos run through a bundled llama.cpp server: Synapse lists the quantizations, picks Q4_K_M (or the largest that fits this Mac), downloads only that file plus any vision projector, and lets you pick another in the sheet. Diffusers pipelines and speech or image generators are refused with the reason. Added models appear under "Added from Hugging Face", download like catalog models, and are called by their repo id (`"model": "mlx-community/Llama-3.2-1B-Instruct-4bit"`). A GGUF repo whose model card names Inkling 2 Mini as its base also offers its LoRA files, such as AtomicChat's 44 MB uncensoring adapter in `AtomicChat/Inkling-2-Mini-Uncensored-GGUF`. Synapse picks the LoRA by default. It downloads the adapter only and runs it on the built-in `inkling-2-mini` with llama.cpp's `--lora`, at the base model's speed and with its image input. The base has to be downloaded too. The model is called by `repo/file`, for example `"model": "AtomicChat/Inkling-2-Mini-Uncensored-GGUF/Inkling-2-Mini-Uncensored-LoRA"`.
+
+**The `synapse` command.** The app includes a command-line tool at `Synapse.app/Contents/Helpers/synapse` for the same list. Link it onto your PATH once:
+
+```sh
+ln -s /Applications/Synapse.app/Contents/Helpers/synapse /usr/local/bin/synapse
+synapse models                                          # your models and their download state
+synapse models add bartowski/Llama-3.2-1B-Instruct-GGUF --wait   # inspect, add, download (--file Q8_0 picks another file)
+synapse models delete bartowski/Llama-3.2-1B-Instruct-GGUF        # remove from the list and delete its files
+```
+
+It talks to the running app through `GET`/`POST /v1/synapse/models` and `DELETE /v1/synapse/models/{id}`, on the port in Settings. These routes answer requests from this Mac only, even when the server is open to the LAN. The app has to be running with its server on.
 
 **Python runtimes.** Video generation (mlx-video), sound generation (mlx-audio) and omni models (mlx-vlm) run through Python tools that Synapse installs on first use under `<models folder>/runtimes/`. The first use needs a network connection and takes a few minutes. Video generation also needs `git` (Xcode Command Line Tools). Gated models (FLUX.2 klein 9B) need their license accepted on Hugging Face and a token: Synapse uses the `hf auth login` token (or `HF_TOKEN`) automatically, or one set in **Settings**. Stable Audio is under the Stability AI Community License but is not gated.
 

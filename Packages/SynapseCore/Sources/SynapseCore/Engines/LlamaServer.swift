@@ -33,7 +33,8 @@ public final class LlamaServer: @unchecked Sendable {
         """#
 
     /// `cacheMiB` caps llama.cpp's host-memory prompt cache (its own default is 8 GiB), matching Synapse's setting.
-    static func launch(folder: URL, files: [String], cacheMiB: Int, kv: KVPrecision = .full) async throws -> LlamaServer {
+    /// `lora` is a LoRA GGUF applied to the weights at full strength.
+    static func launch(folder: URL, files: [String], lora: URL? = nil, cacheMiB: Int, kv: KVPrecision = .full) async throws -> LlamaServer {
         guard let exe = binary() else { throw EngineError.unsupported("llama-server is missing from this build (run scripts/build-llama.sh).") }
         guard let weights = files.first(where: { !$0.lowercased().contains("mmproj") }) else {
             throw EngineError.unsupported("No GGUF weights file was chosen for this model.")
@@ -45,6 +46,7 @@ public final class LlamaServer: @unchecked Sendable {
         if let projector = files.first(where: { $0.lowercased().contains("mmproj") }) {
             args += ["--mmproj", folder.appending(path: projector).path]
         }
+        if let lora { args += ["--lora", lora.path] }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", watchdog, "sh", String(ProcessInfo.processInfo.processIdentifier), exe.path] + args

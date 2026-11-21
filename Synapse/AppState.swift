@@ -135,6 +135,7 @@ final class AppState {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+        installMyModels()
         applySettings(old: nil)
     }
 
@@ -291,22 +292,41 @@ final class AppState {
     func cancelDownload(_ id: String) { Task { await store.cancelDownload(id) } }
 
     /// Adds a model found on Hugging Face to the list (it downloads like any catalog model).
-    func addCustom(_ model: CustomModel) {
+    func addCustom(_ model: CustomModel, download: Bool = false) { Task { await addCustomNow(model, download: download) } }
+
+    /// The download starts only after the list refresh, which would otherwise overwrite its "downloading" state.
+    func addCustomNow(_ model: CustomModel, download: Bool) async {
         guard !settings.customModels.contains(where: { $0.id == model.id }) else { return }
         settings.customModels.append(model)
-        Task { await refreshModels() }
+        await refreshModels()
+        if download, case .notDownloaded? = modelStates[model.id] { self.download(model.id) }
     }
 
     /// Takes an added model off the list, deleting its files first if it was downloaded.
     func removeCustom(_ id: String) {
-        Task {
-            if case .ready = modelStates[id] {
-                guard await models.unload(id) else { modelStates[id] = .failed("Model is in use by a running job"); return }
-                try? await store.delete(id)
-            }
-            settings.customModels.removeAll { $0.id == id }
-            await refreshModels()
+        Task { do { try await removeCustomNow(id) } catch { modelStates[id] = .failed(error.localizedDescription) } }
+    }
+
+    func removeCustomNow(_ id: String) async throws {
+        if case .ready = modelStates[id] {
+            guard await models.unload(id) else { throw EngineError.unsupported("\(id) is in use by a running job.") }
+            try? await store.delete(id)
         }
+        settings.customModels.removeAll { $0.id == id }
+        await refreshModels()
+    }
+
+    /// The `synapse` command-line tool's view of the same list (MyModels routes, this Mac only).
+    private func installMyModels() {
+        server.myModels.install(.init(
+            list: { [weak self] in
+                await MainActor.run {
+                    guard let self else { return [] }
+                    return self.settings.customModels.map { MyModels.Entry($0, state: self.modelStates[$0.id] ?? .notDownloaded) }
+                }
+            },
+            add: { [weak self] model, download in await self?.addCustomNow(model, download: download) },
+            remove: { [weak self] id in try await self?.removeCustomNow(id) }))
     }
 
     func delete(_ id: String) {

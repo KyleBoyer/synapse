@@ -48,6 +48,9 @@ public enum HFModelInspector {
         /// The same report with another quantization (or LoRA file) picked.
         public func choosing(_ c: GGUFChoice) -> Report {
             var r = self
+            // A GGUF LoRA runs on its base model's files, projector included.
+            if r.model.engine == .gguf { r.model.baseModel = c.base }
+            let projector = c.base == nil ? projector : nil
             let mb = c.mb + (projector?.mb ?? 0)
             r.model.files = c.files + (projector?.files ?? [])
             r.model.approxMB = mb
@@ -65,8 +68,13 @@ public enum HFModelInspector {
         public var label: String
         public var files: [String]
         public var mb: Int
+        /// A LoRA GGUF: the built-in model it is applied to.
+        public var base: String? = nil
         public var id: String { files.first ?? label }
     }
+
+    /// Built-in GGUF models a LoRA GGUF can run on, by the upstream repo a model card names as its base.
+    static let ggufLoRABases = ["thinkingmachines/Inkling-2-Mini": "inkling-2-mini"]
 
     /// Preference when picking a default: good quality per byte first.
     static let quantOrder = ["Q4_K_M", "Q4_K_S", "Q5_K_M", "IQ4_XS", "Q4_0", "Q5_K_S", "Q6_K", "Q8_0", "Q3_K_M", "Q3_K_L"]
@@ -156,7 +164,8 @@ public enum HFModelInspector {
         }
         guard names.contains(where: { $0.hasSuffix(".safetensors") }) else {
             if names.contains(where: { $0.lowercased().hasSuffix(".gguf") }) {
-                return try gguf(repo: repo, files: files, gated: (info["gated"] as? String) != nil || (info["gated"] as? Bool) == true)
+                return try gguf(repo: repo, files: files, gated: (info["gated"] as? String) != nil || (info["gated"] as? Bool) == true,
+                                card: info["cardData"] as? [String: Any] ?? [:])
             }
             throw InspectError.unsupported("\(repo) has no safetensors or GGUF weights.")
         }
@@ -194,30 +203,47 @@ public enum HFModelInspector {
 
     /// A GGUF-only repo: group the files into quantizations (split models have numbered parts), pick a default
     /// that fits this Mac, and add a vision projector (mmproj) when the repo has one.
-    static func gguf(repo: String, files: [(String, Int64)], gated: Bool,
+    static func gguf(repo: String, files: [(String, Int64)], gated: Bool, card: [String: Any] = [:],
                      physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) throws -> Report {
         let all = files.filter { $0.0.lowercased().hasSuffix(".gguf") }
         let projectors = all.filter { $0.0.lowercased().contains("mmproj") }
+        // shortcut: a LoRA is told apart by its file name; reading each header's general.type ("adapter") would be exact.
+        let isLoRA = { (name: String) in name.lowercased().contains("lora") }
+        let cardBases = (card["base_model"] as? String).map { [$0] } ?? card["base_model"] as? [String] ?? []
+        let loraBase = cardBases.lazy.compactMap { ggufLoRABases[$0] }.first.flatMap(Catalog.spec)
+        let loras = all.filter { isLoRA($0.0) && !$0.0.lowercased().contains("mmproj") }.compactMap { name, size in
+            loraBase.map { GGUFChoice(label: ((name as NSString).lastPathComponent as NSString).deletingPathExtension, files: [name],
+                                      mb: Int((Double(size) / 1_000_000).rounded()), base: $0.id) }
+        }
         var groups: [String: (files: [String], bytes: Int64)] = [:]
-        for (name, size) in all where !name.lowercased().contains("mmproj") {
+        for (name, size) in all where !name.lowercased().contains("mmproj") && !isLoRA(name) {
             let key = name.replacing(/-\d{5}-of-\d{5}(?=\.gguf$)/, with: "")
             groups[key, default: ([], 0)].files.append(name)
             groups[key, default: ([], 0)].bytes += size
         }
-        guard !groups.isEmpty else { throw InspectError.unsupported("\(repo) has only vision projector files, no model weights.") }
-        let choices = groups.map { key, g in
+        let quants = groups.map { key, g in
             GGUFChoice(label: quantLabel(key), files: g.files.sorted(), mb: Int((Double(g.bytes) / 1_000_000).rounded()))
         }.sorted { $0.mb < $1.mb }
+        let choices = loras + quants
+        guard !choices.isEmpty else {
+            throw InspectError.unsupported(all.contains { isLoRA($0.0) }
+                ? "\(repo) has LoRA adapters but no model weights, and its base model is not one Synapse runs as a GGUF."
+                : "\(repo) has only vision projector files, no model weights.")
+        }
         let budgetMB = Int(Double(physicalMemory) * 0.75 / 1_000_000 / 1.25)
-        let fits = choices.filter { $0.mb <= budgetMB }
+        let fits = quants.filter { $0.mb <= budgetMB }
         let preferred = quantOrder.lazy.compactMap { q in fits.first { $0.label.uppercased() == q } }.first
-        let chosen = preferred ?? fits.last ?? choices[0]
+        // A LoRA on a built-in base is preferred: a small download that runs at the base's speed on any Mac.
+        let chosen = loras.first ?? preferred ?? fits.last ?? quants[0]
         let projector = projectors.min { a, b in
             let fa = a.0.lowercased().contains("f16"), fb = b.0.lowercased().contains("f16")
             return fa != fb ? fa : a.1 < b.1
         }.map { GGUFChoice(label: "vision projector", files: [$0.0], mb: Int((Double($0.1) / 1_000_000).rounded())) }
         var notes = ["Runs through llama.cpp (GGUF). Pick another quantization below if you like."]
         if projector != nil { notes.append("Includes the vision projector, so it can read images.") }
+        if let loraBase, !loras.isEmpty {
+            notes.append("Its LoRA runs on \(loraBase.displayName), which downloads separately; pick a quantization below to download a full model instead.")
+        }
         if gated { notes.append("Gated: accept its license on huggingface.co first; Synapse uses your hf login or the token in Settings.") }
         let name = String(repo.split(separator: "/").last ?? Substring(repo))
         let base = Report(model: CustomModel(repo: repo, engine: .gguf, displayName: name, approxMB: 0, ramGB: nil),
