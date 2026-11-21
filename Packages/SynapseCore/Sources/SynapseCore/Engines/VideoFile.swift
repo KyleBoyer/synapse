@@ -2,6 +2,7 @@ import AVFoundation
 import CoreGraphics
 import CoreImage
 import Foundation
+import ImageIO
 
 /// Small AVFoundation helpers for generated videos: a solid-color MP4 (mock engine and tests) and a JPEG thumbnail.
 public enum VideoFile {
@@ -30,6 +31,66 @@ public enum VideoFile {
             adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: CMTimeScale(fps)))
         }
         input.markAsFinished()
+        await writer.finishWriting()
+        if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
+    }
+
+    /// An MP4 (H.264, plus AAC when `audio` is given) from an animated image (stable-diffusion.cpp writes WebP) and a WAV.
+    static func encode(frames source: URL, fps: Int, audio: URL?, to url: URL) async throws {
+        guard let images = CGImageSourceCreateWithURL(source as CFURL, nil), CGImageSourceGetCount(images) > 0,
+              let first = CGImageSourceCreateImageAtIndex(images, 0, nil) else { throw CocoaError(.fileReadCorruptFile) }
+        let width = first.width, height = first.height
+        try? FileManager.default.removeItem(at: url)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let video = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
+        ])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height,
+        ])
+        writer.add(video)
+        var reader: AVAssetReader?, readerOutput: AVAssetReaderTrackOutput?, sound: AVAssetWriterInput?
+        let soundtrack = audio.map { AVURLAsset(url: $0) }
+        if let soundtrack, let track = try await soundtrack.loadTracks(withMediaType: .audio).first {
+            let r = try AVAssetReader(asset: soundtrack)
+            let out = AVAssetReaderTrackOutput(track: track, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM])
+            r.add(out)
+            let format = try await track.load(.formatDescriptions).first.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: format?.mSampleRate ?? 32000,
+                AVNumberOfChannelsKey: format?.mChannelsPerFrame ?? 2,
+            ])
+            writer.add(input)
+            guard r.startReading() else { throw r.error ?? CocoaError(.fileReadUnknown) }
+            reader = r; readerOutput = out; sound = input
+        }
+        guard writer.startWriting() else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
+        writer.startSession(atSourceTime: .zero)
+        let context = CIContext()
+        var frame = 0, videoDone = false, audioDone = sound == nil
+        let count = CGImageSourceGetCount(images)
+        // The writer interleaves the two tracks, so feed whichever input is ready until both are finished.
+        while !(videoDone && audioDone) {
+            var fed = false
+            if !videoDone, video.isReadyForMoreMediaData {
+                if frame < count, let image = CGImageSourceCreateImageAtIndex(images, frame, nil) {
+                    var buffer: CVPixelBuffer?
+                    CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
+                    guard let buffer else { throw CocoaError(.fileWriteUnknown) }
+                    context.render(CIImage(cgImage: image), to: buffer)
+                    adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(fps)))
+                    frame += 1
+                } else { video.markAsFinished(); videoDone = true }
+                fed = true
+            }
+            if !audioDone, let sound, sound.isReadyForMoreMediaData {
+                if let sample = readerOutput?.copyNextSampleBuffer() { sound.append(sample) } else { sound.markAsFinished(); audioDone = true }
+                fed = true
+            }
+            if !fed { try await Task.sleep(for: .milliseconds(2)) }
+        }
+        reader?.cancelReading()
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }

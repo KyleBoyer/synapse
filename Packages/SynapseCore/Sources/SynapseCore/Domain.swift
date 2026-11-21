@@ -43,20 +43,24 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     public let recommendedRAMGB: Int?
     /// The files to fetch when a repo holds alternatives (GGUF quantizations): weights first, then any vision projector.
     public let files: [String]?
+    /// Set on a LoRA add-on: the id of the model it patches. The add-on is applied per generation, never merged.
+    public let baseModel: String?
 
     public init(id: String, engine: EngineKind, displayName: String, variant: String, approxMB: Int,
                 languages: Set<String>?, canTranslate: Bool, canDetectLanguage: Bool,
-                canEditImages: Bool = false, recommendedRAMGB: Int? = nil, files: [String]? = nil) {
+                canEditImages: Bool = false, recommendedRAMGB: Int? = nil, files: [String]? = nil, baseModel: String? = nil) {
         self.id = id; self.engine = engine; self.displayName = displayName; self.variant = variant
         self.approxMB = approxMB; self.languages = languages
         self.canTranslate = canTranslate; self.canDetectLanguage = canDetectLanguage
         self.canEditImages = canEditImages; self.recommendedRAMGB = recommendedRAMGB; self.files = files
+        self.baseModel = baseModel
     }
 
     public var isChat: Bool { engine == .mlx || engine == .mlxvlm || engine == .gguf }
     public var isEmbedding: Bool { engine == .embedding }
     public var isReranker: Bool { engine == .reranker }
-    public var isVideoGen: Bool { engine == .videogen }
+    public var isVideoGen: Bool { engine == .videogen && baseModel == nil }
+    public var isAddOn: Bool { baseModel != nil }
     public var isAudioGen: Bool { engine == .audiogen }
     public var isAudioEdit: Bool { engine == .audioedit }
     public var isDepth: Bool { engine == .imagetool && id.hasPrefix("depth") }

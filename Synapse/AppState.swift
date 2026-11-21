@@ -191,6 +191,8 @@ final class AppState {
     var downloadedEmbeddingSpecs: [ModelSpec] { readySpecs.filter(\.isEmbedding) }
     var downloadedRerankerSpecs: [ModelSpec] { readySpecs.filter(\.isReranker) }
     var downloadedVideoSpecs: [ModelSpec] { readySpecs.filter(\.isVideoGen) }
+    /// Downloaded LoRA add-ons that patch `base`.
+    func downloadedAddOns(for base: String) -> [ModelSpec] { readySpecs.filter { $0.baseModel == base } }
     var downloadedEditSpecs: [ModelSpec] { readySpecs.filter(\.isAudioEdit) }
     var downloadedImageToolSpecs: [ModelSpec] { readySpecs.filter { $0.engine == .imagetool } }
     var downloadedSoundSpecs: [ModelSpec] { SoundEngines.mock ? Catalog.all.filter(\.isAudioGen) : readySpecs.filter(\.isAudioGen) }

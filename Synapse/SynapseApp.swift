@@ -276,7 +276,7 @@ struct MainView: View {
         .task {
             guard let id = UserDefaults.standard.string(forKey: "tryModel"), let spec = Catalog.spec(id) else { return }
             try? await Task.sleep(for: .seconds(2))
-            let target: Pane = spec.isChat ? .chat : spec.isImage ? .images : spec.isVideoGen ? .video : spec.isEmbedding ? .embed : .audio
+            let target: Pane = spec.isChat ? .chat : spec.isImage ? .images : spec.engine == .videogen ? .video : spec.isEmbedding ? .embed : .audio
             state.tryRequest = .init(pane: target, modelID: id)
             pane = target
         }

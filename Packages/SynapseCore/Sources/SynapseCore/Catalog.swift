@@ -76,6 +76,14 @@ public enum Catalog {
         // Text or a start image to video at 24 fps (Apache-2.0); 8-bit transformer, bf16 UMT5 text encoder (freed before
         // denoising). On a 16 GB M4 an 832x480, 2 s clip takes about 36 s per step, 40 steps.
         hf("wan2.2-ti2v-5b", "Wan 2.2 TI2V 5B", .videogen, "Anes1032/Wan2.2-TI2V-5B-mlx-q8", 19600, ramGB: 16),
+        // Video with stereo sound through stable-diffusion.cpp (MiniMax H3 Community License). The files depend on the Mac
+        // (MiniMaxH3.files): under 64 GB a pruned 2-bit transformer and the 4B text encoder (14.4 GB, pages on 16 GB:
+        // a 1.6 s 480x288 clip took 13 min with the Turbo LoRA), otherwise 4-bit with the 32B encoder (43 GB).
+        hf("minimax-h3", "MiniMax H3", .videogen, "MiniMaxAI/MiniMax-H3", 14400, ramGB: 24),
+        // LoRA add-on: H3 in 4 steps instead of 20. Applied per clip from the Video pane's LoRA menu.
+        ModelSpec(id: "minimax-h3-turbo", engine: .videogen, displayName: "MiniMax H3 Turbo (4-step LoRA)",
+                  variant: "Comfy-Org/MiniMax-H3", approxMB: 1960, languages: nil, canTranslate: false, canDetectLanguage: false,
+                  files: ["loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"], baseModel: "minimax-h3"),
         // Stability AI Community License (free under $1M annual revenue). The cards show a license prompt but the
         // repos are not gated, so no token is needed. Names stay short so the toolbar's model menu fits.
         hf("stable-audio-3-small-sfx", "Stable Audio 3 SFX", .audiogen, "mlx-community/stable-audio-3-small-sfx", 3490, ramGB: 8),
@@ -155,7 +163,7 @@ public enum ModelResolver {
         let aliases: Set<String> = ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe-diarize"]
         let id = (requested == nil || aliases.contains(requested!)) ? defaultID : requested!
         guard var spec = Catalog.spec(id) else { throw ResolveError.unknownModel(id) }
-        guard !spec.isChat, !spec.isEmbedding, !spec.isReranker, !spec.isVideoGen, !spec.isAudioGen, !spec.isAudioEdit, spec.engine != .imagetool else { throw ResolveError.wrongKind(id) }
+        guard !spec.isChat, !spec.isEmbedding, !spec.isReranker, spec.engine != .videogen, !spec.isAudioGen, !spec.isAudioEdit, spec.engine != .imagetool else { throw ResolveError.wrongKind(id) }
         if (task == .translate && !spec.canTranslate) || !spec.supports(language: language) {
             guard let fb = whisperFallbackOrder.compactMap(Catalog.spec).first(where: {
                 downloaded.contains($0.id) && ($0.canTranslate || task != .translate) && $0.supports(language: language)

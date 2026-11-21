@@ -29,10 +29,14 @@ func addVideoRoutes(to g: RouterGroup<SynapseContext>, videos: VideoService) {
         // LTX needs multiples of 64, OpenAI's sizes are not (1280x720), so generate at the nearest smaller multiple.
         let width = size[0] / 64 * 64, height = size[1] / 64 * 64
         let spec: ModelSpec
-        do { spec = try await videos.resolve(nonEmpty(fields["model"])) } catch { throw HTTPError(.badRequest, message: error.localizedDescription) }
+        let lora = nonEmpty(fields["lora"])
+        do {
+            spec = try await videos.resolve(nonEmpty(fields["model"]))
+            if let lora { _ = try await videos.addOnFile(lora, for: spec) }
+        } catch { throw HTTPError(.badRequest, message: error.localizedDescription) }
         let job = await videos.create(model: spec, request: VideoRequest(
             prompt: prompt, width: width, height: height, frames: VideoService.frames(seconds: s),
-            seed: fields["seed"].flatMap { UInt64($0) }, inputImage: image), size: sizeText)
+            seed: fields["seed"].flatMap { UInt64($0) }, inputImage: image, lora: lora), size: sizeText)
         return videoResponse(videoJSON(job))
     }
     g.get("videos") { req, _ in

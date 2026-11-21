@@ -9,10 +9,15 @@ public struct VideoRequest: Sendable, Equatable {
     public var seed: UInt64?
     /// Optional start image (PNG/JPEG bytes) for image-to-video.
     public var inputImage: Data?
+    /// A LoRA add-on's model id (its `baseModel` must be the model generating), applied to this clip only.
+    public var lora: String?
+    /// The add-on's weights file, filled in by `VideoService` when the job runs.
+    var loraFile: URL?
 
-    public init(prompt: String, width: Int, height: Int, frames: Int, fps: Int = 24, seed: UInt64? = nil, inputImage: Data? = nil) {
+    public init(prompt: String, width: Int, height: Int, frames: Int, fps: Int = 24, seed: UInt64? = nil, inputImage: Data? = nil,
+                lora: String? = nil) {
         self.prompt = prompt; self.width = width; self.height = height; self.frames = frames; self.fps = fps
-        self.seed = seed; self.inputImage = inputImage
+        self.seed = seed; self.inputImage = inputImage; self.lora = lora
     }
 }
 
@@ -27,6 +32,7 @@ public enum VideoEngines {
 
     public static let real: @Sendable (ModelSpec, URL) async throws -> any VideoEngine = { spec, folder in
         if mock { return MockVideoEngine() }
+        if MiniMaxH3.handles(spec) { return H3VideoEngine(folder: folder) }
         return Wan.handles(spec) ? WanVideoEngine(folder: folder) as any VideoEngine : MLXVideoEngine(folder: folder)
     }
 
@@ -54,6 +60,8 @@ public enum VideoEngines {
     static func download(_ spec: ModelSpec, to dir: URL, root: URL, token: String?,
                          physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory,
                          progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        if spec.isAddOn { return try await HFDownloader.download(repo: spec.variant, to: dir, only: spec.files ?? [], token: token, progress: progress) }
+        if MiniMaxH3.handles(spec) { return try await MiniMaxH3.download(to: dir, token: token, physicalMemory: physicalMemory, progress: progress) }
         if Wan.handles(spec) { return try await Wan.download(spec, to: dir, token: token, progress: progress) }
         // shortcut: progress splits evenly by repo, not by bytes; the two halves are about the same size.
         _ = try await HFDownloader.download(repo: spec.variant, to: dir, exclude: ltxUnused, token: token) { progress($0 * 0.5) }

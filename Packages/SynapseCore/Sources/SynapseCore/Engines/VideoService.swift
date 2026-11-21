@@ -1,12 +1,13 @@
 import Foundation
 
 public enum VideoError: Error, LocalizedError {
-    case noModel, notDownloaded(String), unknownModel(String)
+    case noModel, notDownloaded(String), unknownModel(String), wrongAddOn(String, base: String)
     public var errorDescription: String? {
         switch self {
         case .noModel: "No video model is downloaded. Download LTX-2.3 Distilled in Models."
         case .notDownloaded(let id): "Model '\(id)' is not downloaded."
         case .unknownModel(let id): "Model '\(id)' is not a video model."
+        case .wrongAddOn(let id, let base): "'\(id)' is not a LoRA for '\(base)'."
         }
     }
 }
@@ -66,6 +67,15 @@ public actor VideoService {
         }
         for spec in videoSpecs where await available(spec) { return spec }
         throw VideoError.noModel
+    }
+
+    /// The weights file of LoRA add-on `id`, which must patch `base` and be downloaded.
+    public func addOnFile(_ id: String, for base: ModelSpec) async throws -> URL {
+        guard let addOn = Catalog.spec(id), addOn.baseModel == base.id, let file = addOn.files?.first else {
+            throw VideoError.wrongAddOn(id, base: base.id)
+        }
+        guard let folder = await store.folder(for: id) else { throw VideoError.notDownloaded(id) }
+        return folder.appending(path: file)
     }
 
     /// LTX frame counts are 8k+1; at 24 fps, 4 s is 97 frames.
@@ -128,7 +138,9 @@ public actor VideoService {
             guard let spec = Catalog.spec(job.model) else { throw VideoError.unknownModel(job.model) }
             let folder = await store.folder(for: spec.id) ?? FileManager.default.temporaryDirectory
             let engine = try await engineFactory(spec, folder)
-            let id = job.id, request = job.request
+            var patched = job.request
+            if let lora = patched.lora { patched.loraFile = try await addOnFile(lora, for: spec) }
+            let id = job.id, request = patched
             let generate: @Sendable () async throws -> Void = {
                 try await GPUGate.shared.run {
                     try await engine.generate(request, to: output) { p in

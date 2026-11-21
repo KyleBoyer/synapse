@@ -18,7 +18,7 @@ struct ModelsView: View {
          ("Realtime speech", Catalog.builtIn.filter { $0.engine == .speech }),
          ("Full duplex", Catalog.builtIn.filter { $0.engine == .duplex }),
          ("Embeddings and rerankers", Catalog.builtIn.filter { $0.isEmbedding || $0.isReranker }),
-         ("Video generation", Catalog.builtIn.filter(\.isVideoGen)),
+         ("Video generation", Catalog.builtIn.filter { $0.engine == .videogen }),
          ("Sound generation", Catalog.builtIn.filter(\.isAudioGen)),
          ("Audio cleanup and separation", Catalog.builtIn.filter(\.isAudioEdit)),
          ("Depth and upscaling", Catalog.builtIn.filter { $0.engine == .imagetool }),
@@ -107,7 +107,7 @@ struct Datasheet: View {
     private var metrics: [Metric] {
         if spec.isTTS { return [.ttsFirstAudio, .ttsSpeed] }
         if spec.isEmbedding { return [.embedRate] }
-        if spec.isReranker { return [] }
+        if spec.isReranker || spec.isAddOn { return [] }
         if spec.isVideoGen { return [.videoTime] }
         if spec.isAudioGen { return [.soundSpeed] }
         if spec.isAudioEdit || spec.engine == .imagetool { return [] }
@@ -119,7 +119,7 @@ struct Datasheet: View {
     private var tryPane: Pane? {
         if spec.isTTS { return .audio }
         if spec.isEmbedding || spec.isReranker { return .embed }
-        if spec.isVideoGen { return .video }
+        if spec.engine == .videogen { return .video }
         if spec.isAudioGen || spec.isAudioEdit { return .audio }
         if spec.engine == .imagetool { return .images }
         if spec.isChat { return .chat }
@@ -132,6 +132,7 @@ struct Datasheet: View {
         if spec.isTTS { return ["POST /v1/audio/speech", "GET /v1/realtime?model=\(spec.id)"] }
         if spec.isEmbedding { return ["POST /v1/embeddings"] }
         if spec.isReranker { return ["POST /v1/rerank"] }
+        if spec.isAddOn { return ["POST /v1/videos\nmodel: \(spec.baseModel ?? "")\nlora: \(spec.id)"] }
         if spec.isVideoGen { return ["POST /v1/videos", "GET /v1/videos/{id}/content"] }
         if spec.isAudioGen { return ["POST /v1/audio/generations"] }
         if spec.engine == .imagetool { return [spec.isDepth ? "POST /v1/images/depth" : "POST /v1/images/upscale"] }

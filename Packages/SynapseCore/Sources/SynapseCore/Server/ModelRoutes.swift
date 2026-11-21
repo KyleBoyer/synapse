@@ -26,7 +26,7 @@ struct ModelFacts: Sendable {
         case .flux2, .zimage, .mflux: return "image"
         case .embedding: return "embedding"
         case .reranker: return "reranker"
-        case .videogen: return "video"
+        case .videogen: return spec.isAddOn ? "lora" : "video"
         case .audiogen: return "sound"
         case .imagetool: return spec.isDepth ? "depth" : "upscale"
         case .audioedit: return SoundService.editTask(spec) == .separate ? "separation" : "enhancement"
