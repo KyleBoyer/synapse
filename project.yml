@@ -49,12 +49,14 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
-          SRC="$SRCROOT/vendor/llama.cpp/bin/llama-server"
-          if [ ! -x "$SRC" ]; then echo "error: run scripts/build-llama.sh first"; exit 1; fi
-          cp "$SRC" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/llama-server"
-          if [ "${CODE_SIGNING_ALLOWED:-YES}" = "YES" ]; then
-            codesign --force --options runtime -s "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/llama-server"
-          fi
+          for TOOL in llama-server llama-quantize; do
+            SRC="$SRCROOT/vendor/llama.cpp/bin/$TOOL"
+            if [ ! -x "$SRC" ]; then echo "error: run scripts/build-llama.sh first"; exit 1; fi
+            cp "$SRC" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/$TOOL"
+            if [ "${CODE_SIGNING_ALLOWED:-YES}" = "YES" ]; then
+              codesign --force --options runtime -s "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/$TOOL"
+            fi
+          done
       - name: Embed ffmpeg
         basedOnDependencyAnalysis: false
         script: |

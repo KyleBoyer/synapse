@@ -14,6 +14,20 @@ final class ModelPrepTests: XCTestCase {
         XCTAssertNil(ModelPrep.step(for: minicpm, physicalMemory: 128 << 30), "a Mac Studio runs the original")
     }
 
+    /// Inkling 2 Mini: under 32 GB the IQ4_NL is fetched with its imatrix and requantized; larger Macs run a published file.
+    func testInklingIsRequantizedOnlyWhereThePublishedFilesDoNotFit() throws {
+        let small = Catalog.inkling2Mini(physicalMemory: 16 << 30)
+        XCTAssertEqual(small.files, ["Inkling-2-Mini-IQ4_NL.gguf", ModelPrep.imatrix, "mmproj-Inkling-2-Mini-Q8_0.gguf"])
+        XCTAssertEqual(ModelPrep.steps(for: small, physicalMemory: 16 << 30), [.requantizeGGUF])
+        XCTAssertEqual(ModelPrep.steps(for: small, physicalMemory: 32 << 30), [])
+        XCTAssertEqual(Catalog.inkling2Mini(physicalMemory: 32 << 30).files, ["Inkling-2-Mini-IQ4_NL.gguf", "mmproj-Inkling-2-Mini-Q8_0.gguf"])
+        XCTAssertEqual(Catalog.inkling2Mini(physicalMemory: 64 << 30).files?.first, "Inkling-2-Mini-Q8_0.gguf")
+        let dir = try TestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data().write(to: dir.appending(path: ModelPrep.imatrix))
+        XCTAssertFalse(ModelPrep.isDone(.requantizeGGUF, dir), "the imatrix is deleted once the weights are requantized")
+    }
+
     func testPreparedFolderIsLeftAlone() async throws {
         let dir = try TestSupport.tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

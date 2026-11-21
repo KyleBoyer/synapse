@@ -73,6 +73,8 @@ struct ModelFacts: Sendable {
         if spec.engine == .gguf, let weights = spec.files?.first(where: { !$0.lowercased().contains("mmproj") }) {
             f.quantization = HFModelInspector.quantLabel(weights)
             f.bits = f.quantization.flatMap { $0.firstMatch(of: /\d+/) }.flatMap { Int($0.output) }
+            // ModelPrep requantized the file in place, so its name no longer says what it holds (3.6 bits per weight).
+            if ModelPrep.isPrepared(folder), ModelPrep.steps(for: spec).contains(.requantizeGGUF) { f.quantization = "IQ2_S+IQ4_NL"; f.bits = 3 }
         }
 
         switch f.kind {

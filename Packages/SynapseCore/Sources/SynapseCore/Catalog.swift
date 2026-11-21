@@ -30,6 +30,18 @@ public enum Catalog {
                   canTranslate: false, canDetectLanguage: false, recommendedRAMGB: ramGB)
     }
 
+    /// Inkling 2 Mini (Thinking Machines, Apache-2.0): a looped MoE, 26.2B with 3.4B active, text and images in, run by
+    /// llama-server from ggml-org's GGUFs. Under 32 GB the IQ4_NL is requantized after download to fit the GPU (ModelPrep,
+    /// with the imatrix fetched for it); 32 GB runs the IQ4_NL as published, 48 GB and up the Q8_0.
+    static func inkling2Mini(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> ModelSpec {
+        let gb = physicalMemory >> 30
+        let (weights, extra): ([String], Int) = gb >= 48 ? (["Inkling-2-Mini-Q8_0.gguf"], 27820)
+            : gb >= 32 ? (["Inkling-2-Mini-IQ4_NL.gguf"], 17628) : (["Inkling-2-Mini-IQ4_NL.gguf", ModelPrep.imatrix], 17628 + 91)
+        return ModelSpec(id: "inkling-2-mini", engine: .gguf, displayName: "Inkling 2 Mini", variant: "ggml-org/Inkling-2-Mini-GGUF",
+                         approxMB: extra + 346, languages: nil, canTranslate: false, canDetectLanguage: false,
+                         recommendedRAMGB: 16, files: weights + ["mmproj-Inkling-2-Mini-Q8_0.gguf"])
+    }
+
     /// Models added from Hugging Face (Settings.customModels), merged in by `setCustom`.
     private static let customStore = Mutex<[ModelSpec]>([])
     public static var custom: [ModelSpec] { customStore.withLock { $0 } }
@@ -57,6 +69,7 @@ public enum Catalog {
         qwen("qwen3.5-2b", "Qwen3.5 2B", "mlx-community/Qwen3.5-2B-4bit", 1749),
         qwen("qwen3.5-4b", "Qwen3.5 4B", "mlx-community/Qwen3.5-4B-MLX-4bit", 3061),
         qwen("qwen3.5-9b", "Qwen3.5 9B", "mlx-community/Qwen3.5-9B-MLX-4bit", 5977),
+        inkling2Mini(),
         image("flux2-klein-4b", "FLUX.2 klein 4B", .flux2, "black-forest-labs/FLUX.2-klein-4B", 16000, edit: true, ramGB: 24),
         // Under 48 GB it runs with a 4-bit encoder and transformer (Flux2ImageEngine); verified on a 16 GB M4.
         image("flux2-klein-9b", "FLUX.2 klein 9B (gated, non-commercial)", .flux2, "black-forest-labs/FLUX.2-klein-9B", 34600, edit: true, ramGB: 16),

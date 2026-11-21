@@ -111,7 +111,7 @@ It also works with anything that lets you set an OpenAI or Anthropic base URL: c
 
 | You want to | In the app | API | Models |
 |---|---|---|---|
-| Chat, with images, video and audio | Chat | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/api/v1/chat` | Qwen3.5 (0.8B to 9B), Gemma 3n and 4, LFM3 Omni, MiniCPM-o 4.5, Qwen3-Omni 30B, and any MLX or GGUF chat model from Hugging Face |
+| Chat, with images, video and audio | Chat | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/api/v1/chat` | Qwen3.5 (0.8B to 9B), Inkling 2 Mini, Gemma 3n and 4, LFM3 Omni, MiniCPM-o 4.5, Qwen3-Omni 30B, and any MLX or GGUF chat model from Hugging Face |
 | Transcribe and subtitle | Transcribe, Watch Folders | `/v1/audio/transcriptions`, `/v1/audio/translations`, `/asr` | Whisper (Tiny to Large v3 Turbo), Distil Large v3, Parakeet v2 and v3, speaker diarization |
 | Talk in real time | Live | `/v1/realtime` | Parakeet EOU and Silero VAD to hear, any chat model to think, any voice to speak; full-duplex PersonaPlex 7B and Nemotron VoiceChat 11B; Hibiki Zero for French-to-English speech translation |
 | Speak text, clone voices | Audio → Speech | `/v1/audio/speech`, `/v1/audio/voices` | PocketTTS, Kokoro 82M, Qwen3-TTS 1.7B, VoxCPM2, Chatterbox Turbo |
@@ -254,6 +254,8 @@ Files live in `~/Library/Application Support/Synapse/History`.
 
 <details>
 <summary><b>Omni models: audio in, speech out</b></summary>
+
+`inkling-2-mini` (Thinking Machines' Inkling 2 Mini, Apache-2.0) is a looped mixture-of-experts model: 26.2B parameters with 3.4B active, text and images in. It runs on the bundled llama.cpp from ggml-org's GGUFs, sized to the Mac. Macs with 48 GB or more get Q8_0 (27.8 GB). 32 GB Macs get IQ4_NL (17.6 GB). Smaller Macs download IQ4_NL with its imatrix and requantize it once to 11.6 GB: gate/up experts at IQ2_S and down experts at IQ4_NL, about 2 minutes. On a 16 GB M4 that runs entirely on the GPU at about 16 tokens/s, with a 4,096-token context. The published files don't fit there: IQ4_NL swaps (0.4 tokens/s), and Unsloth's smaller quants keep NVFP4 experts, which Metal can't multiply (about 5 tokens/s). It always writes a short reasoning note before answering. With thinking off, Synapse sends `reasoning_effort: "none"` to its template, which keeps the note short.
 
 `gemma-3n-e2b` (audio and image), `gemma-4-e2b`, `lfm3-omni-2b`, `minicpm-o-4.5` and `qwen3-omni-30b` run in a managed mlx-vlm server and answer on every chat route. Send audio as an `input_audio` part; non-WAV audio is converted to 16 kHz WAV first. Small omni models follow the prompt closely: "Transcribe the audio." works better than "What does the speaker say?".
 
@@ -430,7 +432,7 @@ Bazarr uses the model set as the Bazarr model in Synapse settings, falling back 
 brew install xcodegen
 xcodebuild -downloadComponent MetalToolchain   # MLX compiles Metal shaders
 scripts/build-ffmpeg.sh      # builds vendor/ffmpeg/bin/ffmpeg (LGPL, ~minutes)
-scripts/build-llama.sh       # builds vendor/llama.cpp/bin/llama-server (MIT, ~1 minute)
+scripts/build-llama.sh       # builds vendor/llama.cpp/bin/llama-server and llama-quantize (MIT, ~2 minutes)
 xcodegen generate
 open Synapse.xcodeproj
 ```

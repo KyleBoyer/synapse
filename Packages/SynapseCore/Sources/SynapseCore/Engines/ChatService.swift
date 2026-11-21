@@ -378,6 +378,7 @@ public actor ChatService {
         return try await models.lease(spec.id, as: LlamaServer.self, estimatedBytes: spec.estimatedResidentBytes,
                                       measure: { ProcessMemory.footprint(tree: $0.pid) }) {
             try await Self.timed(progress) {
+                try await ModelPrep.prepareIfNeeded(spec, folder: folder)   // downloaded before prep existed
                 let server = try await LlamaServer.launch(folder: folder, files: files, cacheMiB: cacheMiB, kv: kv)
                 return (server, unload: { server.terminate() })
             }
@@ -432,7 +433,7 @@ public actor ChatService {
         let lease = try await llamaLease(spec, folder, progress)
         let body: Data
         do {
-            body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath, promptProgress: true)
+            body = try MLXVLMChat.body(messages, options: options, model: lease.value.modelPath, llama: true)
         } catch { lease.release(); throw error }
         await GPUGate.shared.acquire()
         let gate = GateRelease()

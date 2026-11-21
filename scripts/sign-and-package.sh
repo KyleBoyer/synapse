@@ -50,7 +50,7 @@ fi
 sign() { codesign --force --options runtime ${TS[@]+"${TS[@]}"} -s "$IDENTITY" "$1"; }
 
 # Helper binaries first (inside out); notarization rejects any nested code without Developer ID and hardened runtime.
-for helper in ffmpeg llama-server; do sign "$APP/Contents/MacOS/$helper"; done
+for helper in ffmpeg llama-server llama-quantize; do sign "$APP/Contents/MacOS/$helper"; done
 # Sparkle's nested helpers, in the order its docs give; Downloader keeps its own entitlements.
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 if [[ -d "$SPARKLE" ]]; then
@@ -69,7 +69,7 @@ codesign --force --options runtime ${TS[@]+"${TS[@]}"} --entitlements "$ROOT/Syn
 
 codesign --verify --strict --verbose=2 "$APP"
 # Capture first: with pipefail, `grep -q` closing the pipe early makes codesign's SIGPIPE fail the check.
-for helper in ffmpeg llama-server; do
+for helper in ffmpeg llama-server llama-quantize; do
   SIG="$(codesign -dv "$APP/Contents/MacOS/$helper" 2>&1)"
   [[ "$SIG" == *runtime* ]] || { echo "$helper is missing the hardened runtime flag" >&2; exit 1; }
 done

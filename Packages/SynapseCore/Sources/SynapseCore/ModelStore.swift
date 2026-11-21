@@ -153,8 +153,12 @@ public actor ModelStore {
         case .gguf:
             // A GGUF repo holds many quantizations; only the chosen file (and any vision projector) is fetched.
             guard let files = spec.files, !files.isEmpty else { throw ResolveError.wrongKind(spec.id) }
-            return try await HFDownloader.download(repo: spec.variant, to: partialFolder(spec, root: root), only: files,
-                                                   token: token, progress: progress)
+            // shortcut: a prep step (Inkling 2 Mini's requantize, about 2 minutes) shows as the last 5% of the download.
+            let prep = ModelPrep.step(for: spec) != nil
+            let dir = try await HFDownloader.download(repo: spec.variant, to: partialFolder(spec, root: root), only: files,
+                                                      token: token) { progress(prep ? $0 * 0.95 : $0) }
+            try await ModelPrep.prepareIfNeeded(spec, folder: dir)
+            return dir
         case .videogen:
             return try await VideoEngines.download(spec, to: mlxFolder(spec, root: root), root: root, token: token, progress: progress)
         case .mlx, .flux2, .zimage, .mflux, .embedding, .reranker, .audiogen, .mlxvlm, .mlxspeech, .audioedit:

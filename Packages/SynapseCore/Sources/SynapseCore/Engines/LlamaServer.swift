@@ -13,11 +13,12 @@ public final class LlamaServer: @unchecked Sendable {
         self.base = base; self.modelPath = modelPath; self.process = process; self.logURL = logURL
     }
 
-    /// The bundled binary; SYNAPSE_LLAMA_SERVER or the repo's vendor build when running from source (tests).
-    static func binary() -> URL? {
-        if let u = Bundle.main.url(forAuxiliaryExecutable: "llama-server") { return u }
-        if let p = ProcessInfo.processInfo.environment["SYNAPSE_LLAMA_SERVER"] { return URL(fileURLWithPath: p) }
-        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "../../../../../vendor/llama.cpp/bin/llama-server")
+    /// A bundled llama.cpp tool (llama-server, llama-quantize); for llama-server SYNAPSE_LLAMA_SERVER, or the repo's
+    /// vendor build when running from source (tests).
+    static func binary(_ name: String = "llama-server") -> URL? {
+        if let u = Bundle.main.url(forAuxiliaryExecutable: name) { return u }
+        if name == "llama-server", let p = ProcessInfo.processInfo.environment["SYNAPSE_LLAMA_SERVER"] { return URL(fileURLWithPath: p) }
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "../../../../../vendor/llama.cpp/bin/\(name)")
         return FileManager.default.isExecutableFile(atPath: repo.standardizedFileURL.path) ? repo.standardizedFileURL : nil
     }
 

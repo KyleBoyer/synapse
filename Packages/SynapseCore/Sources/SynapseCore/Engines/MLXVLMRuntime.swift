@@ -128,8 +128,9 @@ public final class MLXVLMServer: @unchecked Sendable {
 
 /// Chat over an mlx-vlm server: builds the OpenAI request and maps its SSE stream to `ChatEvent`s.
 enum MLXVLMChat {
-    /// `promptProgress` asks llama.cpp for `prompt_progress` objects while it reads the prompt (mlx-vlm has none).
-    static func body(_ messages: [ChatMessage], options: ChatOptions, model: String, promptProgress: Bool = false) throws -> Data {
+    /// `llama` asks llama.cpp for `prompt_progress` objects while it reads the prompt (mlx-vlm has none), and passes the
+    /// thinking switch to the GGUF's template.
+    static func body(_ messages: [ChatMessage], options: ChatOptions, model: String, llama: Bool = false) throws -> Data {
         let wire: [[String: Any]] = try messages.map { m in
             var parts: [[String: Any]] = []
             if !m.text.isEmpty { parts.append(["type": "text", "text": m.text]) }
@@ -154,7 +155,12 @@ enum MLXVLMChat {
         if let v = options.frequencyPenalty { o["frequency_penalty"] = v }
         // mlx-vlm's name, then llama.cpp's; each server ignores the other's.
         if let v = options.repetitionPenalty { o["repetition_penalty"] = v; o["repeat_penalty"] = v }
-        if promptProgress { o["return_progress"] = true }
+        if llama {
+            o["return_progress"] = true
+            // The thinking switch goes to the GGUF's own template: Qwen's reads enable_thinking, Inkling's reads
+            // reasoning_effort (it thinks at "high" unless told "none"). Each template ignores the other's name.
+            o["chat_template_kwargs"] = options.enableThinking ? ["enable_thinking": true] : ["enable_thinking": false, "reasoning_effort": "none"]
+        }
         // mlx-vlm's name, then llama.cpp's.
         if options.enableThinking, let b = options.thinkingBudget { o["thinking_budget"] = b; o["thinking_budget_tokens"] = b }
         // Both servers parse calls per model (mlx-vlm's tool parsers, llama.cpp's --jinja templates).

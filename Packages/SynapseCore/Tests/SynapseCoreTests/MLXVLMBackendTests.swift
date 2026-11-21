@@ -139,10 +139,12 @@ final class MLXVLMBackendTests: XCTestCase {
     }
 
     func testLlamaRequestsAskForPromptProgress() throws {
-        let body = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: ChatOptions(), model: "m", promptProgress: true)
+        let body = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: ChatOptions(), model: "m", llama: true)
         XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["return_progress"] as? Bool, true)
         let plain = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: ChatOptions(), model: "m")
         XCTAssertNil((try JSONSerialization.jsonObject(with: plain) as? [String: Any])?["return_progress"])
+        let kwargs = (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["chat_template_kwargs"] as? [String: Any]
+        XCTAssertEqual(kwargs?["reasoning_effort"] as? String, "none", "thinking off reaches Inkling's template")
     }
 
     /// mlx-vlm reports failures mid-stream as a data line; they must reach the client, not end as an empty answer.

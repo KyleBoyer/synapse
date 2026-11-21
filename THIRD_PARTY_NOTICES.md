@@ -46,8 +46,8 @@ The bundled `ffmpeg` statically links LAME 3.100 (MP3 encoder), licensed under t
 
 ## llama.cpp
 
-- **llama.cpp** (`llama-server`, release b12477), MIT License. https://github.com/ggml-org/llama.cpp
-- Bundled as a static binary built by `scripts/build-llama.sh` in this repository: the release tarball (SHA-256 verified), Metal with embedded shaders, no OpenSSL or curl. It runs GGUF models added from Hugging Face.
+- **llama.cpp** (`llama-server` and `llama-quantize`, commit 690b87d, 2026-11-21), MIT License. https://github.com/ggml-org/llama.cpp
+- Bundled as a static binary built by `scripts/build-llama.sh` in this repository: the source tarball of a pinned commit (SHA-256 verified), Metal with embedded shaders, no OpenSSL or curl. It runs GGUF models (added from Hugging Face, and Inkling 2 Mini); llama-quantize fits Inkling 2 Mini to Macs under 32 GB.
 
 ## Python tools installed on first use
 

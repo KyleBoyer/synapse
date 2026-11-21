@@ -51,6 +51,26 @@ final class LargeModelE2ETests: XCTestCase {
         return await q.run(JobRequest(input: .media(wav), origin: .api)).transcript?.text ?? ""
     }
 
+    /// Inkling 2 Mini from the catalog: the store fetches this Mac's files into SYNAPSE_MODELS_DIR and prepares them
+    /// (requantized under 32 GB), then llama.cpp answers a text question and an image question.
+    func testInkling2MiniAnswersTextAndImages() async throws {
+        guard env["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
+        let store = ModelStore(root: realRoot)
+        if await !store.downloaded.contains("inkling-2-mini") { _ = try await store.download("inkling-2-mini", token: nil) { _ in } }
+        let models = ModelManager()
+        let chat = ChatService(store: store, models: models)
+        let spec = try XCTUnwrap(Catalog.spec("inkling-2-mini"))
+        let found = await store.folder(for: spec.id)
+        let folder = try XCTUnwrap(found)
+        XCTAssertTrue(ModelPrep.isPrepared(folder) || ModelPrep.step(for: spec) == nil)
+        let capital = try await ask(chat, spec, "What is the capital of France? Answer with one word.")
+        XCTAssertTrue(capital.contains("Paris"), capital)
+        let zebra = try Data(contentsOf: TestSupport.fixture("zebra.jpg"))
+        let animal = try await ask(chat, spec, "What animal is in this picture? Answer with one word.", images: [zebra])
+        XCTAssertTrue(animal.lowercased().contains("zebra"), animal)
+        await models.unloadAllIdle()
+    }
+
     /// SYNAPSE_CONFIRM_MINICPM = a MiniCPM-o 4.5 folder (mlx-vlm conversion of openbmb/MiniCPM-o-4_5).
     func testMiniCPMOHearsSeesAndSpeaks() async throws {
         guard env["SYNAPSE_E2E"] == "1", let folder = env["SYNAPSE_CONFIRM_MINICPM"] else { throw XCTSkip("set SYNAPSE_E2E=1 and SYNAPSE_CONFIRM_MINICPM") }
