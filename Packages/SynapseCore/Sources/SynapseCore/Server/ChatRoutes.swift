@@ -274,6 +274,8 @@ struct ChatCompletionWire: Encodable {
             var role = "assistant"; var content: String?; var refusal: String? = nil
             var audio: ChatAudioWire? = nil
             var tool_calls: [ToolCallWire]? = nil
+            /// DeepSeek's and llama.cpp's field for thinking, which most OpenAI-style clients read.
+            var reasoning_content: String? = nil
         }
         var index = 0
         var message: Message
@@ -307,6 +309,8 @@ struct ChatChunkWire: Encodable {
         struct Delta: Encodable {
             var role: String?; var content: String?; var audio: ChatAudioDeltaWire? = nil
             var tool_calls: [ToolCallWire]? = nil
+            /// DeepSeek's and llama.cpp's field for thinking, which most OpenAI-style clients read.
+            var reasoning_content: String? = nil
         }
         var index = 0
         var delta: Delta
@@ -319,6 +323,8 @@ struct ChatChunkWire: Encodable {
     var model: String
     var choices: [Choice]
     var usage: ChatUsageWire?
+    /// Synapse's own: load and prompt-reading phases before the first token, as `ChatProgress.wire`.
+    var synapse_progress: AnyEncodableDict? = nil
 }
 
 struct ResponseWire: Encodable {
@@ -452,18 +458,20 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
 
         let events = applyStops(try await chat.stream(model: spec, messages: messages, options: options), stopSequences(body.stop))
         guard body.stream == true else {
-            var text = "", finish = "stop", calls: [ToolCallWire] = []
+            var text = "", thinking = "", finish = "stop", calls: [ToolCallWire] = []
             var usage = ChatUsage(promptTokens: 0, completionTokens: 0)
             for try await e in events {
                 switch e {
                 case .delta(let s): text += s
+                case .reasoning(let s): thinking += s
                 case .done(let f, let u): finish = f; usage = u
                 case .toolCall(let name, let arguments): calls.append(ToolCallWire(name: name, arguments: arguments))
                 case .progress: break
                 }
             }
             return json(ChatCompletionWire(id: id, created: created, model: spec.id, choices: [
-                .init(message: .init(content: text.isEmpty && !calls.isEmpty ? nil : text, tool_calls: calls.isEmpty ? nil : calls),
+                .init(message: .init(content: text.isEmpty && !calls.isEmpty ? nil : text, tool_calls: calls.isEmpty ? nil : calls,
+                                     reasoning_content: thinking.isEmpty ? nil : thinking),
                       finish_reason: calls.isEmpty ? finish : "tool_calls"),
             ], usage: ChatUsageWire(usage)))
         }
@@ -479,11 +487,15 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                 switch event {
                 case .delta(let s):
                     try await write(nil, chunk(.init(content: s)))
+                case .reasoning(let s):
+                    try await write(nil, chunk(.init(reasoning_content: s)))
                 case .toolCall(let name, let arguments):
                     try await write(nil, chunk(.init(tool_calls: [ToolCallWire(index: calls, name: name, arguments: arguments)])))
                     calls += 1
-                case .progress:
-                    break
+                case .progress(let p):
+                    var c = chunk(.init())
+                    c.synapse_progress = p.wire()
+                    try await write(nil, c)
                 case .done(let finish, let usage):
                     try await write(nil, chunk(.init(), finish: calls > 0 ? "tool_calls" : finish))
                     if includeUsage {
@@ -518,12 +530,14 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let created = Int(Date().timeIntervalSince1970)
 
         /// `keepEmptyMessage`: a streamed response already announced its message item, so it stays even when empty.
+        let rsID = "rs_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         @Sendable func response(status: String, text: String, usage: ChatUsage?, finish: String?, calls: [FunctionCallWire] = [],
-                                keepEmptyMessage: Bool = false) -> ResponseWire {
+                                reasoning: String = "", keepEmptyMessage: Bool = false) -> ResponseWire {
             let incomplete = finish == "length"
             let finalStatus = status == "completed" && incomplete ? "incomplete" : status
             var output: [ResponseOutputItemWire] = []
             if status != "in_progress" {
+                if !reasoning.isEmpty { output.append(.reasoning(.init(id: rsID, content: [.init(text: reasoning)]))) }
                 if !text.isEmpty || calls.isEmpty || keepEmptyMessage {
                     output.append(.message(.init(id: msgID, status: finalStatus, content: [.init(text: text)])))
                 }
@@ -541,7 +555,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         guard body.stream == true else {
             let r = try await chat.complete(model: spec, messages: messages, options: options)
             return json(response(status: "completed", text: r.text, usage: r.usage, finish: r.finishReason,
-                                 calls: r.toolCalls.map { FunctionCallWire(name: $0.name, arguments: $0.arguments) }))
+                                 calls: r.toolCalls.map { FunctionCallWire(name: $0.name, arguments: $0.arguments) }, reasoning: r.reasoning))
         }
 
         let events = try await chat.stream(model: spec, messages: messages, options: options)
@@ -554,44 +568,86 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                 seq += 1
                 try await write(type, AnyEncodableDict(payload))
             }
-            let item = ["type": "message", "id": msgID, "status": "in_progress", "role": "assistant"] as [String: String]
-            let part = OutputTextPart(text: "")
             try await event("response.created", ["response": response(status: "in_progress", text: "", usage: nil, finish: nil)])
             try await event("response.in_progress", ["response": response(status: "in_progress", text: "", usage: nil, finish: nil)])
-            try await event("response.output_item.added", ["output_index": 0, "item": AnyEncodableDict(item.mapValues { $0 }).withArray("content")])
-            try await event("response.content_part.added", ["item_id": msgID, "output_index": 0, "content_index": 0, "part": part])
-            var text = "", calls: [FunctionCallWire] = []
+            // Thinking, when the model does any, is output item 0 and the message follows it; the message is announced
+            // at its first text (or at the end), once its index is known.
+            var text = "", thinking = "", calls: [FunctionCallWire] = []
+            var msgIndex: Int?
+            func announceMessage() async throws -> Int {
+                if let msgIndex { return msgIndex }
+                if !thinking.isEmpty {
+                    try await event("response.reasoning_text.done", ["item_id": rsID, "output_index": 0, "content_index": 0, "text": thinking])
+                    try await event("response.content_part.done", ["item_id": rsID, "output_index": 0, "content_index": 0,
+                                                                  "part": ReasoningTextPart(text: thinking)])
+                    try await event("response.output_item.done", ["output_index": 0,
+                                                                 "item": ResponseOutputItemWire.reasoning(.init(id: rsID, content: [.init(text: thinking)]))])
+                }
+                let index = thinking.isEmpty ? 0 : 1
+                msgIndex = index
+                let item = ["type": "message", "id": msgID, "status": "in_progress", "role": "assistant"] as [String: String]
+                try await event("response.output_item.added", ["output_index": index, "item": AnyEncodableDict(item.mapValues { $0 }).withArray("content")])
+                try await event("response.content_part.added", ["item_id": msgID, "output_index": index, "content_index": 0,
+                                                               "part": OutputTextPart(text: "")])
+                return index
+            }
             for try await e in events {
                 switch e {
+                case .reasoning(let s):
+                    // shortcut: thinking that comes after answer text has started is dropped from the stream (no model does this).
+                    guard msgIndex == nil else { break }
+                    if thinking.isEmpty {
+                        try await event("response.output_item.added", ["output_index": 0,
+                                                                      "item": ResponseOutputItemWire.reasoning(.init(id: rsID, status: "in_progress", content: []))])
+                        try await event("response.content_part.added", ["item_id": rsID, "output_index": 0, "content_index": 0,
+                                                                       "part": ReasoningTextPart(text: "")])
+                    }
+                    thinking += s
+                    try await event("response.reasoning_text.delta", ["item_id": rsID, "output_index": 0, "content_index": 0, "delta": s])
                 case .delta(let s):
+                    let index = try await announceMessage()
                     text += s
-                    try await event("response.output_text.delta", ["item_id": msgID, "output_index": 0, "content_index": 0,
+                    try await event("response.output_text.delta", ["item_id": msgID, "output_index": index, "content_index": 0,
                                                                   "delta": s, "logprobs": [String]()])
                 case .toolCall(let name, let arguments):
                     calls.append(FunctionCallWire(name: name, arguments: arguments))
-                case .progress:
-                    break
+                case .progress(let p):
+                    // Not an OpenAI event; SDKs pass unknown event types through, and this shows load and prompt reading.
+                    try await event("response.synapse_progress", p.wire().values)
                 case .done(let finish, let usage):
-                    let final = response(status: "completed", text: text, usage: usage, finish: finish, calls: calls, keepEmptyMessage: true)
-                    try await event("response.output_text.done", ["item_id": msgID, "output_index": 0, "content_index": 0,
+                    let index = try await announceMessage()
+                    let final = response(status: "completed", text: text, usage: usage, finish: finish, calls: calls,
+                                         reasoning: thinking, keepEmptyMessage: true)
+                    try await event("response.output_text.done", ["item_id": msgID, "output_index": index, "content_index": 0,
                                                                  "text": text, "logprobs": [String]()])
-                    try await event("response.content_part.done", ["item_id": msgID, "output_index": 0, "content_index": 0,
+                    try await event("response.content_part.done", ["item_id": msgID, "output_index": index, "content_index": 0,
                                                                   "part": OutputTextPart(text: text)])
-                    try await event("response.output_item.done", ["output_index": 0, "item": final.output[0]])
+                    try await event("response.output_item.done", ["output_index": index, "item": final.output[index]])
                     // Calls follow the message, each announced, its arguments sent, then done.
                     for (i, call) in calls.enumerated() {
-                        let index = i + 1
-                        try await event("response.output_item.added", ["output_index": index, "item": call.with(status: "in_progress", arguments: "")])
-                        try await event("response.function_call_arguments.delta", ["item_id": call.id, "output_index": index, "delta": call.arguments])
-                        try await event("response.function_call_arguments.done", ["item_id": call.id, "output_index": index,
+                        let callIndex = index + 1 + i
+                        try await event("response.output_item.added", ["output_index": callIndex, "item": call.with(status: "in_progress", arguments: "")])
+                        try await event("response.function_call_arguments.delta", ["item_id": call.id, "output_index": callIndex, "delta": call.arguments])
+                        try await event("response.function_call_arguments.done", ["item_id": call.id, "output_index": callIndex,
                                                                                   "name": call.name, "arguments": call.arguments])
-                        try await event("response.output_item.done", ["output_index": index, "item": call])
+                        try await event("response.output_item.done", ["output_index": callIndex, "item": call])
                     }
                     try await event(final.status == "completed" ? "response.completed" : "response.incomplete", ["response": final])
                 }
             }
         }
     }
+}
+
+struct ReasoningTextPart: Encodable, Sendable { var type = "reasoning_text"; var text: String }
+
+/// A Responses reasoning output item: the model's thinking as reasoning_text content (no summary is generated).
+struct ReasoningItemWire: Encodable, Sendable {
+    var type = "reasoning"
+    var id: String
+    var status = "completed"
+    var summary: [String] = []
+    var content: [ReasoningTextPart]
 }
 
 struct OutputTextPart: Encodable, Sendable { var type = "output_text"; var text: String; var annotations: [String] = [] }
@@ -617,6 +673,23 @@ struct AnyEncodableDict: Encodable, Sendable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Key.self)
         for (k, v) in values { try c.encode(v, forKey: Key(k)) }
+    }
+}
+
+extension ChatProgress {
+    /// The phase as Synapse reports it on APIs that have no event for it: phase is load_start, load_end (seconds),
+    /// prompt_start, prompt (fraction of the prompt read, from engines that count it) or prompt_end.
+    func wire(type: String? = nil) -> AnyEncodableDict {
+        var o: [String: any Encodable & Sendable] = [:]
+        switch self {
+        case .loadStarted: o["phase"] = "load_start"
+        case .loaded(let s): o["phase"] = "load_end"; o["seconds"] = s
+        case .promptStarted: o["phase"] = "prompt_start"
+        case .prompt(let f): o["phase"] = "prompt"; o["fraction"] = min(max(f, 0), 1)
+        case .promptDone: o["phase"] = "prompt_end"
+        }
+        if let type { o["type"] = type }
+        return AnyEncodableDict(o)
     }
 }
 

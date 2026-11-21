@@ -22,7 +22,7 @@ final class CachedUsageTests: XCTestCase {
     }
 
     func testLMStudioStatsCountCachedTokens() throws {
-        var run = LMStudioRun(model: "m", thinking: false, responseID: nil)
+        var run = LMStudioRun(model: "m", responseID: nil)
         for e: ChatEvent in [.delta("Hi"), .done(finishReason: "stop", usage: usage)] { _ = run.consume(e) }
         _ = run.close()
         let stats = try XCTUnwrap(try json(run.result())["stats"] as? [String: Any])

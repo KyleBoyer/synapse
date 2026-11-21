@@ -90,7 +90,7 @@ enum ChatAudio {
                 c.yield(.transcript(s))
                 for sentence in splitter.feed(s) { try await say(sentence) }
             case .toolCall(let name, let arguments): c.yield(.toolCall(name: name, arguments: arguments))
-            case .progress: break
+            case .progress, .reasoning: break
             case .done(let finish, let usage):
                 if let rest = splitter.flush() { try await say(rest) }
                 c.yield(.done(finish: finish, usage: usage))

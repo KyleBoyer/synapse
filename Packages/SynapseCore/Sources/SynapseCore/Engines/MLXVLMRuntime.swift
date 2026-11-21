@@ -231,8 +231,10 @@ enum MLXVLMChat {
                         let content = delta?["content"] as? String
                         let f = choice["finish_reason"] as? String
                         let toolCalls = delta?["tool_calls"] as? [[String: Any]] ?? []
-                        let thinking = (delta?["reasoning_content"] as? String)?.isEmpty == false
-                        if reading, (content?.isEmpty == false) || thinking || f != nil || !toolCalls.isEmpty { reading = false; c.yield(.progress(.promptDone)) }
+                        // llama.cpp's name, then mlx-vlm's.
+                        let thought = (delta?["reasoning_content"] as? String) ?? (delta?["reasoning"] as? String) ?? ""
+                        if reading, (content?.isEmpty == false) || !thought.isEmpty || f != nil || !toolCalls.isEmpty { reading = false; c.yield(.progress(.promptDone)) }
+                        if !thought.isEmpty { produced = true; c.yield(.reasoning(thought)) }
                         for tc in toolCalls {
                             let i = tc["index"] as? Int ?? 0, fn = tc["function"] as? [String: Any]
                             if let n = fn?["name"] as? String { calls[i, default: ("", "")].name += n }

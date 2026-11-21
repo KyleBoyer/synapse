@@ -47,12 +47,14 @@ enum ResponseOutputItemWire: Encodable, Sendable {
     case message(ResponseWire.Message)
     case image(ImageGenerationCallWire)
     case functionCall(FunctionCallWire)
+    case reasoning(ReasoningItemWire)
 
     func encode(to encoder: Encoder) throws {
         switch self {
         case .message(let m): try m.encode(to: encoder)
         case .image(let i): try i.encode(to: encoder)
         case .functionCall(let f): try f.encode(to: encoder)
+        case .reasoning(let r): try r.encode(to: encoder)
         }
     }
 }

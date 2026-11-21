@@ -70,13 +70,13 @@ func addLMStudioRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, con
             await conversations.put(responseID, messages + [ChatMessage(role: .assistant, text: run.message)])
         }
         guard body.stream == true else {
-            var run = LMStudioRun(model: spec.id, thinking: thinking, responseID: responseID)
+            var run = LMStudioRun(model: spec.id, responseID: responseID)
             for try await e in events { _ = run.consume(e) }
             await save(run)
             return json(run.result())
         }
         return sse { write in
-            var run = LMStudioRun(model: spec.id, thinking: thinking, responseID: responseID)
+            var run = LMStudioRun(model: spec.id, responseID: responseID)
             func emit(_ events: [LMStudioRun.Event]) async throws {
                 for (type, fields) in events {
                     var payload = fields
@@ -125,7 +125,6 @@ struct LMStudioRun {
     typealias Event = (String, [String: any Encodable & Sendable])
     let model: String
     let responseID: String?
-    private var splitter: ThinkSplitter?
     private(set) var reasoning = "", message = ""
     private var open: String?          // "reasoning" or "message" while that block streams
     private var reasoningChunks = 0
@@ -135,9 +134,8 @@ struct LMStudioRun {
     private var firstToken: ContinuousClock.Instant?
     private var lastToken: ContinuousClock.Instant?
 
-    init(model: String, thinking: Bool, responseID: String?) {
+    init(model: String, responseID: String?) {
         self.model = model; self.responseID = responseID
-        splitter = thinking ? ThinkSplitter() : nil
     }
 
     mutating func consume(_ e: ChatEvent) -> [Event] {
@@ -152,12 +150,12 @@ struct LMStudioRun {
         case .progress(.prompt(let f)): return [("prompt_processing.progress", ["progress": min(max(f, 0), 1)])]
         case .progress(.promptDone): return [("prompt_processing.end", [:])]
         case .delta(let s):
-            let now = ContinuousClock.now
-            firstToken = firstToken ?? now
-            lastToken = now
-            let (r, t) = splitter?.feed(s) ?? ("", s)
-            if !r.isEmpty { reasoningChunks += 1 }
-            return text(r, t)
+            tick()
+            return text("", s)
+        case .reasoning(let s):
+            tick()
+            reasoningChunks += 1
+            return text(s, "")
         case .toolCall: return []
         case .done(_, let u):
             usage = u
@@ -167,10 +165,15 @@ struct LMStudioRun {
 
     /// Flushes held-back text and closes the open block.
     mutating func close() -> [Event] {
-        let (r, t) = splitter?.finish() ?? ("", "")
-        var out = text(r, t)
-        if let o = open { out.append(("\(o).end", [:])); open = nil }
-        return out
+        guard let o = open else { return [] }
+        open = nil
+        return [("\(o).end", [:])]
+    }
+
+    private mutating func tick() {
+        let now = ContinuousClock.now
+        firstToken = firstToken ?? now
+        lastToken = now
     }
 
     private mutating func text(_ r: String, _ t: String) -> [Event] {

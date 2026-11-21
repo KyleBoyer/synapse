@@ -122,27 +122,34 @@ final class ChatAPITests: XCTestCase {
         }
     }
 
-    // MARK: ThinkFilter
+    // MARK: ThinkSplitter
 
-    private func run(_ f: inout ThinkFilter, _ chunks: [String]) -> String {
-        chunks.map { f.feed($0) }.joined() + f.finish()
+    private func run(_ f: inout ThinkSplitter, _ chunks: [String]) -> (thinking: String, text: String) {
+        (chunks + [""]).enumerated().reduce(into: ("", "")) { acc, c in
+            let r = c.offset == chunks.count ? f.finish() : f.feed(c.element)
+            acc.0 += r.thinking; acc.1 += r.text
+        }
     }
 
-    func testThinkFilterStripsStreamedBlock() {
-        var f = ThinkFilter(enabled: true)
-        XCTAssertEqual(run(&f, ["<th", "ink>reasoning</th", "ink>\n\nHello", " world"]), "Hello world")
+    func testThinkSplitterSeparatesALeadingBlock() {
+        var f = ThinkSplitter()
+        let r = run(&f, ["<th", "ink>reasoning</th", "ink>\n\nHello", " world"])
+        XCTAssertEqual(r.thinking, "reasoning")
+        XCTAssertEqual(r.text, "Hello world")
     }
 
-    func testThinkFilterPassesPlainTextChunkedMidWord() {
-        var f = ThinkFilter(enabled: true)
-        XCTAssertEqual(run(&f, ["Hel", "lo wor", "ld"]), "Hello world")
-        var g = ThinkFilter(enabled: true)
-        XCTAssertEqual(run(&g, ["<b", ">bold</b>"]), "<b>bold</b>")
+    func testThinkSplitterPassesPlainTextChunkedMidWord() {
+        var f = ThinkSplitter()
+        XCTAssertEqual(run(&f, ["Hel", "lo wor", "ld"]).text, "Hello world")
+        var g = ThinkSplitter()
+        XCTAssertEqual(run(&g, ["<b", ">bold</b>"]).text, "<b>bold</b>")
     }
 
-    func testThinkFilterDisabledPassesEverything() {
-        var f = ThinkFilter(enabled: false)
-        XCTAssertEqual(run(&f, ["<think>x</think>", "\n\nHi"]), "<think>x</think>\n\nHi")
+    func testThinkSplitterKeepsUnclosedThinkingAsThinking() {
+        var f = ThinkSplitter(opensInThink: true)
+        let r = run(&f, ["still ", "thinking</thi"])
+        XCTAssertEqual(r.thinking, "still thinking</thi")
+        XCTAssertEqual(r.text, "")
     }
 
     // MARK: Routes

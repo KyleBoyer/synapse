@@ -8,10 +8,10 @@ struct ChatView: View {
     @Environment(AppState.self) private var state
     @Environment(\.paneShown) private var paneShown
     /// A conversation line plus when it started, relative to the conversation's first message.
-    struct Line { var message: ChatMessage; var at: Double }
+    struct Line { var message: ChatMessage; var at: Double; var thinking = "" }
     /// The run being measured: what it is doing now, when each phase began, tokens so far, final usage.
     struct Run {
-        enum Phase: Equatable { case waiting, loading, prompt(fraction: Double?), generating }
+        enum Phase: Equatable { case waiting, loading, prompt(fraction: Double?), thinking, generating }
         var sent = Date()
         var phase = Phase.waiting
         var phaseStart = Date()
@@ -19,6 +19,7 @@ struct ChatView: View {
         var promptStart: Date?
         var firstToken: Date?
         var chunks = 0
+        var thoughts = 0
         var ended: Date?
         var usage: ChatUsage?
         var firstTokenSeconds: Double? { firstToken.map { $0.timeIntervalSince(promptStart ?? sent) } }
@@ -205,6 +206,14 @@ struct ChatView: View {
                         Image(nsImage: img).resizable().scaledToFit().frame(maxHeight: 160).clipShape(.rect(cornerRadius: 10))
                     }
                 }
+                if !l.thinking.isEmpty {
+                    DisclosureGroup {
+                        Text(l.thinking).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        Text("Thinking").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if !l.message.text.isEmpty {
                     if user {
                         Text(l.message.text).font(.title3).foregroundStyle(.secondary).textSelection(.enabled)
@@ -359,8 +368,8 @@ struct ChatView: View {
                 for try await ev in try await chat.stream(model: spec, messages: history, options: ChatOptions()) {
                     switch ev {
                     case .delta(let s):
-                        if run?.firstToken == nil {
-                            run?.firstToken = Date(); run?.phase = .generating
+                        if run?.phase != .generating {
+                            run?.firstToken = run?.firstToken ?? Date(); run?.phase = .generating
                             if let start = started { lines[lines.count - 1].at = Date().timeIntervalSince(start) }
                         }
                         run?.chunks += 1
@@ -369,6 +378,11 @@ struct ChatView: View {
                         run?.ended = Date(); run?.usage = usage
                     case .progress(let p):
                         run?.apply(p)
+                    case .reasoning(let s):
+                        if run?.phase != .thinking { run?.phase = .thinking; run?.phaseStart = Date() }
+                        run?.firstToken = run?.firstToken ?? Date()
+                        run?.thoughts += 1
+                        lines[lines.count - 1].thinking += s
                     case .toolCall: break
                     }
                 }
@@ -488,6 +502,8 @@ private struct PhaseStatus: View {
             return ("Reading prompt · \(Int((f * 100).rounded()))%", f)
         case .prompt(nil):
             return ("Reading prompt · \(t)", nil)
+        case .thinking:
+            return ("Thinking · \(run.thoughts) tokens · \(t)", nil)
         case .waiting, .generating:
             return ("Waiting for the model…", nil)
         }

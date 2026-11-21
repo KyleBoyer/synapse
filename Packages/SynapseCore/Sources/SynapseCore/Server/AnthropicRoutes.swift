@@ -188,34 +188,6 @@ struct MessageAssembler {
     }
 }
 
-/// With thinking on, Qwen3.5's prompt already ends in `<think>\n`, so output is thinking until `</think>`.
-struct ThinkSplitter {
-    private var buffer = ""
-    private var thinking = true
-    private static let end = "</think>"
-
-    mutating func feed(_ s: String) -> (thinking: String, text: String) {
-        buffer += s
-        guard thinking else { defer { buffer = "" }; return ("", buffer) }
-        if buffer.hasPrefix("<think>") { buffer.removeFirst(7) }
-        if let r = buffer.range(of: Self.end) {
-            thinking = false
-            defer { buffer = "" }
-            return (String(buffer[..<r.lowerBound]), String(buffer[r.upperBound...]))
-        }
-        // Hold back a tail that could be the start of `</think>`.
-        let keep = (1..<Self.end.count).reversed().first { Self.end.hasPrefix(buffer.suffix($0)) } ?? 0
-        let cut = buffer.index(buffer.endIndex, offsetBy: -min(keep, buffer.count))
-        defer { buffer = String(buffer[cut...]) }
-        return (String(buffer[..<cut]), "")
-    }
-
-    mutating func finish() -> (thinking: String, text: String) {
-        defer { buffer = "" }
-        return thinking ? (buffer, "") : ("", buffer)
-    }
-}
-
 /// Finds the earliest stop sequence in streamed text, holding back a tail that could still grow into one.
 struct StopScanner {
     let stops: [String]
@@ -272,14 +244,12 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
         /// Consumes the generation, reporting each stream event to `emit`, and returns the finished message.
         @Sendable func run(_ emit: (AnyEncodableDict) async throws -> Void) async throws -> AnthropicMessageWire {
             var asm = MessageAssembler()
-            var splitter = options.enableThinking ? ThinkSplitter() : nil
             var scanner = StopScanner(stops)
             var stopReason = "end_turn", stopSequence: String?
             var usage = AnthropicUsage(input_tokens: 0, output_tokens: 0)
             var chunks = 0
-            func text(_ pieces: (thinking: String, text: String), final: Bool) {
-                asm.add("thinking", pieces.thinking)
-                let (out, hit) = scanner.feed(pieces.text)
+            func text(_ piece: String, final: Bool) {
+                let (out, hit) = scanner.feed(piece)
                 asm.add("text", out + (final && hit == nil ? scanner.finish() : ""))
                 if let hit { stopReason = "stop_sequence"; stopSequence = hit }
             }
@@ -287,14 +257,18 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) {
                 switch e {
                 case .delta(let s):
                     chunks += 1
-                    text(splitter?.feed(s) ?? ("", s), final: false)
+                    text(s, final: false)
                     // shortcut: on a stop sequence generation is cut before its usage report, so output_tokens counts chunks and input_tokens is 0.
                     if stopSequence != nil { usage.output_tokens = chunks }
                 case .toolCall(let name, let arguments):
                     asm.toolUse(name: name, arguments: arguments)
-                case .progress: break
+                case .reasoning(let r):
+                    asm.add("thinking", r)
+                case .progress(let p):
+                    // Not an Anthropic event; clients skip unknown event types, and this shows load and prompt reading.
+                    try await emit(p.wire(type: "synapse_progress"))
                 case .done(let finish, let u):
-                    text(splitter?.finish() ?? ("", ""), final: true)
+                    text("", final: true)
                     // Anthropic counts cache reads apart from input_tokens; caching here is automatic, so there are no cache writes.
                     usage = AnthropicUsage(input_tokens: u.promptTokens - u.cachedTokens, output_tokens: u.completionTokens,
                                            cache_read_input_tokens: u.cachedTokens)

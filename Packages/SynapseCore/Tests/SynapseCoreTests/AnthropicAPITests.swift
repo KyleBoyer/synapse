@@ -38,14 +38,14 @@ final class AnthropicAPITests: XCTestCase {
     }
 
     func testThinkSplitterAcrossChunkBoundaries() {
-        var s = ThinkSplitter()
+        var s = ThinkSplitter(opensInThink: true)
         var thinking = "", text = ""
         for chunk in ["Let me", " think.</th", "ink>\n\nPar", "is."] {
             let r = s.feed(chunk); thinking += r.thinking; text += r.text
         }
         let tail = s.finish(); thinking += tail.thinking; text += tail.text
         XCTAssertEqual(thinking, "Let me think.")
-        XCTAssertEqual(text, "\n\nParis.")
+        XCTAssertEqual(text, "Paris.")
     }
 
     func testStopScannerCutsAtEarliestStopSplitAcrossChunks() {

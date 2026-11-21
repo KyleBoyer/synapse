@@ -10,11 +10,11 @@ final class LMStudioAPITests: XCTestCase {
     }
 
     func testTimelineBecomesLMStudioEvents() throws {
-        var run = LMStudioRun(model: "qwen3.5-0.8b", thinking: true, responseID: "resp_1")
+        var run = LMStudioRun(model: "qwen3.5-0.8b", responseID: "resp_1")
         var out: [LMStudioRun.Event] = []
         for e: ChatEvent in [.progress(.loadStarted), .progress(.loaded(seconds: 1.5)), .progress(.promptStarted),
                              .progress(.prompt(fraction: 0.5)), .progress(.promptDone),
-                             .delta("<think>Need"), .delta(" to</th"), .delta("ink>Par"), .delta("is."),
+                             .reasoning("Need"), .reasoning(" to"), .delta("Par"), .delta("is."),
                              .done(finishReason: "stop", usage: ChatUsage(promptTokens: 20, completionTokens: 4))] {
             out += run.consume(e)
         }
@@ -40,7 +40,7 @@ final class LMStudioAPITests: XCTestCase {
     }
 
     func testResidentModelHasNoLoadEventsOrLoadTime() throws {
-        var run = LMStudioRun(model: "m", thinking: false, responseID: nil)
+        var run = LMStudioRun(model: "m", responseID: nil)
         var out: [LMStudioRun.Event] = []
         for e: ChatEvent in [.progress(.promptStarted), .progress(.promptDone), .delta("Hi"),
                              .done(finishReason: "stop", usage: ChatUsage(promptTokens: 3, completionTokens: 1))] {

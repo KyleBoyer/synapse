@@ -70,7 +70,7 @@ func applyStops(_ events: AsyncThrowingStream<ChatEvent, Error>, _ stops: [Strin
                         let tail = scanner.finish()
                         if !tail.isEmpty { c.yield(.delta(tail)) }
                         c.yield(.done(finishReason: f, usage: u))
-                    case .toolCall, .progress:
+                    case .toolCall, .progress, .reasoning:
                         c.yield(e)
                     }
                 }
@@ -108,7 +108,7 @@ func addCompletionsRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) 
                 switch e {
                 case .delta(let s): text += s
                 case .done(let f, let u): finish = f; usage = u
-                case .toolCall, .progress: break
+                case .toolCall, .progress, .reasoning: break
                 }
             }
             return json(CompletionWire(id: id, created: created, model: spec.id,
@@ -124,7 +124,7 @@ func addCompletionsRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService) 
             for try await e in events {
                 switch e {
                 case .delta(let s): try await write(nil, chunk(s))
-                case .toolCall, .progress: break
+                case .toolCall, .progress, .reasoning: break
                 case .done(let finish, let usage):
                     try await write(nil, chunk("", finish: finish))
                     if includeUsage {

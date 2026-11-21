@@ -118,6 +118,9 @@ public struct ChatUsage: Sendable, Equatable {
 
 public enum ChatEvent: Sendable, Equatable {
     case delta(String)
+    /// Thinking text, apart from the answer: llama.cpp's and mlx-vlm's reasoning_content, or a `<think>` block.
+    /// Sent whether or not thinking was asked for, since some models think anyway.
+    case reasoning(String)
     /// The model called a tool; `arguments` is a JSON object string.
     case toolCall(name: String, arguments: String)
     /// finishReason is OpenAI's: "stop" or "length".
@@ -145,6 +148,7 @@ public struct ChatToolCall: Sendable, Equatable {
 public struct ChatResult: Sendable, Equatable {
     public var modelID: String
     public var text: String
+    public var reasoning = ""
     public var toolCalls: [ChatToolCall] = []
     public var finishReason: String
     public var usage: ChatUsage
@@ -309,7 +313,7 @@ public actor ChatService {
             // shortcut: speculative decoding is text-only, like the prompt cache it builds on.
             let draftLease = cacheable ? try await self.draftLease(for: spec, progress: progress) : nil
             let draft: DraftModel? = if let draftLease { await DraftModel(draftLease.value) } else { nil }
-            return try await self.run(lease: lease, draftLease: draftLease, stripThinking: !options.enableThinking, progress: progress) {
+            return try await self.run(lease: lease, draftLease: draftLease, splitThinking: true, progress: progress) {
                 try await container.perform { ctx in
                     let input = try Self.userInput(messages, options)
                     let tools = input.tools
@@ -320,8 +324,13 @@ public actor ChatService {
                     // request starts with exactly those tokens, however the reply is re-rendered.
                     let boundary = (ctx.tokenizer as? TokenizerBridge)?.generationPrompt(context: context)
                         .flatMap { gp in tokens.count > gp.count && Array(tokens.suffix(gp.count)) == gp ? tokens.count - gp.count : nil }
-                    return try await Self.generate(ctx, lm, tokens: tokens, boundary: boundary, cache: cache, params: params, tools: tools,
-                                                   draft: draft, thinkingBudget: options.enableThinking ? options.thinkingBudget : nil)
+                    let tail = ctx.tokenizer.decode(tokenIds: Array(tokens.suffix(8)), skipSpecialTokens: false)
+                    var started = try await Self.generate(ctx, lm, tokens: tokens, boundary: boundary, cache: cache, params: params,
+                                                          tools: tools, draft: draft,
+                                                          thinkingBudget: options.enableThinking ? options.thinkingBudget : nil)
+                    started.opensInThink = tail.range(of: "<think>", options: .backwards)
+                        .map { !tail[$0.upperBound...].contains("</think>") } ?? false
+                    return started
                 }
             }
         }
@@ -465,7 +474,7 @@ public actor ChatService {
             let container = lease.value
             let cache = await self.promptCache(spec.id)
             let params = Self.parameters(options, await self.kvPrecision)
-            return try await self.run(lease: lease, draftLease: nil, stripThinking: false, progress: progress) {
+            return try await self.run(lease: lease, draftLease: nil, splitThinking: false, progress: progress) {
                 try await container.perform { ctx in
                     let tokens = ctx.tokenizer.encode(text: prompt)
                     // Raw text has no template, so a longer prompt extends this one directly.
@@ -499,6 +508,8 @@ public actor ChatService {
         /// Runs after the last token, still under the GPU gate (saving a checkpoint to disk).
         var afterward: (@Sendable () async -> Void)? = nil
         var drafted = false
+        /// The prompt ends inside an open `<think>` (Qwen3.5 with thinking on), so output is thinking until `</think>`.
+        var opensInThink = false
     }
 
     /// Prefills through the prompt cache and starts generating. Runs inside `perform`, where the model and the
@@ -580,7 +591,7 @@ public actor ChatService {
     }
 
     /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.
-    private func run(lease: ModelLease<ModelContainer>, draftLease: ModelLease<ModelContainer>?, stripThinking: Bool,
+    private func run(lease: ModelLease<ModelContainer>, draftLease: ModelLease<ModelContainer>?, splitThinking: Bool,
                      progress: Progress, start: () async throws -> Started) async throws -> AsyncThrowingStream<ChatEvent, Error> {
         await GPUGate.shared.acquire()
         let releaseGate = GateRelease()
@@ -597,20 +608,22 @@ public actor ChatService {
             throw error
         }
         let generation = started.generation, promptTokens = started.promptTokens, cachedTokens = started.cachedTokens
-        let afterward = started.afterward, drafted = started.drafted
+        let afterward = started.afterward, drafted = started.drafted, opensInThink = started.opensInThink
 
         return AsyncThrowingStream { continuation in
             let task = Task {
-                var filter = ThinkFilter(enabled: stripThinking)
+                var splitter = splitThinking ? ThinkSplitter(opensInThink: opensInThink) : nil
+                func emit(_ p: (thinking: String, text: String)) {
+                    if !p.thinking.isEmpty { continuation.yield(.reasoning(p.thinking)) }
+                    if !p.text.isEmpty { continuation.yield(.delta(p.text)) }
+                }
                 for await event in generation {
                     if Task.isCancelled { break }
                     switch event {
                     case .chunk(let s):
-                        let out = filter.feed(s)
-                        if !out.isEmpty { continuation.yield(.delta(out)) }
+                        emit(splitter?.feed(s) ?? ("", s))
                     case .info(let info):
-                        let tail = filter.finish()
-                        if !tail.isEmpty { continuation.yield(.delta(tail)) }
+                        emit(splitter?.finish() ?? ("", ""))
                         let reason = info.stopReason == .length ? "length" : "stop"
                         // info counts only the tokens fed after the cached prefix.
                         var usage = ChatUsage(promptTokens: promptTokens, completionTokens: info.generationTokenCount,
@@ -639,19 +652,20 @@ public actor ChatService {
     }
 
     public func complete(model spec: ModelSpec, messages: [ChatMessage], options: ChatOptions) async throws -> ChatResult {
-        var text = ""
+        var text = "", reasoning = ""
         var finish = "stop"
         var usage = ChatUsage(promptTokens: 0, completionTokens: 0)
         var calls: [ChatToolCall] = []
         for try await event in try await stream(model: spec, messages: messages, options: options) {
             switch event {
             case .delta(let s): text += s
+            case .reasoning(let s): reasoning += s
             case .done(let f, let u): finish = f; usage = u
             case .toolCall(let name, let arguments): calls.append(ChatToolCall(name: name, arguments: arguments))
             case .progress: break
             }
         }
-        return ChatResult(modelID: spec.id, text: text, toolCalls: calls, finishReason: finish, usage: usage)
+        return ChatResult(modelID: spec.id, text: text, reasoning: reasoning, toolCalls: calls, finishReason: finish, usage: usage)
     }
 
     /// Prompt tokens for `messages` after the chat template (and image tokens), without generating.
@@ -728,39 +742,40 @@ public actor ChatService {
     }
 }
 
-/// Drops a leading `<think>...</think>` block from streamed text.
-struct ThinkFilter {
-    private var enabled: Bool
+/// Splits streamed text into thinking and answer. Thinking is a leading `<think>…</think>` block, or everything up to
+/// `</think>` when the prompt already opened one; a tail that could be the start of a tag is held back.
+struct ThinkSplitter {
+    private enum State { case undecided, thinking, text }
+    private var state: State
     private var buffer = ""
-    private var decided = false
-    private var inThink = false
+    private static let open = "<think>", close = "</think>"
 
-    init(enabled: Bool) { self.enabled = enabled; decided = !enabled }
+    init(opensInThink: Bool = false) { state = opensInThink ? .thinking : .undecided }
 
-    mutating func feed(_ s: String) -> String {
-        guard enabled else { return s }
+    mutating func feed(_ s: String) -> (thinking: String, text: String) {
         buffer += s
-        if !decided {
+        if state == .undecided {
             let trimmed = buffer.drop { $0.isWhitespace }
-            if trimmed.isEmpty || "<think>".hasPrefix(trimmed) { return "" }
-            decided = true
-            inThink = trimmed.hasPrefix("<think>")
-            if !inThink { defer { buffer = "" }; return String(trimmed) }
+            if trimmed.isEmpty || Self.open.hasPrefix(trimmed) { return ("", "") }
+            state = trimmed.hasPrefix(Self.open) ? .thinking : .text
+            buffer = String(trimmed)
         }
-        if inThink {
-            guard let end = buffer.range(of: "</think>") else { return "" }
-            inThink = false
-            let rest = String(buffer[end.upperBound...].drop { $0.isWhitespace })
-            buffer = ""
-            return rest
+        guard state == .thinking else { defer { buffer = "" }; return ("", buffer) }
+        if buffer.hasPrefix(Self.open) { buffer.removeFirst(Self.open.count) }
+        if let r = buffer.range(of: Self.close) {
+            state = .text
+            defer { buffer = "" }
+            return (String(buffer[..<r.lowerBound]), String(buffer[r.upperBound...].drop { $0.isWhitespace }))
         }
-        defer { buffer = "" }
-        return buffer
+        let keep = (1..<Self.close.count).reversed().first { Self.close.hasPrefix(buffer.suffix($0)) } ?? 0
+        let cut = buffer.index(buffer.endIndex, offsetBy: -min(keep, buffer.count))
+        defer { buffer = String(buffer[cut...]) }
+        return (String(buffer[..<cut]), "")
     }
 
-    mutating func finish() -> String {
+    mutating func finish() -> (thinking: String, text: String) {
         defer { buffer = "" }
-        return (enabled && (inThink || !decided)) ? "" : buffer
+        return state == .thinking ? (buffer, "") : ("", buffer)
     }
 }
 
