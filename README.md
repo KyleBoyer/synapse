@@ -119,7 +119,7 @@ It also works with anything that lets you set an OpenAI or Anthropic base URL: c
 | Clean up audio | Audio → Clean Up | `/v1/audio/enhance`, `/v1/audio/separate`, `/v1/audio/convert` | DeepFilterNet 3, NemotronLabs RE-USE, SAM-Audio, DialogueSidon, Chatterbox |
 | Generate and edit images | Images → Generate | `/v1/images/generations`, `/v1/images/edits` | FLUX.2 klein 4B and 9B, Z-Image and Z-Image Turbo, Qwen-Image 2.1 and 2512, Qwen-Image Edit |
 | Cut out, depth, upscale | Images | `/v1/images/cutout`, `/v1/images/depth`, `/v1/images/upscale` | macOS Vision, Depth Anything V2, Real-ESRGAN |
-| Generate video | Video → Generate | `/v1/videos` | LTX-2.3 Distilled; Wan 2.2 TI2V 5B; MiniMax H3 (with sound), plus its Turbo LoRA |
+| Generate video | Video → Generate | `/v1/videos` | LTX-2.3 Distilled; Wan 2.2 TI2V 5B; MiniMax H3 (with sound), plus its Turbo LoRA and LoRAs you add from Hugging Face |
 | Transform video | Video → Transform | `/v1/videos/transform` | the image tools above, per frame |
 | Search and RAG | Embed | `/v1/embeddings`, `/v1/rerank` | Qwen3 Embedding, EmbeddingGemma, Qwen3-VL Embedding, SigLIP2, Qwen3 Reranker |
 
@@ -295,7 +295,18 @@ The Images pane has the same: Generate, Cut Out, Depth and Upscale.
 
 **Generate.** OpenAI Videos API: `POST /v1/videos` (`prompt`, `seconds` `4`/`8`/`12`, `size` from 256 to 1920 per side, `input_reference` start image, `seed`), `GET /v1/videos/{id}`, `GET /v1/videos`, `GET /v1/videos/{id}/content` (`variant=video` or `thumbnail`), `DELETE /v1/videos/{id}`. `sora-2` and `sora-2-pro` mean the downloaded video model. Clips render one at a time and are kept for a day. Each side is generated at the nearest smaller multiple of 64 (1280x720 renders at 1280x704). The model is LTX-2.3 Distilled. Macs with 64 GB or more run it at full precision (about 96 GB download). Smaller Macs use low-memory mode: an 8 GB 4-bit Gemma text encoder and the transformer quantized while it loads (3-bit under 24 GB, 4-bit up to 64 GB), about a 55 GB download. On a 16 GB M4 Mac mini a 1-second 384x256 clip takes about 90 seconds. Wan 2.2 TI2V 5B (`wan2.2-ti2v-5b`, Apache-2.0, about 20 GB) is the other video model: text or a start image to video at 24 fps. It is slower: on the same Mac a 4-second 768x512 clip took 66 minutes, and under 64 GB its frames decode in small tiles so they fit. MiniMax H3 (`minimax-h3`, MiniMax H3 Community License) makes video with a stereo soundtrack through stable-diffusion.cpp, whose prebuilt CLI (MIT) is fetched on first use. Under 64 GB Synapse downloads a pruned 2-bit transformer and the 4B text encoder (about 14 GB); 64 GB and up get the 4-bit transformer with the 32B encoder (about 43 GB, not yet run on such a Mac).
 
-**LoRA add-ons.** A LoRA is a small patch trained on top of one base model. Synapse keeps it as its own download and applies it while a clip renders, so the base is never copied or changed. Download one in Models; when its base is chosen in Video, a LoRA menu offers it (None by default), and each base remembers its choice. Over the API, pass `lora` with the add-on's id. The one in the catalog is `minimax-h3-turbo` (about 2 GB): H3 in 4 steps instead of 20. On a 16 GB M4 Mac mini a 1.6-second 480x288 clip with Turbo took about 13 minutes, most of it decoding frames.
+**LoRA add-ons.** A LoRA is a small patch trained on top of one base model. Synapse keeps each LoRA as its own download and applies it while a clip renders, so the base is never copied or changed. When a base is chosen in Video, its downloaded LoRAs are listed with a checkbox each. A LoRA that is on gets a strength slider (0 to 2, where 1 applies it as trained), and several can be on at once, for example Turbo with a style LoRA. Each base remembers its choices. The catalog has `minimax-h3-turbo` (about 2 GB), which renders H3 in 4 steps instead of 20. On a 16 GB M4 Mac mini, a 1.6-second 480x288 clip with Turbo took about 13 minutes, most of it decoding frames.
+
+To add your own, paste a LoRA repo or a link to one of its files into **Models → Add from Hugging Face**. Synapse recognizes a repo of LoRA files (safetensors with no `config.json`) and adds it as an add-on for the base its model card names. When the card names no base, it is added for MiniMax H3, the only model Synapse applies LoRAs to today. A repo with many files (Civitai mirrors hold dozens) shows a File menu, and each LoRA is added separately into its own folder, so deleting one keeps the rest. The sheet shows a LoRA's trigger words when its card lists them. Its id is `org/repo/path/to/file` without the extension.
+
+Over the API, pass `loras` on `POST /v1/videos`:
+
+```json
+{"model": "minimax-h3", "prompt": "vh5tape, a fox in snow",
+ "loras": [{"id": "minimax-h3-turbo", "strength": 1}, {"id": "KennethFal/vh5tape-vhs-lora-minimax-h3/vh5tape-comfyui", "strength": 0.8}]}
+```
+
+A multipart request can send one LoRA as `lora` and `lora_strength` instead. The API takes strengths from -2 to 2, and a LoRA made for another base is refused with a 400.
 
 ```python
 v = c.videos.create(model="sora-2", prompt="A red fox walking through snow", seconds="4", size="1280x720")

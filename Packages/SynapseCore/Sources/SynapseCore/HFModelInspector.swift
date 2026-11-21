@@ -10,18 +10,26 @@ public struct CustomModel: Codable, Sendable, Hashable, Identifiable {
     public var displayName: String
     public var approxMB: Int
     public var ramGB: Int?
-    /// GGUF: the chosen weights file(s) and any vision projector.
+    /// GGUF: the chosen weights file(s) and any vision projector. LoRA: its one weights file.
     public var files: [String]?
-    public var id: String { repo }
+    /// LoRA: the catalog id of the model it patches.
+    public var baseModel: String?
+    /// One repo can hold many LoRAs, so a LoRA's id adds its file: `org/name/folder/file` (no extension).
+    public var id: String {
+        guard baseModel != nil, let file = files?.first else { return repo }
+        return "\(repo)/\((file as NSString).deletingPathExtension)"
+    }
 
-    public init(repo: String, engine: EngineKind, displayName: String, approxMB: Int, ramGB: Int?, files: [String]? = nil) {
+    public init(repo: String, engine: EngineKind, displayName: String, approxMB: Int, ramGB: Int?, files: [String]? = nil,
+                baseModel: String? = nil) {
         self.repo = repo; self.engine = engine; self.displayName = displayName; self.approxMB = approxMB; self.ramGB = ramGB
-        self.files = files
+        self.files = files; self.baseModel = baseModel
     }
 
     public var spec: ModelSpec {
-        ModelSpec(id: repo, engine: engine, displayName: displayName, variant: repo, approxMB: approxMB,
-                  languages: nil, canTranslate: false, canDetectLanguage: false, recommendedRAMGB: ramGB, files: files)
+        ModelSpec(id: id, engine: engine, displayName: displayName, variant: repo, approxMB: approxMB,
+                  languages: nil, canTranslate: false, canDetectLanguage: false, recommendedRAMGB: ramGB, files: files,
+                  baseModel: baseModel)
     }
 }
 
@@ -33,17 +41,21 @@ public enum HFModelInspector {
         public var model: CustomModel
         /// Things worth knowing before downloading (runtime, precision, gating, memory).
         public var notes: [String]
-        /// GGUF repos: every quantization on offer; `model` uses `chosen`.
+        /// GGUF repos: every quantization on offer. LoRA repos: every LoRA file. `model` uses one of them.
         public var ggufChoices: [GGUFChoice] = []
         public var projector: GGUFChoice?
 
-        /// The same report with another quantization picked.
+        /// The same report with another quantization (or LoRA file) picked.
         public func choosing(_ c: GGUFChoice) -> Report {
             var r = self
             let mb = c.mb + (projector?.mb ?? 0)
             r.model.files = c.files + (projector?.files ?? [])
             r.model.approxMB = mb
-            r.model.ramGB = HFModelInspector.ram(mb)
+            if r.model.baseModel != nil {
+                r.model.displayName = (c.label as NSString).lastPathComponent
+            } else {
+                r.model.ramGB = HFModelInspector.ram(mb)
+            }
             return r
         }
     }
@@ -85,6 +97,14 @@ public enum HFModelInspector {
         return parts.joined(separator: "/")
     }
 
+    /// The file a link points at: `.../blob/main/path/file.safetensors` or `.../resolve/main/...`.
+    static func filePath(from input: String) -> String? {
+        let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let m = s.firstMatch(of: /\/(?:blob|resolve)\/[^\/]+\/(.+)$/) else { return nil }
+        let path = String(m.output.1).split(separator: "?").first.map(String.init) ?? ""
+        return path.removingPercentEncoding ?? path
+    }
+
     public static func inspect(_ input: String, token: String?, session: URLSession = .shared) async throws -> Report {
         guard let repo = repoID(from: input) else { throw InspectError.badInput }
         var infoURL = URL(string: "https://huggingface.co/api/models/\(repo)")!
@@ -93,7 +113,7 @@ public enum HFModelInspector {
         // The info call carries config's model_type; the file itself also has the quantization block.
         let config = try? await fetchJSON(URL(string: "https://huggingface.co/\(repo)/resolve/main/config.json")!,
                                           token: token, session: session, repo: repo)
-        return try await classify(repo: repo, info: info, config: config ?? info["config"] as? [String: Any],
+        return try await classify(repo: repo, info: info, config: config ?? info["config"] as? [String: Any], file: filePath(from: input),
                                   chatInProcess: { t in
                                       if await VLMTypeRegistry.shared.contains(t) { return true }
                                       return await LLMTypeRegistry.shared.contains(t)
@@ -115,7 +135,7 @@ public enum HFModelInspector {
     }
 
     /// The decision itself, separate from the network so it can be tested with recorded repo metadata.
-    static func classify(repo: String, info: [String: Any], config: [String: Any]?,
+    static func classify(repo: String, info: [String: Any], config: [String: Any]?, file: String? = nil,
                          chatInProcess: (String) async -> Bool, embedder: (String) async -> Bool) async throws -> Report {
         let files = (info["siblings"] as? [[String: Any]] ?? []).compactMap { f -> (String, Int64)? in
             guard let name = f["rfilename"] as? String else { return nil }
@@ -124,6 +144,10 @@ public enum HFModelInspector {
         let names = files.map(\.0)
         if names.contains("model_index.json") {
             throw InspectError.unsupported("\(repo) is a diffusers pipeline (image or video generation). Those come from the built-in catalog for now.")
+        }
+        // No config.json means LoRA adapters or loose checkpoints (e.g. a Civitai mirror), not a loadable model.
+        if config?["model_type"] == nil, !names.contains("config.json"), names.contains(where: { $0.hasSuffix(".safetensors") }) {
+            return try lora(repo: repo, files: files, card: info["cardData"] as? [String: Any] ?? [:], file: file)
         }
         let pipeline = info["pipeline_tag"] as? String
         if let p = pipeline, ["automatic-speech-recognition", "text-to-speech", "text-to-audio", "text-to-image",
@@ -135,15 +159,6 @@ public enum HFModelInspector {
                 return try gguf(repo: repo, files: files, gated: (info["gated"] as? String) != nil || (info["gated"] as? Bool) == true)
             }
             throw InspectError.unsupported("\(repo) has no safetensors or GGUF weights.")
-        }
-        // No config.json means LoRA adapters or loose checkpoints (e.g. a Civitai mirror), not a loadable model.
-        guard config?["model_type"] != nil || names.contains("config.json") else {
-            let count = names.filter { $0.hasSuffix(".safetensors") }.count
-            let card = info["cardData"] as? [String: Any]
-            let base = (card?["base_model"] as? String) ?? (card?["base_model"] as? [String])?.first
-            throw InspectError.unsupported("\(repo) has no config.json, so it is not a complete model: its \(count) safetensors "
-                + "file\(count == 1 ? "" : "s") look like add-ons (LoRA adapters or loose checkpoints)"
-                + (base.map { " for \($0)" } ?? "") + ", which Synapse cannot load on their own.")
         }
         guard let modelType = config?["model_type"] as? String else {
             throw InspectError.unsupported("\(repo) has no model_type in its config.json, so its architecture is unknown.")
@@ -208,6 +223,50 @@ public enum HFModelInspector {
         let base = Report(model: CustomModel(repo: repo, engine: .gguf, displayName: name, approxMB: 0, ramGB: nil),
                           notes: notes, ggufChoices: choices, projector: projector)
         return base.choosing(chosen)
+    }
+
+    /// Built-in models Synapse can apply a LoRA to.
+    static var loraBases: [ModelSpec] { Catalog.builtIn.filter(MiniMaxH3.handles) }
+
+    /// A repo of LoRA files: each `.safetensors` is a choice (a link to one file picks it), added as an add-on for
+    /// the base its model card names, or for the only base Synapse can patch when the card names none.
+    static func lora(repo: String, files: [(String, Int64)], card: [String: Any], file: String?) throws -> Report {
+        let bases = loraBases
+        let named = (card["base_model"] as? String) ?? (card["base_model"] as? [String])?.first
+        var notes: [String] = []
+        let base: ModelSpec
+        if let named {
+            guard let b = bases.first(where: { $0.variant == named || $0.id == named }) else {
+                throw InspectError.unsupported("\(repo) holds LoRA add-ons for \(named). Synapse applies LoRAs to "
+                    + bases.map(\.displayName).joined(separator: ", ") + " only.")
+            }
+            base = b
+        } else {
+            guard bases.count == 1 else {
+                throw InspectError.unsupported("\(repo) looks like LoRA add-ons, but its model card does not say which model they patch.")
+            }
+            base = bases[0]
+            notes.append("Its model card does not name a base model, so it is added as a LoRA for \(base.displayName). "
+                + "A LoRA made for another model fails when a clip uses it.")
+        }
+        let choices = files.filter { $0.0.hasSuffix(".safetensors") }.map {
+            GGUFChoice(label: ($0.0 as NSString).deletingPathExtension, files: [$0.0], mb: max(1, Int((Double($0.1) / 1_000_000).rounded())))
+        }.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+        if let file, !choices.contains(where: { $0.files == [file] }) {
+            throw InspectError.unsupported("\(repo) has no LoRA file named \(file).")
+        }
+        // Repos often ship a ComfyUI-format copy next to the original; the Turbo LoRA is in that format, which sd.cpp reads.
+        let chosen = choices.first { $0.files == [file] } ?? choices.first { $0.label.lowercased().contains("comfy") } ?? choices[0]
+        notes.insert("LoRA add-on for \(base.displayName): turn it on in Video, with a strength, when \(base.displayName) is chosen.", at: 0)
+        if choices.count > 1 { notes.append("This repo has \(choices.count) LoRA files; add each one you want separately.") }
+        if let trigger = card["instance_prompt"] as? String, !trigger.isEmpty {
+            notes.append("Trigger words from its model card: \(trigger)")
+        }
+        let name = (chosen.label as NSString).lastPathComponent
+        let report = Report(model: CustomModel(repo: repo, engine: .videogen, displayName: name, approxMB: 0, ramGB: nil,
+                                               baseModel: base.id),
+                            notes: notes, ggufChoices: choices.count > 1 ? choices : [])
+        return report.choosing(chosen)
     }
 
     /// "Llama-3.2-1B-Instruct-Q4_K_M.gguf" -> "Q4_K_M"; the file name when no quantization tag is found.

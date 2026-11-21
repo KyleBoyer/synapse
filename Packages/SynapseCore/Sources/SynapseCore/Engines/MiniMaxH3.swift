@@ -78,13 +78,16 @@ enum MiniMaxH3 {
     }
 
     /// Distilled ("N-step") LoRAs replace the 20-step schedule.
-    static func steps(lora: URL?) -> Int {
-        guard let name = lora?.lastPathComponent, let m = name.range(of: "([0-9]+)step", options: .regularExpression),
-              let n = Int(name[m].dropLast(4)) else { return 20 }
-        return n
+    static func steps(loras: [URL]) -> Int {
+        loras.compactMap { url -> Int? in
+            let name = url.lastPathComponent
+            guard let m = name.range(of: "([0-9]+)step", options: .regularExpression) else { return nil }
+            return Int(name[m].dropLast(4))
+        }.min() ?? 20
     }
 
-    static func arguments(_ r: VideoRequest, folder: URL, set: Parts, output: URL, startImage: URL?) -> [String] {
+    /// `loraDir` holds the clip's LoRAs as `lora0.safetensors`, `lora1.safetensors`, ... in `r.applied` order.
+    static func arguments(_ r: VideoRequest, folder: URL, set: Parts, output: URL, startImage: URL?, loraDir: URL) -> [String] {
         // Sizes snap to 32 (VAE stride 16, patch 2); the CLI rounds the frame count to what H3 accepts.
         let w = max(32, r.width / 32 * 32), h = max(32, r.height / 32 * 32)
         var prompt = r.prompt
@@ -93,13 +96,13 @@ enum MiniMaxH3 {
                     "--llm", folder.appending(path: set.encoder.path).path,
                     "--vae", folder.appending(path: set.vae.path).path,
                     "--audio-vae", folder.appending(path: set.audioVAE.path).path,
-                    "--cfg-scale", "1.0", "--steps", "\(steps(lora: r.loraFile))",
+                    "--cfg-scale", "1.0", "--steps", "\(steps(loras: r.applied.map(\.file)))",
                     "-W", "\(w)", "-H", "\(h)", "--fps", "\(r.fps)", "--video-frames", "\(r.frames)", "--rng", "cpu",
                     "--offload-to-cpu", "-o", output.path, "-v"]
-        if let lora = r.loraFile {
-            // sd.cpp applies a LoRA named in the prompt from --lora-model-dir, at run time on quantized weights.
-            args += ["--lora-model-dir", lora.deletingLastPathComponent().path]
-            prompt += " <lora:\(lora.deletingPathExtension().lastPathComponent):1>"
+        if !r.applied.isEmpty {
+            // sd.cpp applies LoRAs named in the prompt from --lora-model-dir, at run time on quantized weights.
+            args += ["--lora-model-dir", loraDir.path]
+            for (i, lora) in r.applied.enumerated() { prompt += " <lora:lora\(i):\(String(format: "%g", lora.strength))>" }
         }
         if set.encoderOnCPU { args += ["--backend", "te=cpu"] }
         if VideoEngines.lowMemory() { args += ["--vae-tiling", "--temporal-tiling"] }
@@ -145,10 +148,17 @@ actor H3VideoEngine: VideoEngine {
             startImage = work.appending(path: "start.png")
             try image.write(to: startImage!)
         }
+        // The LoRAs may sit in different folders; sd.cpp reads them from one.
+        let loraDir = work.appending(path: "loras", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: loraDir, withIntermediateDirectories: true)
+        for (i, lora) in r.applied.enumerated() {
+            try FileManager.default.createSymbolicLink(at: loraDir.appending(path: "lora\(i).safetensors"), withDestinationURL: lora.file)
+        }
         // An animated WebP keeps the soundtrack out of the container, as a WAV beside it (out.wav).
         let frames = work.appending(path: "out.webp")
         let tracker = H3Progress()
-        try await PythonRuntime.runStreaming(cli, MiniMaxH3.arguments(r, folder: folder, set: set, output: frames, startImage: startImage),
+        try await PythonRuntime.runStreaming(cli, MiniMaxH3.arguments(r, folder: folder, set: set, output: frames, startImage: startImage,
+                                                                                      loraDir: loraDir),
                                              env: [:]) { line in
             if let p = tracker.feed(line) { progress(p) }
         }

@@ -13,43 +13,53 @@ private actor RecordingEngine: VideoEngine {
 }
 
 final class MiniMaxH3Tests: XCTestCase {
-    func testLoRAIsAppliedToTheClipThatChoseIt() async throws {
-        let store = try TestSupport.store(downloaded: ["minimax-h3", "minimax-h3-turbo", "ltx-2.3-distilled"])
+    func testLoRAsAreAppliedToTheClipThatChoseThem() async throws {
+        defer { Catalog.setCustom([]) }
+        Catalog.setCustom([CustomModel(repo: "org/loras", engine: .videogen, displayName: "vhs", approxMB: 1, ramGB: nil,
+                                       files: ["styles/vhs.safetensors"], baseModel: "minimax-h3")])
+        let store = try TestSupport.store(downloaded: ["minimax-h3", "minimax-h3-turbo", "org/loras/styles/vhs", "ltx-2.3-distilled"])
         let engine = RecordingEngine()
         let videos = VideoService(store: store, models: ModelManager(), engineFactory: { _, _ in engine })
         let h3 = try XCTUnwrap(Catalog.spec("minimax-h3")), ltx = try XCTUnwrap(Catalog.spec("ltx-2.3-distilled"))
         XCTAssertFalse(Catalog.all.filter(\.isVideoGen).contains { $0.id == "minimax-h3-turbo" }, "a LoRA is not a model to pick")
 
-        let patched = await videos.create(model: h3, request: VideoRequest(prompt: "fox", width: 64, height: 64, frames: 9, lora: "minimax-h3-turbo"))
+        let patched = await videos.create(model: h3, request: VideoRequest(prompt: "fox", width: 64, height: 64, frames: 9,
+                                                                           loras: [LoRAUse("minimax-h3-turbo"), LoRAUse("org/loras/styles/vhs", strength: 0.6)]))
         let plain = await videos.create(model: h3, request: VideoRequest(prompt: "fox", width: 64, height: 64, frames: 9))
         for _ in 0..<200 where await [patched.id, plain.id].asyncAll({ await videos.job($0)?.status == .completed }) == false {
             try await Task.sleep(for: .milliseconds(20))
         }
         let seen = await engine.seen, root = await store.root
         XCTAssertEqual(seen.count, 2)
-        XCTAssertEqual(seen[0].loraFile?.path, root.appending(path: "minimax-h3-turbo/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors").path)
-        XCTAssertNil(seen[1].loraFile, "the next clip runs the base alone")
+        XCTAssertEqual(seen[0].applied, [
+            AppliedLoRA(file: root.appending(path: "minimax-h3-turbo/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"), strength: 1),
+            AppliedLoRA(file: root.appending(path: "org/loras/styles/vhs/styles/vhs.safetensors"), strength: 0.6)])
+        XCTAssertEqual(seen[1].applied, [], "the next clip runs the base alone")
 
         await XCTAssertThrowsErrorAsync(try await videos.addOnFile("minimax-h3-turbo", for: ltx), "a LoRA only patches its own base")
         let bare = VideoService(store: try TestSupport.store(downloaded: ["minimax-h3"]), models: ModelManager(), engineFactory: { _, _ in engine })
         await XCTAssertThrowsErrorAsync(try await bare.addOnFile("minimax-h3-turbo", for: h3), "not downloaded")
     }
 
-    func testArgumentsSwapTheLoRAInAndOut() {
-        let folder = URL(fileURLWithPath: "/m/minimax-h3"), out = URL(fileURLWithPath: "/t/out.webp")
+    func testArgumentsSwapTheLoRAsInAndOut() {
+        let folder = URL(fileURLWithPath: "/m/minimax-h3"), out = URL(fileURLWithPath: "/t/out.webp"), dir = URL(fileURLWithPath: "/t/loras")
         var r = VideoRequest(prompt: "a fox", width: 500, height: 300, frames: 25, seed: 7)
-        let base = MiniMaxH3.arguments(r, folder: folder, set: MiniMaxH3.small, output: out, startImage: nil)
+        let base = MiniMaxH3.arguments(r, folder: folder, set: MiniMaxH3.small, output: out, startImage: nil, loraDir: dir)
         XCTAssertEqual(base.last, "a fox")
         XCTAssertEqual(base[base.firstIndex(of: "--steps")! + 1], "20")
         XCTAssertEqual(base[base.firstIndex(of: "-W")! + 1], "480", "width snaps down to a multiple of 32")
         XCTAssertFalse(base.contains("--lora-model-dir"))
         XCTAssertTrue(base.contains("te=cpu"), "the int8 encoder runs on the CPU")
 
-        r.loraFile = URL(fileURLWithPath: "/m/minimax-h3-turbo/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors")
-        let turbo = MiniMaxH3.arguments(r, folder: folder, set: MiniMaxH3.small, output: out, startImage: nil)
-        XCTAssertEqual(turbo.last, "a fox <lora:minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16:1>")
-        XCTAssertEqual(turbo[turbo.firstIndex(of: "--lora-model-dir")! + 1], "/m/minimax-h3-turbo/loras")
-        XCTAssertEqual(turbo[turbo.firstIndex(of: "--steps")! + 1], "4")
+        r.applied = [AppliedLoRA(file: URL(fileURLWithPath: "/m/turbo/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"), strength: 1),
+                     AppliedLoRA(file: URL(fileURLWithPath: "/m/vhs/vh5tape-comfyui.safetensors"), strength: 0.75)]
+        let both = MiniMaxH3.arguments(r, folder: folder, set: MiniMaxH3.small, output: out, startImage: nil, loraDir: dir)
+        XCTAssertEqual(both.last, "a fox <lora:lora0:1> <lora:lora1:0.75>")
+        XCTAssertEqual(both[both.firstIndex(of: "--lora-model-dir")! + 1], "/t/loras")
+        XCTAssertEqual(both[both.firstIndex(of: "--steps")! + 1], "4", "the distilled LoRA sets the schedule")
+        r.applied.removeFirst()
+        let style = MiniMaxH3.arguments(r, folder: folder, set: MiniMaxH3.small, output: out, startImage: nil, loraDir: dir)
+        XCTAssertEqual(style[style.firstIndex(of: "--steps")! + 1], "20")
     }
 
     func testDownloadSetFollowsMemory() {
@@ -101,21 +111,27 @@ func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> 
     do { _ = try await expression(); XCTFail("expected an error: \(message)", file: file, line: line) } catch {}
 }
 
-/// Real MiniMax H3 with the Turbo LoRA through `VideoService`. SYNAPSE_E2E=1; downloads both (about 16 GB) unless
-/// present, then takes about 13 minutes on a 16 GB M4.
+/// Real MiniMax H3 through `VideoService`, with the Turbo LoRA stacked on a style LoRA added from a Hugging Face
+/// link. SYNAPSE_E2E=1; downloads what is missing (about 16 GB), then takes about 10 minutes on a 16 GB M4.
 final class MiniMaxH3E2ETests: XCTestCase {
-    func testTurboClipWithSound() async throws {
+    func testTurboPlusAddedLoRAClipWithSound() async throws {
         let env = ProcessInfo.processInfo.environment
         guard env["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
         let store = ModelStore(root: env["SYNAPSE_MODELS_DIR"].map { URL(fileURLWithPath: $0) } ?? ModelStore.defaultRoot)
-        for id in ["minimax-h3", "minimax-h3-turbo"] {
+        let vhs = try await HFModelInspector.inspect("https://huggingface.co/KennethFal/vh5tape-vhs-lora-minimax-h3/blob/main/vh5tape-comfyui.safetensors",
+                                                     token: HFDownloader.cliToken()).model
+        XCTAssertEqual(vhs.baseModel, "minimax-h3")
+        Catalog.setCustom([vhs])
+        defer { Catalog.setCustom([]) }
+        for id in ["minimax-h3", "minimax-h3-turbo", vhs.id] {
             _ = try await store.download(id, token: HFDownloader.cliToken()) { _ in }
         }
         let videos = VideoService(store: store, models: ModelManager())
         let h3 = try XCTUnwrap(Catalog.spec("minimax-h3"))
         let job = await videos.create(model: h3, request: VideoRequest(
-            prompt: "A red fox trotting through fresh snow in a pine forest, soft morning light, gentle wind sounds.",
-            width: 480, height: 288, frames: VideoService.frames(seconds: 1), seed: 42, lora: "minimax-h3-turbo"))
+            prompt: "vh5tape, a red fox trotting through fresh snow in a pine forest, soft morning light, gentle wind sounds.",
+            width: 480, height: 288, frames: VideoService.frames(seconds: 1), seed: 42,
+            loras: [LoRAUse("minimax-h3-turbo"), LoRAUse(vhs.id, strength: 0.8)]))
         var done = job
         let started = Date()
         while done.status != .completed && done.status != .failed {
@@ -123,7 +139,7 @@ final class MiniMaxH3E2ETests: XCTestCase {
             let latest = await videos.job(job.id)
             done = try XCTUnwrap(latest)
         }
-        print("H3 turbo clip: \(done.status) in \(Int(Date().timeIntervalSince(started))) s \(done.error ?? "")")
+        print("H3 turbo+vhs clip: \(done.status) in \(Int(Date().timeIntervalSince(started))) s \(done.error ?? "")")
         XCTAssertEqual(done.status, .completed, done.error ?? "")
         let asset = AVURLAsset(url: try XCTUnwrap(done.file))
         let video = try await asset.loadTracks(withMediaType: .video), audio = try await asset.loadTracks(withMediaType: .audio)

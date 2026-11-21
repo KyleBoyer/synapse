@@ -50,7 +50,6 @@ final class HFModelInspectorTests: XCTestCase {
             (files([("model_index.json", 1), ("unet/model.safetensors", 1)]), nil, "diffusers"),
             (files([("pytorch_model.bin", 1)]), ["model_type": "llama"], "no safetensors or GGUF"),
             (files([("model.safetensors", 1), ("config.json", 1)]), nil, "model_type"),
-            (files([("1068055/3373587/style_epoch_10.safetensors", 1), ("1068055/3373587/README.md", 1)]), nil, "LoRA adapters"),
         ] as [([String: Any], [String: Any]?, String)] {
             do { _ = try await classify(info, config); XCTFail("expected refusal: \(phrase)") } catch {
                 XCTAssertTrue(error.localizedDescription.contains(phrase), error.localizedDescription)
@@ -60,6 +59,43 @@ final class HFModelInspectorTests: XCTestCase {
         do { _ = try await classify(tts, ["model_type": "x"]); XCTFail("expected refusal") } catch {
             XCTAssertTrue(error.localizedDescription.contains("text-to-speech"))
         }
+    }
+
+    /// A Civitai-style mirror (no model card base) and a repo whose card names H3 and ships a ComfyUI copy.
+    func testLoRAReposBecomeAddOnsForTheirBase() async throws {
+        let mirror = files([("1068055/3373587/style_epoch_10.safetensors", 310_000_000), ("1068055/3373587/README.md", 1),
+                            ("139131/3383297/sagging-h3-v0.2ref.safetensors", 74_000_000)])
+        let r = try await classify(mirror, nil)
+        XCTAssertEqual(r.model.baseModel, "minimax-h3", "the only base Synapse can patch")
+        XCTAssertEqual(r.model.engine, .videogen)
+        XCTAssertEqual(r.ggufChoices.map(\.label), ["139131/3383297/sagging-h3-v0.2ref", "1068055/3373587/style_epoch_10"])
+        XCTAssertEqual(r.model.id, "org/model/139131/3383297/sagging-h3-v0.2ref")
+        XCTAssertEqual(r.model.displayName, "sagging-h3-v0.2ref")
+        XCTAssertTrue(r.notes.contains { $0.contains("does not name a base") })
+        let other = r.choosing(r.ggufChoices[1])
+        XCTAssertEqual(other.model.files, ["1068055/3373587/style_epoch_10.safetensors"])
+        XCTAssertEqual(other.model.approxMB, 310)
+        XCTAssertEqual(other.model.spec.baseModel, "minimax-h3")
+        XCTAssertTrue(other.model.spec.isAddOn)
+
+        var carded = files([("vh5tape.safetensors", 131_000_000), ("vh5tape-comfyui.safetensors", 131_000_000), ("samples/a.mp4", 1)])
+        carded["pipeline_tag"] = "image-text-to-video"
+        carded["cardData"] = ["base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "vh5tape"]
+        let vhs = try await classify(carded, nil)
+        XCTAssertEqual(vhs.model.files, ["vh5tape-comfyui.safetensors"], "the ComfyUI copy")
+        XCTAssertTrue(vhs.notes.contains { $0.contains("Trigger words") && $0.contains("vh5tape") })
+        let linked = try await HFModelInspector.classify(repo: "org/model", info: carded, config: nil, file: "vh5tape.safetensors",
+                                                         chatInProcess: { _ in false }, embedder: { _ in false })
+        XCTAssertEqual(linked.model.files, ["vh5tape.safetensors"], "a link to one file picks it")
+
+        carded["cardData"] = ["base_model": "Wan-AI/Wan2.2-T2V-A14B"]
+        do { _ = try await classify(carded, nil); XCTFail("expected refusal") } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Wan-AI/Wan2.2-T2V-A14B"), error.localizedDescription)
+        }
+        XCTAssertEqual(HFModelInspector.filePath(from: "https://huggingface.co/Sentinel7/h3/blob/main/1269557/3264280/Titjob%20-%20v0.95.safetensors"),
+                       "1269557/3264280/Titjob - v0.95.safetensors")
+        XCTAssertEqual(HFModelInspector.repoID(from: "https://huggingface.co/Sentinel7/h3/blob/main/a/b.safetensors"), "Sentinel7/h3")
+        XCTAssertNil(HFModelInspector.filePath(from: "Sentinel7/h3"))
     }
 
     func testGGUFReposOfferQuantizationsAndPickAFittingDefault() async throws {

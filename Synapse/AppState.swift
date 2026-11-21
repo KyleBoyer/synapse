@@ -287,7 +287,7 @@ final class AppState {
 
     /// Adds a model found on Hugging Face to the list (it downloads like any catalog model).
     func addCustom(_ model: CustomModel) {
-        guard !settings.customModels.contains(where: { $0.repo == model.repo }) else { return }
+        guard !settings.customModels.contains(where: { $0.id == model.id }) else { return }
         settings.customModels.append(model)
         Task { await refreshModels() }
     }
@@ -299,7 +299,7 @@ final class AppState {
                 guard await models.unload(id) else { modelStates[id] = .failed("Model is in use by a running job"); return }
                 try? await store.delete(id)
             }
-            settings.customModels.removeAll { $0.repo == id }
+            settings.customModels.removeAll { $0.id == id }
             await refreshModels()
         }
     }

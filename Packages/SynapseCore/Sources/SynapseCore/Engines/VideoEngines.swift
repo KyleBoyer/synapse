@@ -9,16 +9,29 @@ public struct VideoRequest: Sendable, Equatable {
     public var seed: UInt64?
     /// Optional start image (PNG/JPEG bytes) for image-to-video.
     public var inputImage: Data?
-    /// A LoRA add-on's model id (its `baseModel` must be the model generating), applied to this clip only.
-    public var lora: String?
-    /// The add-on's weights file, filled in by `VideoService` when the job runs.
-    var loraFile: URL?
+    /// LoRA add-ons (each one's `baseModel` must be the model generating), applied to this clip only.
+    public var loras: [LoRAUse]
+    /// Their weights files in the same order, filled in by `VideoService` when the job runs.
+    var applied: [AppliedLoRA] = []
 
     public init(prompt: String, width: Int, height: Int, frames: Int, fps: Int = 24, seed: UInt64? = nil, inputImage: Data? = nil,
-                lora: String? = nil) {
+                loras: [LoRAUse] = []) {
         self.prompt = prompt; self.width = width; self.height = height; self.frames = frames; self.fps = fps
-        self.seed = seed; self.inputImage = inputImage; self.lora = lora
+        self.seed = seed; self.inputImage = inputImage; self.loras = loras
     }
+}
+
+/// A LoRA add-on and how strongly it patches the base (1 = as trained, 0 = not at all).
+public struct LoRAUse: Sendable, Equatable, Hashable {
+    public var id: String
+    public var strength: Double
+    public init(_ id: String, strength: Double = 1) { self.id = id; self.strength = strength }
+    public static let strengths: ClosedRange<Double> = -2...2
+}
+
+struct AppliedLoRA: Sendable, Equatable {
+    let file: URL
+    let strength: Double
 }
 
 /// Generates one clip into `output` (MP4), reporting progress from 0 to 1.

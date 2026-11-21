@@ -86,6 +86,34 @@ final class VideoAPITests: XCTestCase {
         }
     }
 
+    func testLoRAsWithStrengths() async throws {
+        let store = try TestSupport.store(downloaded: ["minimax-h3", "minimax-h3-turbo", "ltx-2.3-distilled"])
+        let videos = VideoService(store: store, models: ModelManager(), engineFactory: { _, _ in MockVideoEngine() })
+        let app = Application(router: buildRouter(queue: JobQueue(store: store, decoder: AudioDecoder(ffmpegURL: try TestSupport.ffmpeg()),
+                                                                   settings: SettingsBox(Settings())),
+                                                  store: store, settings: SettingsBox(Settings()), videos: videos))
+        try await app.test(.router) { c in
+            let h3: [String: Any] = ["model": "minimax-h3", "prompt": "a fox"]
+            try await c.execute(uri: "/v1/videos", method: .post, headers: [.contentType: "application/json"],
+                                body: body(h3.merging(["loras": [["id": "minimax-h3-turbo", "strength": 0.7]]]) { $1 })) { r in
+                XCTAssertEqual(r.status, .ok)
+            }
+            try await c.execute(uri: "/v1/videos", method: .post, headers: [.contentType: "application/json"],
+                                body: body(h3.merging(["lora": "minimax-h3-turbo", "lora_strength": "1.25"]) { $1 })) { r in
+                XCTAssertEqual(r.status, .ok)
+            }
+            let requests = await videos.all().map(\.request.loras)
+            XCTAssertEqual(requests, [[LoRAUse("minimax-h3-turbo", strength: 1.25)], [LoRAUse("minimax-h3-turbo", strength: 0.7)]])
+            for bad: [String: Any] in [["loras": [["id": "minimax-h3-turbo", "strength": 5]]], ["loras": "minimax-h3-turbo"],
+                                       ["loras": ["minimax-h3-turbo", "minimax-h3-turbo"]], ["lora": "nope"],
+                                       ["lora": "minimax-h3-turbo", "lora_strength": "strong"],
+                                       ["lora": "minimax-h3-turbo", "model": "ltx-2.3-distilled"]] {
+                try await c.execute(uri: "/v1/videos", method: .post, headers: [.contentType: "application/json"],
+                                    body: body(h3.merging(bad) { $1 })) { r in XCTAssertEqual(r.status, .badRequest, "\(bad)") }
+            }
+        }
+    }
+
     /// Real mlx-video output lines (Rich, forced to a pipe): two denoising stages map to one 0...1 run.
     func testLTXProgressAcrossStages() {
         let p = LTXProgress()

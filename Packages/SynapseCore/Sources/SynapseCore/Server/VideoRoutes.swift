@@ -5,6 +5,7 @@ import Hummingbird
 func addVideoRoutes(to g: RouterGroup<SynapseContext>, videos: VideoService) {
     g.post("videos") { req, ctx in
         let fields: [String: String], image: Data?
+        var loraList: Any?
         if req.headers[.contentType]?.hasPrefix("multipart/form-data") == true {
             let form = try await parseMultipart(req, ctx, fileFields: ["input_reference"])
             fields = form.fields; image = form.files.first?.data
@@ -14,7 +15,7 @@ func addVideoRoutes(to g: RouterGroup<SynapseContext>, videos: VideoService) {
                 throw HTTPError(.badRequest, message: "Body must be a JSON object or multipart form.")
             }
             fields = o.compactMapValues { v in (v as? String) ?? (v as? NSNumber).map { "\($0)" } }
-            image = nil
+            image = nil; loraList = o["loras"]
         }
         guard let prompt = nonEmpty(fields["prompt"]) else { throw HTTPError(.badRequest, message: "prompt is required.") }
         let seconds = fields["seconds"] ?? "4"
@@ -29,14 +30,14 @@ func addVideoRoutes(to g: RouterGroup<SynapseContext>, videos: VideoService) {
         // LTX needs multiples of 64, OpenAI's sizes are not (1280x720), so generate at the nearest smaller multiple.
         let width = size[0] / 64 * 64, height = size[1] / 64 * 64
         let spec: ModelSpec
-        let lora = nonEmpty(fields["lora"])
+        let loras = try parseLoRAs(loraList, single: nonEmpty(fields["lora"]), strength: fields["lora_strength"])
         do {
             spec = try await videos.resolve(nonEmpty(fields["model"]))
-            if let lora { _ = try await videos.addOnFile(lora, for: spec) }
+            for use in loras { _ = try await videos.addOnFile(use.id, for: spec) }
         } catch { throw HTTPError(.badRequest, message: error.localizedDescription) }
         let job = await videos.create(model: spec, request: VideoRequest(
             prompt: prompt, width: width, height: height, frames: VideoService.frames(seconds: s),
-            seed: fields["seed"].flatMap { UInt64($0) }, inputImage: image, lora: lora), size: sizeText)
+            seed: fields["seed"].flatMap { UInt64($0) }, inputImage: image, loras: loras), size: sizeText)
         return videoResponse(videoJSON(job))
     }
     g.get("videos") { req, _ in
@@ -73,6 +74,38 @@ func addVideoRoutes(to g: RouterGroup<SynapseContext>, videos: VideoService) {
             throw HTTPError(.badRequest, message: "Remix, extend, edit and characters are not supported.")
         }
     }
+}
+
+/// `loras: [{"id": ..., "strength": 0.8}]` (JSON), or one `lora` with an optional `lora_strength` (JSON or form).
+private func parseLoRAs(_ list: Any?, single: String?, strength: String?) throws -> [LoRAUse] {
+    let bad = HTTPError(.badRequest, message: "loras must be a list of {\"id\": \"<lora model id>\", \"strength\": <number from -2 to 2>}.")
+    var out: [LoRAUse] = []
+    if let list {
+        guard let items = list as? [Any] else { throw bad }
+        for item in items {
+            if let id = item as? String { out.append(LoRAUse(id)); continue }
+            guard let o = item as? [String: Any], let id = o["id"] as? String else { throw bad }
+            var use = LoRAUse(id)
+            if let v = o["strength"] {
+                guard let n = v as? NSNumber else { throw bad }
+                use.strength = n.doubleValue
+            }
+            out.append(use)
+        }
+    }
+    if let single {
+        var use = LoRAUse(single)
+        if let strength {
+            guard let v = Double(strength) else { throw HTTPError(.badRequest, message: "lora_strength must be a number from -2 to 2.") }
+            use.strength = v
+        }
+        out.append(use)
+    }
+    guard out.allSatisfy({ LoRAUse.strengths.contains($0.strength) }) else {
+        throw HTTPError(.badRequest, message: "LoRA strength must be from -2 to 2.")
+    }
+    guard Set(out.map(\.id)).count == out.count else { throw HTTPError(.badRequest, message: "Each LoRA can be listed once.") }
+    return out
 }
 
 private func job(_ ctx: SynapseContext, _ videos: VideoService) async throws -> VideoJob {

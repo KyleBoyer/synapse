@@ -103,7 +103,8 @@ public actor ModelStore {
     }
 
     private static func mlxFolder(_ spec: ModelSpec, root: URL) -> URL {
-        root.appending(path: "mlx/\(spec.variant)", directoryHint: .isDirectory)
+        // Each LoRA gets its own folder, so deleting one keeps the others taken from the same repo.
+        root.appending(path: spec.isAddOn ? "loras/\(spec.id)" : "mlx/\(spec.variant)", directoryHint: .isDirectory)
     }
 
     private static func partialFolder(_ spec: ModelSpec, root: URL) -> URL {

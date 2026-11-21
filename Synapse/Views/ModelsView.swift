@@ -132,7 +132,7 @@ struct Datasheet: View {
         if spec.isTTS { return ["POST /v1/audio/speech", "GET /v1/realtime?model=\(spec.id)"] }
         if spec.isEmbedding { return ["POST /v1/embeddings"] }
         if spec.isReranker { return ["POST /v1/rerank"] }
-        if spec.isAddOn { return ["POST /v1/videos\nmodel: \(spec.baseModel ?? "")\nlora: \(spec.id)"] }
+        if spec.isAddOn { return ["POST /v1/videos\nmodel: \(spec.baseModel ?? "")\nloras: [{\"id\": \"\(spec.id)\", \"strength\": 1}]"] }
         if spec.isVideoGen { return ["POST /v1/videos", "GET /v1/videos/{id}/content"] }
         if spec.isAudioGen { return ["POST /v1/audio/generations"] }
         if spec.engine == .imagetool { return [spec.isDepth ? "POST /v1/images/depth" : "POST /v1/images/upscale"] }

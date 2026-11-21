@@ -21,8 +21,8 @@ struct VideoView: View {
     @State private var randomSeed = true
     @State private var seed = "0"
     @State private var startImage: Data?
-    /// The LoRA chosen for each base model ("" = none), so switching models keeps each one's choice.
-    @State private var loraByBase: [String: String] = [:]
+    /// The LoRAs turned on for each base model, with their strengths, so switching models keeps each one's choice.
+    @State private var loraByBase: [String: [String: Double]] = [:]
     @FocusState private var promptFocused: Bool
     @State private var importing = false
     /// Newest first, as the service reports them.
@@ -37,8 +37,8 @@ struct VideoView: View {
     }
     private var spec: ModelSpec? { Catalog.spec(modelID) }
     private var addOns: [ModelSpec] { VideoEngines.mock ? Catalog.all.filter { $0.baseModel == modelID } : state.downloadedAddOns(for: modelID) }
-    /// The chosen LoRA, if it is still downloaded.
-    private var lora: String? { loraByBase[modelID].flatMap { id in addOns.contains { $0.id == id } ? id : nil } }
+    /// The LoRAs turned on that are still downloaded.
+    private var loras: [LoRAUse] { addOns.compactMap { a in loraByBase[modelID]?[a.id].map { LoRAUse(a.id, strength: $0) } } }
     private var active: VideoJob? { jobs.first { $0.status == .in_progress } ?? jobs.first { $0.status == .queued } }
     private var running: Bool { active != nil }
 
@@ -69,7 +69,7 @@ struct VideoView: View {
         .onChange(of: state.tryRequest, initial: true) {
             guard let s = state.takeTry(.video) else { return }
             // Trying a LoRA opens its base with the LoRA chosen.
-            if let base = s.baseModel { modelID = base; loraByBase[base] = s.id } else { modelID = s.id }
+            if let base = s.baseModel { modelID = base; loraByBase[base, default: [:]][s.id] = 1 } else { modelID = s.id }
         }
         .toolbar { if paneShown {
             ToolbarItem(placement: .principal) {
@@ -174,6 +174,26 @@ struct VideoView: View {
             api: "POST /v1/videos\nmodel: \(spec.id)")
     }
 
+    /// A LoRA's switch and, while it is on, its strength (0 to 2; the API also takes negative strengths).
+    private func loraRow(_ a: ModelSpec) -> some View {
+        let strength = loraByBase[modelID]?[a.id]
+        return VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(get: { strength != nil }, set: { loraByBase[modelID, default: [:]][a.id] = $0 ? 1 : nil })) {
+                Text(a.displayName).lineLimit(1).truncationMode(.middle).help(a.id)
+            }
+            .toggleStyle(.checkbox)
+            if let strength {
+                HStack(spacing: 8) {
+                    Slider(value: Binding(get: { strength }, set: { loraByBase[modelID, default: [:]][a.id] = ($0 * 20).rounded() / 20 }),
+                           in: 0...2)
+                        .accessibilityLabel("\(a.displayName) strength")
+                    Text(String(format: "%.2f", strength)).font(.mono()).monospacedDigit().frame(width: 36, alignment: .trailing)
+                }
+                .padding(.leading, 20)
+            }
+        }
+    }
+
     private var settingsPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             PanelRow("Length") {
@@ -184,11 +204,9 @@ struct VideoView: View {
                 Picker("Size", selection: $size) { ForEach(Self.sizes, id: \.self) { Text($0).tag($0) } }.labelsHidden().fixedSize()
             }
             if !addOns.isEmpty {
-                PanelRow("LoRA") {
-                    Picker("LoRA", selection: Binding(get: { lora ?? "" }, set: { loraByBase[modelID] = $0 })) {
-                        Text("None").tag("")
-                        ForEach(addOns) { Text($0.displayName).tag($0.id) }
-                    }.labelsHidden().fixedSize()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("LoRAs")
+                    ForEach(addOns) { loraRow($0) }
                 }
             }
             PanelRow("Random seed") { Toggle("Random seed", isOn: $randomSeed).toggleStyle(.switch).labelsHidden() }
@@ -372,7 +390,7 @@ struct VideoView: View {
         guard let spec, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let dims = size.split(separator: "x").compactMap { Int($0) }
         let req = VideoRequest(prompt: prompt, width: dims[0], height: dims[1], frames: VideoService.frames(seconds: seconds),
-                               seed: randomSeed ? nil : UInt64(seed), inputImage: startImage, lora: lora)
+                               seed: randomSeed ? nil : UInt64(seed), inputImage: startImage, loras: loras)
         error = nil; prompt = ""
         Task { state.guiVideoJobs.insert(await state.videos.create(model: spec, request: req).id) }
     }

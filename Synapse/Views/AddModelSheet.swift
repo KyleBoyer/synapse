@@ -23,7 +23,7 @@ struct AddModelSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Add from Hugging Face").font(.title2.weight(.semibold))
-                Text("Chat, vision, omni and embedding models in safetensors, MLX or GGUF format.")
+                Text("Chat, vision, omni and embedding models in safetensors, MLX or GGUF format, and LoRAs for MiniMax H3. Paste a link to one file to pick it.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
@@ -55,7 +55,8 @@ struct AddModelSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 520, height: 420)
+        .frame(width: 520)
+        .frame(minHeight: 420)
         .onAppear {
             focused = true
             #if DEBUG
@@ -72,17 +73,17 @@ struct AddModelSheet: View {
                 Text(m.displayName).font(.headline)
                 Text(m.repo).font(.mono(.caption)).foregroundStyle(.secondary).textSelection(.enabled)
             }
-            PanelRow("Kind") { Text(kind(m.engine)) }
+            PanelRow("Kind") { Text(m.baseModel.map { "LoRA for \(Catalog.spec($0)?.displayName ?? $0)" } ?? kind(m.engine)) }
             if !r.ggufChoices.isEmpty {
-                PanelRow("Quantization") {
-                    ChoiceMenu(title: "Quantization", selection: Binding(
+                PanelRow(m.baseModel == nil ? "Quantization" : "File") {
+                    ChoiceMenu(title: m.baseModel == nil ? "Quantization" : "LoRA file", selection: Binding(
                         get: { r.ggufChoices.first { $0.files.first == m.files?.first }?.id ?? "" },
                         set: { id in if let c = r.ggufChoices.first(where: { $0.id == id }) { report = r.choosing(c) } }),
-                               options: r.ggufChoices.map { ($0.id, "\($0.label) · \(sizeText(CustomModel(repo: "", engine: .gguf, displayName: "", approxMB: $0.mb, ramGB: nil).spec))") })
+                               options: r.ggufChoices.map { ($0.id, "\(m.baseModel == nil ? $0.label : ($0.label as NSString).lastPathComponent) · \(sizeText(CustomModel(repo: "", engine: .gguf, displayName: "", approxMB: $0.mb, ramGB: nil).spec))") })
                 }
             }
             PanelRow("Download") { Text(sizeText(m.spec)).font(.mono()) }
-            PanelRow("Memory") { Text(m.ramGB.map { "about \($0) GB" } ?? "–").font(.mono()) }
+            if m.baseModel == nil { PanelRow("Memory") { Text(m.ramGB.map { "about \($0) GB" } ?? "–").font(.mono()) } }
             ForEach(r.notes, id: \.self) { note in
                 Label(note, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -139,7 +139,9 @@ public actor VideoService {
             let folder = await store.folder(for: spec.id) ?? FileManager.default.temporaryDirectory
             let engine = try await engineFactory(spec, folder)
             var patched = job.request
-            if let lora = patched.lora { patched.loraFile = try await addOnFile(lora, for: spec) }
+            for use in patched.loras {
+                patched.applied.append(AppliedLoRA(file: try await addOnFile(use.id, for: spec), strength: use.strength))
+            }
             let id = job.id, request = patched
             let generate: @Sendable () async throws -> Void = {
                 try await GPUGate.shared.run {
