@@ -62,6 +62,45 @@ final class MiniMaxH3Tests: XCTestCase {
         XCTAssertEqual(style[style.firstIndex(of: "--steps")! + 1], "20")
     }
 
+    func testDownloadedLoRAsMissingFromTheListComeBack() async throws {
+        let root = try TestSupport.tempDir()
+        let rel = "loras/org/repo/styles/vhs"
+        try FileManager.default.createDirectory(at: root.appending(path: "\(rel)/styles"), withIntermediateDirectories: true)
+        try Data(count: 3_000_000).write(to: root.appending(path: "\(rel)/styles/vhs.safetensors"))
+        try FileManager.default.createDirectory(at: root.appending(path: "turbo"), withIntermediateDirectories: true)
+        try JSONEncoder().encode(["org/repo/styles/vhs": rel, "minimax-h3-turbo": "turbo"]).write(to: root.appending(path: "manifest.json"))
+        let found = await ModelStore(root: root).unlistedLoRAs()
+        XCTAssertEqual(found, [CustomModel(repo: "org/repo", engine: .videogen, displayName: "vhs", approxMB: 3, ramGB: nil,
+                                           files: ["styles/vhs.safetensors"], baseModel: "minimax-h3")])
+        XCTAssertEqual(found.first?.id, "org/repo/styles/vhs", "the same id it was downloaded under, so it shows as downloaded")
+    }
+
+    /// Key layouts from real H3 LoRAs (Comfy-Org Turbo, KennethFal VHS, Sentinel7/h3 kohya and ComfyUI files), and a Wan one.
+    func testLoRAsThatMissH3AreRefusedBeforeTheRun() throws {
+        XCTAssertEqual(MiniMaxH3.unmatched([
+            "diffusion_model.blocks.0.attn.out_proj.alpha", "diffusion_model.blocks.0.attn.out_proj.lora_A.weight",
+            "diffusion_model.blocks.51.mlp.fc2.lora_B.weight", "diffusion_model.token_refiner.blocks.1.attn.qkv_proj.lora_A.weight",
+            "lora_unet_blocks_0_attn_out_proj.alpha", "lora_unet_blocks_0_attn_qkv_proj.lora_down.weight",
+            "lora_unet_blocks_7_mlp_fc1.lora_up.weight", "lora_unet_blocks_3_adaln_proj_linear.lora_up.weight", "__metadata__",
+        ]), [])
+        XCTAssertEqual(MiniMaxH3.unmatched(["diffusion_model.blocks.0.self_attn.q.lora_A.weight", "diffusion_model.blocks.0.attn.out_proj.lora_A.weight"]),
+                       ["diffusion_model.blocks.0.self_attn.q.lora_A.weight"])
+
+        let dir = try TestSupport.tempDir()
+        func file(_ name: String, _ keys: [String]) throws -> URL {
+            let header = try JSONSerialization.data(withJSONObject: Dictionary(uniqueKeysWithValues: keys.map { ($0, ["dtype": "BF16", "shape": [1], "data_offsets": [0, 2]]) }))
+            var data = withUnsafeBytes(of: UInt64(header.count).littleEndian) { Data($0) }
+            data += header + Data(count: 2)
+            let url = dir.appending(path: "\(name).safetensors"); try data.write(to: url); return url
+        }
+        XCTAssertNoThrow(try MiniMaxH3.checkLoRA(try file("vhs", ["diffusion_model.blocks.0.attn.out_proj.lora_A.weight"])))
+        XCTAssertThrowsError(try MiniMaxH3.checkLoRA(try file("wan", ["diffusion_model.blocks.0.self_attn.q.lora_A.weight"]))) {
+            XCTAssertTrue($0.localizedDescription.contains("does not fit MiniMax H3"), $0.localizedDescription)
+        }
+        let junk = dir.appending(path: "junk.safetensors"); try Data("not a model".utf8).write(to: junk)
+        XCTAssertThrowsError(try MiniMaxH3.checkLoRA(junk))
+    }
+
     func testDownloadSetFollowsMemory() {
         XCTAssertEqual(MiniMaxH3.files(physicalMemory: 16 << 30).transformer.path, "minimax_h3_fl2va_pruned-Q2_K.gguf")
         XCTAssertEqual(MiniMaxH3.files(physicalMemory: 96 << 30).encoder.path, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")

@@ -38,6 +38,21 @@ public actor ModelStore {
 
     public var downloaded: Set<String> { Set(manifest.keys) }
 
+    /// Downloaded LoRAs (in `loras/<org>/<repo>/<file path>`) that no catalog entry describes, rebuilt as add-ons
+    /// for the model Synapse applies LoRAs to.
+    public func unlistedLoRAs() -> [CustomModel] {
+        guard let base = HFModelInspector.loraBases.first else { return [] }
+        return manifest.sorted { $0.key < $1.key }.compactMap { id, rel -> CustomModel? in
+            guard rel.hasPrefix("loras/"), Catalog.spec(id) == nil else { return nil }
+            let parts = id.split(separator: "/", maxSplits: 2).map(String.init)
+            guard parts.count == 3 else { return nil }
+            let file = parts[2] + ".safetensors", url = root.appending(path: rel).appending(path: file)
+            guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int else { return nil }
+            return CustomModel(repo: "\(parts[0])/\(parts[1])", engine: .videogen, displayName: (parts[2] as NSString).lastPathComponent,
+                               approxMB: max(1, size / 1_000_000), ramGB: nil, files: [file], baseModel: base.id)
+        }
+    }
+
     public func states() -> [String: ModelState] {
         var out: [String: ModelState] = [:]
         for spec in Catalog.all {

@@ -123,7 +123,12 @@ final class AppState {
             for await snap in updates { self?.upsert(snap) }
         }
         Catalog.setCustom(s.customModels)
-        Task { await refreshModels() }
+        Task {
+            // LoRAs downloaded outside this list (a test run, a reset list) come back as add-ons.
+            let found = await store.unlistedLoRAs()
+            if !found.isEmpty { settings.customModels += found }
+            await refreshModels()
+        }
         Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshResidents()

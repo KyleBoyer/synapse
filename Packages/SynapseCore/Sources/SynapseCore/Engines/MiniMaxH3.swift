@@ -86,6 +86,44 @@ enum MiniMaxH3 {
         }.min() ?? 20
     }
 
+    /// H3 weights a LoRA can patch, written with `_` for `.` (kohya files spell them that way).
+    private static var patchable: Regex<(Substring, Substring?, Substring?, Substring?, Substring?, Substring?)> { /(token_refiner_)?blocks_\d+_(attn_(qkv|out)_proj|mlp_fc[12]|adaln_proj_linear)|(condition|video_patch|audio_patch)_proj|final_layer_(video_out|audio_out|adaln_proj_linear)/ }
+
+    /// Tensors of a LoRA that patch no H3 weight. At run time sd.cpp skips those without a word, so a LoRA for
+    /// another model would leave the clip unchanged. Covers the ComfyUI (`diffusion_model.blocks.0.attn.qkv_proj.lora_A.weight`)
+    /// and kohya (`lora_unet_blocks_0_attn_qkv_proj.lora_down.weight`) layouts.
+    static func unmatched(_ keys: [String]) -> [String] {
+        keys.filter { key in
+            guard key != "__metadata__" else { return false }
+            var k = Substring(key)
+            for prefix in ["lora.", "lora_unet_", "model.", "diffusion_model.", "transformer."] where k.hasPrefix(prefix) {
+                k = k.dropFirst(prefix.count)
+            }
+            if let tail = k.firstRange(of: /[._](lora_(A|B|up|down|mid)|lora\.(up|down|mid)|alpha|scale|dora_scale|diff(_b)?)(\.|$)/) {
+                k = k[..<tail.lowerBound]
+            }
+            return k.replacing(".", with: "_").wholeMatch(of: patchable) == nil
+        }
+    }
+
+    /// Refuses a LoRA file that is not a safetensors LoRA for H3, before minutes of model loading.
+    static func checkLoRA(_ file: URL) throws {
+        let name = file.deletingPathExtension().lastPathComponent
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        guard let size = try handle.read(upToCount: 8), size.count == 8,
+              case let n = size.withUnsafeBytes({ UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }), n < 100_000_000,
+              let header = try handle.read(upToCount: Int(n)),
+              let keys = (try? JSONSerialization.jsonObject(with: header) as? [String: Any])?.keys else {
+            throw MFluxError.runtime("The LoRA \(name) is not a readable safetensors file; delete it in Models and download it again.")
+        }
+        let all = Array(keys).filter { $0 != "__metadata__" }, bad = unmatched(all).sorted()
+        guard bad.isEmpty, !all.isEmpty else {
+            throw MFluxError.runtime("The LoRA \(name) does not fit MiniMax H3: \(bad.count) of its \(all.count) tensors match no H3 weight"
+                + (bad.first.map { " (for example \($0))" } ?? "") + ". It was probably made for another model.")
+        }
+    }
+
     /// `loraDir` holds the clip's LoRAs as `lora0.safetensors`, `lora1.safetensors`, ... in `r.applied` order.
     static func arguments(_ r: VideoRequest, folder: URL, set: Parts, output: URL, startImage: URL?, loraDir: URL) -> [String] {
         // Sizes snap to 32 (VAE stride 16, patch 2); the CLI rounds the frame count to what H3 accepts.
@@ -152,6 +190,7 @@ actor H3VideoEngine: VideoEngine {
         let loraDir = work.appending(path: "loras", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: loraDir, withIntermediateDirectories: true)
         for (i, lora) in r.applied.enumerated() {
+            try MiniMaxH3.checkLoRA(lora.file)
             try FileManager.default.createSymbolicLink(at: loraDir.appending(path: "lora\(i).safetensors"), withDestinationURL: lora.file)
         }
         // An animated WebP keeps the soundtrack out of the container, as a WAV beside it (out.wav).
