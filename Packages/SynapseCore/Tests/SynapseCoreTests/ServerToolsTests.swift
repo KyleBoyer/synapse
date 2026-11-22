@@ -1,4 +1,5 @@
 import Foundation
+import Hummingbird
 import Synchronization
 import XCTest
 @testable import SynapseCore
@@ -26,7 +27,9 @@ final class ServerToolsTests: XCTestCase {
         XCTAssertEqual(rest, [tools[3]])
         XCTAssertEqual(server.functions.map(\.name), ["web_search", "web_fetch", "generate_image", "synapse_time", "date_difference",
                                                     "calculate", "synapse_models", "synapse_status"])
-        let fetchOnly = try ServerTools.split([.object(["type": .string("web_fetch_20250910")])]).0
+        var none = ToolSettings()
+        none.alwaysOn = []
+        let fetchOnly = try ServerTools.split([.object(["type": .string("web_fetch_20250910")])], settings: none).0
         XCTAssertEqual(fetchOnly.functions.map(\.name), ["web_fetch"])
         XCTAssertNil(ServerTools().kind(of: "web_search"), "a tool the request did not turn on is the client's")
     }
@@ -209,7 +212,22 @@ final class ServerToolsTests: XCTestCase {
         XCTAssertEqual(SynapseInfo.zone(named: "new york")?.identifier, "America/New_York")
         XCTAssertEqual(SynapseInfo.zone(named: "Europe/Paris")?.identifier, "Europe/Paris")
         XCTAssertNotNil(SynapseInfo.zone(named: "pst"))
-        XCTAssertThrowsError(try SynapseInfo.time(in: "Atlantis"))
+    }
+
+    /// Cities that name no time zone go through macOS's geocoder (needs the network).
+    func testTimeInACityThatNamesNoZone() async throws {
+        let text = try await SynapseInfo.time(in: "Minneapolis")
+        XCTAssertTrue(text.contains("America/Chicago") && text.contains(#""place":"Minneapolis""#), text)
+        do { _ = try await SynapseInfo.time(in: "Qxzzyv Plorbtown"); XCTFail("no such place") } catch {
+            XCTAssertTrue("\((error as? HTTPError)?.body ?? "")".contains("IANA"), "the error tells the model what to send instead")
+        }
+    }
+
+    func testSynapseToolsAreOnByDefaultAndSearchIsNot() throws {
+        let (server, _) = try ServerTools.split(nil, settings: ToolSettings())
+        XCTAssertTrue(server.synapse)
+        XCTAssertFalse(server.webSearch || server.webFetch || server.image != nil)
+        XCTAssertEqual(try JSONDecoder().decode(ToolSettings.self, from: Data("{}".utf8)).alwaysOn, [.synapse])
     }
 
     func testWebFetchRefusesLocalAddressesAndReadsPages() {

@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Hummingbird
 
@@ -318,7 +319,7 @@ struct ServerToolServices: Sendable {
             case .webFetch:
                 call.output = .page(try await WebFetch.fetch(call.argumentsObject["url"]?.string ?? ""))
             case .time:
-                call.output = .info(try SynapseInfo.time(in: call.argumentsObject["time_zone"]?.string))
+                call.output = .info(try await SynapseInfo.time(in: call.argumentsObject["time_zone"]?.string))
             case .dates:
                 let a = call.argumentsObject
                 call.output = .info(try SynapseInfo.dates(from: a["from"]?.string, to: a["to"]?.string, addDays: (a["add_days"]?.number ?? a["add_days"]?.string.flatMap(Double.init)).map(Int.init)))
@@ -461,12 +462,24 @@ enum SynapseInfo {
     }
 
     /// `name`: an IANA id, an abbreviation, or a city in one (Tokyo, New York); nil is this Mac's zone.
-    static func time(in name: String?) throws -> String {
+    static func time(in name: String?) async throws -> String {
         guard let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return time() }
-        guard let zone = zone(named: name) else {
-            throw ChatParse.bad("Unknown time zone '\(name)'. Use an IANA name such as Europe/Paris, an abbreviation such as PST, or a large city.")
+        guard let zone = await zone(lookingUp: name) else {
+            throw ChatParse.bad("No time zone found for '\(name)'. Call again with the IANA time zone for that place, such as America/Chicago or Europe/Paris.")
         }
-        return time(zone: zone)
+        return time(zone: zone, place: zone.identifier.lowercased().hasSuffix(name.lowercased().replacingOccurrences(of: " ", with: "_")) ? nil : name)
+    }
+
+    /// An IANA id, abbreviation or zone city first; otherwise any place, through macOS's geocoder (Apple's service).
+    static func zone(lookingUp name: String) async -> TimeZone? {
+        if let z = zone(named: name) { return z }
+        let placemarks = try? await withThrowingTaskGroup(of: [CLPlacemark]?.self) { group in
+            group.addTask { try await CLGeocoder().geocodeAddressString(name) }
+            group.addTask { try await Task.sleep(for: .seconds(8)); return nil }
+            defer { group.cancelAll() }
+            return try await group.next() ?? nil
+        }
+        return placemarks?.first?.timeZone
     }
 
     static func zone(named name: String) -> TimeZone? {
@@ -502,15 +515,17 @@ enum SynapseInfo {
                      "to_weekday": weekday.string(from: end)])
     }
 
-    static func time(now: Date = Date(), zone: TimeZone = .current) -> String {
+    static func time(now: Date = Date(), zone: TimeZone = .current, place: String? = nil) -> String {
         let iso = ISO8601DateFormatter()
         iso.timeZone = zone
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = zone
         f.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
-        return json(["now": iso.string(from: now), "readable": f.string(from: now), "time_zone": zone.identifier,
-                     "utc_offset_hours": Double(zone.secondsFromGMT(for: now)) / 3600, "unix": Int(now.timeIntervalSince1970)])
+        var o: [String: Any] = ["now": iso.string(from: now), "readable": f.string(from: now), "time_zone": zone.identifier,
+                                "utc_offset_hours": Double(zone.secondsFromGMT(for: now)) / 3600, "unix": Int(now.timeIntervalSince1970)]
+        if let place { o["place"] = place }
+        return json(o)
     }
 
     static func models(store: ModelStore, chat: ChatService) async -> String {

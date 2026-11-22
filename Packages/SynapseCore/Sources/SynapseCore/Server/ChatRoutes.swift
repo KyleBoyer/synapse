@@ -568,8 +568,9 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let body = try decodeJSON(ResponsesRequest.self, raw)
         let sampling = try SamplingFields.read(raw)
         var (server, clientTools) = try ServerTools.split(body.tools, settings: settings.current.tools)
-        // image_generation alone keeps its own path: partial images, a forced prompt writer, and image-only setups.
-        if let image = server.image, !server.webSearch, !server.synapse, clientTools.isEmpty {
+        // A request for image_generation alone keeps its own path: partial images, a forced prompt writer, and image-only
+        // setups. Tools the settings add to every chat don't count; they'd need a chat model this path may not have.
+        if let image = server.image, body.tools?.count == 1, body.tools?.first?["type"]?.string == "image_generation" {
             return try await respondWithImageTool(body, tools: body.tools ?? [], config: image, chat: chat, images: images)
         }
         if body.tool_choice?.string == "none" { server = ServerTools() }
