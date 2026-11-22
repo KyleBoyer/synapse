@@ -63,6 +63,8 @@ public struct Settings: Codable, Sendable, Equatable {
     public var draftModels: [String: String] = [:]
     /// Days to keep work done in the app (chats, images, calls, …); nil keeps it forever, 0 saves nothing.
     public var historyDays: Int?
+    /// Built-in tools Synapse runs for chat models (web search, image generation, Synapse info).
+    public var tools: ToolSettings = ToolSettings()
 
     public init() {}
 
@@ -103,6 +105,7 @@ public struct Settings: Codable, Sendable, Equatable {
         kvPrecision = try c.decodeIfPresent(KVPrecision.self, forKey: .kvPrecision) ?? d.kvPrecision
         draftModels = try c.decodeIfPresent([String: String].self, forKey: .draftModels) ?? d.draftModels
         historyDays = try c.decodeIfPresent(Int.self, forKey: .historyDays)
+        tools = try c.decodeIfPresent(ToolSettings.self, forKey: .tools) ?? d.tools
     }
 
     public var modelsRoot: URL {
@@ -144,5 +147,57 @@ public final class SettingsBox: @unchecked Sendable {
     public var current: Settings {
         get { lock.withLock { value } }
         set { lock.withLock { value = newValue } }
+    }
+}
+
+/// Settings for the tools Synapse runs during a chat (ServerTools).
+public struct ToolSettings: Codable, Sendable, Equatable {
+    public enum SearchProvider: String, Codable, Sendable, CaseIterable {
+        case duckDuckGo, brave, tavily, searxng, off
+
+        public var label: String {
+            switch self {
+            case .duckDuckGo: "DuckDuckGo"
+            case .brave: "Brave Search"
+            case .tavily: "Tavily"
+            case .searxng: "SearXNG"
+            case .off: "Off"
+            }
+        }
+        public var needsKey: Bool { self == .brave || self == .tavily }
+    }
+
+    public enum Tool: String, Codable, Sendable, CaseIterable {
+        case webSearch, imageGeneration, synapse
+    }
+
+    public var searchProvider: SearchProvider = .duckDuckGo
+    /// API key for Brave Search or Tavily.
+    public var searchKey: String?
+    /// A SearXNG instance with the JSON format turned on, e.g. http://localhost:8080.
+    public var searxngURL: String?
+    public var searchResults: Int = 6
+    /// The image model generate_image uses when the request names none; nil = the default image model.
+    public var imageModel: String?
+    /// WIDTHxHEIGHT when the request gives no size; nil = 1024x1024.
+    public var imageSize: String?
+    /// Tools offered to every chat request, also when the client sends none (chat apps that never ask for them).
+    public var alwaysOn: Set<Tool> = []
+    /// Model turns per request before the tools are taken away and the model must answer.
+    public var maxRounds: Int = 5
+
+    public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ToolSettings()
+        searchProvider = (try? c.decodeIfPresent(SearchProvider.self, forKey: .searchProvider)) ?? d.searchProvider
+        searchKey = try c.decodeIfPresent(String.self, forKey: .searchKey)
+        searxngURL = try c.decodeIfPresent(String.self, forKey: .searxngURL)
+        searchResults = try c.decodeIfPresent(Int.self, forKey: .searchResults) ?? d.searchResults
+        imageModel = try c.decodeIfPresent(String.self, forKey: .imageModel)
+        imageSize = try c.decodeIfPresent(String.self, forKey: .imageSize)
+        alwaysOn = (try? c.decodeIfPresent(Set<Tool>.self, forKey: .alwaysOn)) ?? d.alwaysOn
+        maxRounds = try c.decodeIfPresent(Int.self, forKey: .maxRounds) ?? d.maxRounds
     }
 }

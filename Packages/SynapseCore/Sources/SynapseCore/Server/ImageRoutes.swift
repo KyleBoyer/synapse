@@ -272,13 +272,12 @@ private func runImages(_ p: ImageParams, images: ImageService, cache: ImageFileC
 
     guard p.stream == true else {
         var items: [ImageItem] = []
-        let host = req.headers[HTTPField.Name("Host")!] ?? req.head.authority ?? "localhost"
-        let keyPrefix = ctx.parameters.get("key").map { "k/\($0)/" } ?? ""
+        let base = imageFileBase(req, ctx)
         for i in 0..<n {
             let data = try ImageEncoding.encode(try await generateOne(i), format: format, compression: compression)
             if responseFormat == "url" {
                 let name = await cache.put(data, ext: format, mime: mime)
-                items.append(ImageItem(url: "http://\(host)/\(keyPrefix)v1/images/files/\(name)"))
+                items.append(ImageItem(url: base + name))
             } else {
                 items.append(ImageItem(b64_json: data.base64EncodedString()))
             }

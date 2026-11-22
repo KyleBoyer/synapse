@@ -90,6 +90,7 @@ struct ChatCompletionRequest: Decodable {
     var audio: JSONValue?
     var tools: [JSONValue]?
     var tool_choice: JSONValue?
+    var web_search_options: JSONValue?
 }
 
 struct ResponsesRequest: Decodable {
@@ -201,6 +202,10 @@ enum ChatParse {
             } else if item["type"]?.string == "function_call_output" {
                 let output = item["output"]?.string ?? item["output"].map(encodeJSON) ?? ""
                 out.append((.user, [.text(ToolMarkup.response(output))]))
+            } else if let type = item["type"]?.string,
+                      ["reasoning", "web_search_call", "image_generation_call", "synapse_tool_call"].contains(type) {
+                // Output items sent back with the history; Synapse ran these itself, and the answer that used them follows.
+                continue
             } else if let type = item["type"]?.string, type != "message" {
                 out.append((.user, try parts(.array([item]))))
             } else {
@@ -276,6 +281,8 @@ struct ChatCompletionWire: Encodable {
             var tool_calls: [ToolCallWire]? = nil
             /// DeepSeek's and llama.cpp's field for thinking, which most OpenAI-style clients read.
             var reasoning_content: String? = nil
+            /// Synapse's own: the built-in tools that ran for this answer.
+            var synapse_tool_calls: [SynapseToolWire]? = nil
         }
         var index = 0
         var message: Message
@@ -325,6 +332,34 @@ struct ChatChunkWire: Encodable {
     var usage: ChatUsageWire?
     /// Synapse's own: load and prompt-reading phases before the first token, as `ChatProgress.wire`.
     var synapse_progress: AnyEncodableDict? = nil
+    /// Synapse's own: a built-in tool starting (status in_progress) or finished.
+    var synapse_tool_call: SynapseToolWire? = nil
+}
+
+/// A built-in tool call on Chat Completions, which has no item for one.
+struct SynapseToolWire: Encodable, Sendable {
+    var id: String
+    var name: String
+    var status: String
+    var arguments: String
+    /// What the model read back (search results, Synapse info), or the image URL.
+    var output: String?
+
+    init(_ call: ServerToolCall, running: Bool) {
+        id = call.id; name = call.kind.rawValue; arguments = call.arguments
+        status = running ? "in_progress" : call.error == nil ? "completed" : "failed"
+        if !running {
+            if case .image(let g)? = call.output { output = g.url } else { output = call.forModel }
+        }
+    }
+}
+
+extension ServerToolCall {
+    /// Text added to a Chat Completions answer so chat apps show the result: a generated image as a markdown image.
+    var markdown: String {
+        if case .image(let g)? = output, let url = g.url { return "\n\n![\(g.prompt.prefix(80).replacingOccurrences(of: "]", with: ""))](\(url))\n\n" }
+        return ""
+    }
 }
 
 struct ResponseWire: Encodable {
@@ -432,7 +467,7 @@ func requireMediaSupport(_ chat: ChatService, _ spec: ModelSpec, _ messages: [Ch
 }
 
 func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, speech: SpeechService,
-                   settings: SettingsBox) {
+                   store: ModelStore, files: ImageFileCache, settings: SettingsBox) {
     g.post("chat/completions") { req, ctx in
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/chat/completions", chat: chat, settings: settings) { return proxied }
@@ -446,7 +481,13 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                                   topP: body.top_p, enableThinking: effort.enabled)
         options.thinkingBudget = effort.budget
         sampling.apply(to: &options)
-        options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
+        var (server, clientTools) = try ServerTools.split(body.tools, settings: settings.current.tools)
+        if body.web_search_options != nil {
+            guard server.settings.searchProvider != .off else { throw ChatParse.bad("Web search is turned off in Synapse's settings (Server → Built-in tools).") }
+            server.webSearch = true
+        }
+        if body.tool_choice?.string == "none" { server = ServerTools() }
+        options.tools = try ChatParse.functionTools(clientTools, choice: body.tool_choice)
         let id = "chatcmpl-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
 
@@ -456,22 +497,28 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                                         chat: chat, speech: speech)
         }
 
-        let events = applyStops(try await chat.stream(model: spec, messages: messages, options: options), stopSequences(body.stop))
+        let stops = stopSequences(body.stop)
+        let services = ServerToolServices(chat: chat, images: images, store: store, files: files, fileBase: imageFileBase(req, ctx), tools: server)
+        let events = try await chatWithServerTools(server, services: services, spec: spec, messages: messages, options: options,
+                                                   wrap: { applyStops($0, stops) })
         guard body.stream == true else {
-            var text = "", thinking = "", finish = "stop", calls: [ToolCallWire] = []
+            var text = "", thinking = "", finish = "stop", calls: [ToolCallWire] = [], used: [SynapseToolWire] = []
             var usage = ChatUsage(promptTokens: 0, completionTokens: 0)
             for try await e in events {
                 switch e {
-                case .delta(let s): text += s
-                case .reasoning(let s): thinking += s
-                case .done(let f, let u): finish = f; usage = u
-                case .toolCall(let name, let arguments): calls.append(ToolCallWire(name: name, arguments: arguments))
-                case .progress: break
+                case .chat(.delta(let s)): text += s
+                case .chat(.reasoning(let s)): thinking += s
+                case .chat(.done(let f, let u)): finish = f; usage = u
+                case .chat(.toolCall(let name, let arguments)): calls.append(ToolCallWire(name: name, arguments: arguments))
+                case .chat(.progress), .toolStarted: break
+                case .toolFinished(let call):
+                    used.append(SynapseToolWire(call, running: false))
+                    text += call.markdown
                 }
             }
             return json(ChatCompletionWire(id: id, created: created, model: spec.id, choices: [
                 .init(message: .init(content: text.isEmpty && !calls.isEmpty ? nil : text, tool_calls: calls.isEmpty ? nil : calls,
-                                     reasoning_content: thinking.isEmpty ? nil : thinking),
+                                     reasoning_content: thinking.isEmpty ? nil : thinking, synapse_tool_calls: used.isEmpty ? nil : used),
                       finish_reason: calls.isEmpty ? finish : "tool_calls"),
             ], usage: ChatUsageWire(usage)))
         }
@@ -485,18 +532,26 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
             var calls = 0
             for try await event in events {
                 switch event {
-                case .delta(let s):
+                case .chat(.delta(let s)):
                     try await write(nil, chunk(.init(content: s)))
-                case .reasoning(let s):
+                case .chat(.reasoning(let s)):
                     try await write(nil, chunk(.init(reasoning_content: s)))
-                case .toolCall(let name, let arguments):
+                case .chat(.toolCall(let name, let arguments)):
                     try await write(nil, chunk(.init(tool_calls: [ToolCallWire(index: calls, name: name, arguments: arguments)])))
                     calls += 1
-                case .progress(let p):
+                case .chat(.progress(let p)):
                     var c = chunk(.init())
                     c.synapse_progress = p.wire()
                     try await write(nil, c)
-                case .done(let finish, let usage):
+                case .toolStarted(let call):
+                    var c = chunk(.init())
+                    c.synapse_tool_call = SynapseToolWire(call, running: true)
+                    try await write(nil, c)
+                case .toolFinished(let call):
+                    var c = chunk(.init(content: call.markdown.isEmpty ? nil : call.markdown))
+                    c.synapse_tool_call = SynapseToolWire(call, running: false)
+                    try await write(nil, c)
+                case .chat(.done(let finish, let usage)):
                     try await write(nil, chunk(.init(), finish: calls > 0 ? "tool_calls" : finish))
                     if includeUsage {
                         try await write(nil, ChatChunkWire(id: id, created: created, model: spec.id, choices: [], usage: ChatUsageWire(usage)))
@@ -512,9 +567,12 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         if let proxied = try await proxyToVOOM(raw, path: "v1/responses", chat: chat, settings: settings) { return proxied }
         let body = try decodeJSON(ResponsesRequest.self, raw)
         let sampling = try SamplingFields.read(raw)
-        if let tools = body.tools, tools.contains(where: { $0["type"]?.string == "image_generation" }) {
-            return try await respondWithImageTool(body, tools: tools, chat: chat, images: images)
+        var (server, clientTools) = try ServerTools.split(body.tools, settings: settings.current.tools)
+        // image_generation alone keeps its own path: partial images, a forced prompt writer, and image-only setups.
+        if let image = server.image, !server.webSearch, !server.synapse, clientTools.isEmpty {
+            return try await respondWithImageTool(body, tools: body.tools ?? [], config: image, chat: chat, images: images)
         }
+        if body.tool_choice?.string == "none" { server = ServerTools() }
         let spec = try await resolveChat(chat, body.model)
         let messages = try await ImageFetcher.messages(try ChatParse.responseMessages(body.input, instructions: body.instructions))
         try await requireMediaSupport(chat, spec, messages)
@@ -523,28 +581,18 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                                   topP: body.top_p, enableThinking: effort.enabled)
         options.thinkingBudget = effort.budget
         sampling.apply(to: &options)
-        options.tools = try ChatParse.functionTools(body.tools, choice: body.tool_choice)
-        let hasTools = !options.tools.isEmpty
+        options.tools = try ChatParse.functionTools(clientTools, choice: body.tool_choice)
+        let hasTools = !options.tools.isEmpty || !server.isEmpty
         let respID = "resp_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let msgID = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
+        let services = ServerToolServices(chat: chat, images: images, store: store, files: files, fileBase: imageFileBase(req, ctx), tools: server)
+        let events = try await chatWithServerTools(server, services: services, spec: spec, messages: messages, options: options)
 
-        /// `keepEmptyMessage`: a streamed response already announced its message item, so it stays even when empty.
-        let rsID = "rs_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        @Sendable func response(status: String, text: String, usage: ChatUsage?, finish: String?, calls: [FunctionCallWire] = [],
-                                reasoning: String = "", keepEmptyMessage: Bool = false) -> ResponseWire {
+        @Sendable func response(status: String, output: [ResponseOutputItemWire] = [], text: String = "", usage: ChatUsage? = nil,
+                                finish: String? = nil) -> ResponseWire {
             let incomplete = finish == "length"
-            let finalStatus = status == "completed" && incomplete ? "incomplete" : status
-            var output: [ResponseOutputItemWire] = []
-            if status != "in_progress" {
-                if !reasoning.isEmpty { output.append(.reasoning(.init(id: rsID, content: [.init(text: reasoning)]))) }
-                if !text.isEmpty || calls.isEmpty || keepEmptyMessage {
-                    output.append(.message(.init(id: msgID, status: finalStatus, content: [.init(text: text)])))
-                }
-                output += calls.map { .functionCall($0) }
-            }
             return ResponseWire(
-                id: respID, created_at: created, status: finalStatus, model: spec.id,
+                id: respID, created_at: created, status: status == "completed" && incomplete ? "incomplete" : status, model: spec.id,
                 output: output, output_text: text, usage: usage.map(ResponseWire.Usage.init),
                 incomplete_details: incomplete ? .init(reason: "max_output_tokens") : nil,
                 instructions: body.instructions, max_output_tokens: body.max_output_tokens,
@@ -552,91 +600,51 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
                 tool_choice: body.tool_choice ?? .string(hasTools ? "auto" : "none"), tools: body.tools ?? [])
         }
 
-        guard body.stream == true else {
-            let r = try await chat.complete(model: spec, messages: messages, options: options)
-            return json(response(status: "completed", text: r.text, usage: r.usage, finish: r.finishReason,
-                                 calls: r.toolCalls.map { FunctionCallWire(name: $0.name, arguments: $0.arguments) }, reasoning: r.reasoning))
+        /// Consumes the generation, reporting each stream event to `emit`, and returns the finished response.
+        @Sendable func run(streaming: Bool, _ emit: (ResponsesAssembler.Event) async throws -> Void) async throws -> ResponseWire {
+            var asm = ResponsesAssembler()
+            var usage: ChatUsage?, finish = "stop"
+            for try await e in events {
+                switch e {
+                case .chat(.reasoning(let s)): asm.reasoning(s)
+                case .chat(.delta(let s)): asm.text(s)
+                case .chat(.toolCall(let name, let arguments)): asm.functionCall(name: name, arguments: arguments)
+                // Not an OpenAI event; SDKs pass unknown event types through, and this shows load and prompt reading.
+                case .chat(.progress(let p)): try await emit(("response.synapse_progress", p.wire().values))
+                case .chat(.done(let f, let u)): finish = f; usage = u
+                case .toolStarted(let call): asm.toolStarted(call)
+                case .toolFinished(let call): asm.toolFinished(call)
+                }
+                for event in asm.drain() { try await emit(event) }
+            }
+            asm.finish(messageStatus: finish == "length" ? "incomplete" : "completed", alwaysMessage: streaming)
+            for event in asm.drain() { try await emit(event) }
+            return response(status: "completed", output: asm.items, text: asm.text, usage: usage, finish: finish)
         }
 
-        let events = try await chat.stream(model: spec, messages: messages, options: options)
+        guard body.stream == true else { return json(try await run(streaming: false) { _ in }) }
         return sse { write in
             var seq = 0
             func event(_ type: String, _ fields: [String: any Encodable & Sendable]) async throws {
-                var payload: [String: any Encodable & Sendable] = fields
+                var payload = fields
                 payload["type"] = type
                 payload["sequence_number"] = seq
                 seq += 1
                 try await write(type, AnyEncodableDict(payload))
             }
-            try await event("response.created", ["response": response(status: "in_progress", text: "", usage: nil, finish: nil)])
-            try await event("response.in_progress", ["response": response(status: "in_progress", text: "", usage: nil, finish: nil)])
-            // Thinking, when the model does any, is output item 0 and the message follows it; the message is announced
-            // at its first text (or at the end), once its index is known.
-            var text = "", thinking = "", calls: [FunctionCallWire] = []
-            var msgIndex: Int?
-            func announceMessage() async throws -> Int {
-                if let msgIndex { return msgIndex }
-                if !thinking.isEmpty {
-                    try await event("response.reasoning_text.done", ["item_id": rsID, "output_index": 0, "content_index": 0, "text": thinking])
-                    try await event("response.content_part.done", ["item_id": rsID, "output_index": 0, "content_index": 0,
-                                                                  "part": ReasoningTextPart(text: thinking)])
-                    try await event("response.output_item.done", ["output_index": 0,
-                                                                 "item": ResponseOutputItemWire.reasoning(.init(id: rsID, content: [.init(text: thinking)]))])
-                }
-                let index = thinking.isEmpty ? 0 : 1
-                msgIndex = index
-                let item = ["type": "message", "id": msgID, "status": "in_progress", "role": "assistant"] as [String: String]
-                try await event("response.output_item.added", ["output_index": index, "item": AnyEncodableDict(item.mapValues { $0 }).withArray("content")])
-                try await event("response.content_part.added", ["item_id": msgID, "output_index": index, "content_index": 0,
-                                                               "part": OutputTextPart(text: "")])
-                return index
-            }
-            for try await e in events {
-                switch e {
-                case .reasoning(let s):
-                    // shortcut: thinking that comes after answer text has started is dropped from the stream (no model does this).
-                    guard msgIndex == nil else { break }
-                    if thinking.isEmpty {
-                        try await event("response.output_item.added", ["output_index": 0,
-                                                                      "item": ResponseOutputItemWire.reasoning(.init(id: rsID, status: "in_progress", content: []))])
-                        try await event("response.content_part.added", ["item_id": rsID, "output_index": 0, "content_index": 0,
-                                                                       "part": ReasoningTextPart(text: "")])
-                    }
-                    thinking += s
-                    try await event("response.reasoning_text.delta", ["item_id": rsID, "output_index": 0, "content_index": 0, "delta": s])
-                case .delta(let s):
-                    let index = try await announceMessage()
-                    text += s
-                    try await event("response.output_text.delta", ["item_id": msgID, "output_index": index, "content_index": 0,
-                                                                  "delta": s, "logprobs": [String]()])
-                case .toolCall(let name, let arguments):
-                    calls.append(FunctionCallWire(name: name, arguments: arguments))
-                case .progress(let p):
-                    // Not an OpenAI event; SDKs pass unknown event types through, and this shows load and prompt reading.
-                    try await event("response.synapse_progress", p.wire().values)
-                case .done(let finish, let usage):
-                    let index = try await announceMessage()
-                    let final = response(status: "completed", text: text, usage: usage, finish: finish, calls: calls,
-                                         reasoning: thinking, keepEmptyMessage: true)
-                    try await event("response.output_text.done", ["item_id": msgID, "output_index": index, "content_index": 0,
-                                                                 "text": text, "logprobs": [String]()])
-                    try await event("response.content_part.done", ["item_id": msgID, "output_index": index, "content_index": 0,
-                                                                  "part": OutputTextPart(text: text)])
-                    try await event("response.output_item.done", ["output_index": index, "item": final.output[index]])
-                    // Calls follow the message, each announced, its arguments sent, then done.
-                    for (i, call) in calls.enumerated() {
-                        let callIndex = index + 1 + i
-                        try await event("response.output_item.added", ["output_index": callIndex, "item": call.with(status: "in_progress", arguments: "")])
-                        try await event("response.function_call_arguments.delta", ["item_id": call.id, "output_index": callIndex, "delta": call.arguments])
-                        try await event("response.function_call_arguments.done", ["item_id": call.id, "output_index": callIndex,
-                                                                                  "name": call.name, "arguments": call.arguments])
-                        try await event("response.output_item.done", ["output_index": callIndex, "item": call])
-                    }
-                    try await event(final.status == "completed" ? "response.completed" : "response.incomplete", ["response": final])
-                }
-            }
+            try await event("response.created", ["response": response(status: "in_progress")])
+            try await event("response.in_progress", ["response": response(status: "in_progress")])
+            let final = try await run(streaming: true) { try await event($0.type, $0.fields) }
+            try await event(final.status == "completed" ? "response.completed" : "response.incomplete", ["response": final])
         }
     }
+}
+
+/// Where /v1/images/files serves images for this request's client: its Host, and the key path when the key came that way.
+func imageFileBase(_ req: Request, _ ctx: SynapseContext) -> String {
+    let host = req.headers[HTTPField.Name("Host")!] ?? req.head.authority ?? "localhost"
+    let keyPrefix = ctx.parameters.get("key").map { "k/\($0)/" } ?? ""
+    return "http://\(host)/\(keyPrefix)v1/images/files/"
 }
 
 struct ReasoningTextPart: Encodable, Sendable { var type = "reasoning_text"; var text: String }

@@ -21,5 +21,18 @@ enum ToolMarkup {
         return call(name: name, arguments: [:])
     }
 
+    /// Reads a call the strict parser refused, forgiving the slips small models make: a parameter tag missing its
+    /// `>`, or missing closing tags. Values that are JSON (numbers, arrays, objects) stay JSON, the rest are strings.
+    static func recover(_ text: String) -> (name: String, argumentsJSON: String)? {
+        guard let fn = text.firstMatch(of: /<function=([A-Za-z0-9_.\-]+)>?/) else { return nil }
+        var args: [String: JSONValue] = [:]
+        for m in text[fn.range.upperBound...].matches(of: /<parameter=([A-Za-z0-9_\-]+)>?\n?(.*?)\n?(?:<\/parameter>|(?=<parameter=)|<\/function>|$)/.dotMatchesNewlines()) {
+            let raw = String(m.2).trimmingCharacters(in: .whitespacesAndNewlines)
+            let json = try? JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
+            args[String(m.1)] = json.flatMap { if case .string = $0 { nil } else { $0 } } ?? .string(raw)
+        }
+        return (String(fn.1), encodeJSON(.object(args)))
+    }
+
     static func response(_ text: String) -> String { "<tool_response>\n\(text)\n</tool_response>" }
 }

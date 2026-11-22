@@ -313,7 +313,8 @@ public actor ChatService {
             // shortcut: speculative decoding is text-only, like the prompt cache it builds on.
             let draftLease = cacheable ? try await self.draftLease(for: spec, progress: progress) : nil
             let draft: DraftModel? = if let draftLease { await DraftModel(draftLease.value) } else { nil }
-            return try await self.run(lease: lease, draftLease: draftLease, splitThinking: true, progress: progress) {
+            return try await self.run(lease: lease, draftLease: draftLease, splitThinking: true, toolNames: Set(options.tools.map(\.name)),
+                                      progress: progress) {
                 try await container.perform { ctx in
                     let input = try Self.userInput(messages, options)
                     let tools = input.tools
@@ -592,7 +593,7 @@ public actor ChatService {
 
     /// Holds the GPU gate from prefill to the end of generation and turns MLX events into `ChatEvent`s.
     private func run(lease: ModelLease<ModelContainer>, draftLease: ModelLease<ModelContainer>?, splitThinking: Bool,
-                     progress: Progress, start: () async throws -> Started) async throws -> AsyncThrowingStream<ChatEvent, Error> {
+                     toolNames: Set<String> = [], progress: Progress, start: () async throws -> Started) async throws -> AsyncThrowingStream<ChatEvent, Error> {
         await GPUGate.shared.acquire()
         let releaseGate = GateRelease()
         let started: Started
@@ -633,6 +634,15 @@ public actor ChatService {
                     case .toolCall(let call):
                         let args = (try? JSONEncoder().encode(call.function.arguments)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
                         continuation.yield(.toolCall(name: call.function.name, arguments: args))
+                    case .rejectedToolCall(let r):
+                        // Small models slip on the markup (Qwen3.5 2B writes `<parameter=query` without its `>`). A call
+                        // still readable, to a tool the request offered, runs; anything else reaches the client as the
+                        // text the model wrote instead of vanishing.
+                        if !r.isPreviewTruncated, let call = ToolMarkup.recover(r.rawTextPreview), toolNames.contains(call.name) {
+                            continuation.yield(.toolCall(name: call.name, arguments: call.argumentsJSON))
+                        } else {
+                            emit(("", r.rawTextPreview))
+                        }
                     default:
                         break
                     }

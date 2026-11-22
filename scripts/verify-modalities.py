@@ -643,6 +643,59 @@ def cache():
           f"read {a2.usage.cache_read_input_tokens}, uncached input {a2.usage.input_tokens}")
 
 
+def server_tools():
+    """Built-in tools Synapse runs itself (web_search, generate_image, synapse_*), with the official OpenAI and Anthropic SDKs."""
+    import json, os
+    from openai import OpenAI
+    import anthropic
+
+    model = os.environ.get("SERVER_TOOLS_MODEL", "qwen3.5-2b")
+    client = OpenAI(base_url=f"{HOST}/v1", api_key=KEY)
+    ask = "Search the web for the latest stable Swift version, then tell me what it is in one sentence."
+
+    r = client.responses.create(model=model, input=ask, tools=[{"type": "web_search"}], temperature=0)
+    kinds = [o.type for o in r.output]
+    ws = next((o for o in r.output if o.type == "web_search_call"), None)
+    check("server tools: responses web_search runs a search, then answers", ws is not None and ws.status == "completed"
+          and kinds[-1] == "message" and len(r.output_text) > 0, f"{kinds} {r.output_text[:160]!r}")
+
+    types, text = [], ""
+    with client.responses.stream(model=model, input="What time is it right now where I am? Use your tools.",
+                                 tools=[{"type": "synapse"}], temperature=0) as s:
+        for e in s:
+            types.append(e.type)
+        final = s.get_final_response()
+    st = next((o for o in final.output if o.type == "synapse_tool_call"), None)
+    check("server tools: responses stream runs synapse_time", st is not None and "response.synapse_tool_call.completed" in types
+          and types[-1] == "response.completed", f"{[o.type for o in final.output]} {final.output_text[:120]!r}")
+
+    r = client.chat.completions.create(model=model, messages=[{"role": "user", "content": "Which AI models are installed in this app? Use your tools and list three ids."}],
+                                       tools=[{"type": "synapse"}], temperature=0)
+    used = (r.choices[0].message.model_extra or {}).get("synapse_tool_calls")
+    check("server tools: chat completions runs synapse_models", bool(used) and used[0]["name"] == "synapse_models"
+          and r.choices[0].finish_reason == "stop", f"{used and used[0]['name']} {r.choices[0].message.content[:160]!r}")
+
+    a = anthropic.Anthropic(base_url=HOST, api_key=KEY)
+    m = a.messages.create(model=model, max_tokens=1024, messages=[{"role": "user", "content": ask}],
+                          tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}])
+    btypes = [b.type for b in m.content]
+    check("server tools: anthropic web_search gives server_tool_use, web_search_tool_result, then text",
+          "server_tool_use" in btypes and "web_search_tool_result" in btypes and btypes[-1] == "text"
+          and m.usage.server_tool_use.web_search_requests >= 1, f"{btypes} {m.content[-1]}")
+    # The history with server blocks goes back as a follow-up.
+    m2 = a.messages.create(model=model, max_tokens=256, messages=[{"role": "user", "content": ask},
+                                                                    {"role": "assistant", "content": m.content},
+                                                                    {"role": "user", "content": "Thanks. Say just 'ok'."}])
+    check("server tools: anthropic history with server blocks is accepted", m2.content[-1].type == "text", f"{m2.content}")
+
+    if os.environ.get("SERVER_TOOLS_IMAGES"):
+        r = client.chat.completions.create(model=model, messages=[{"role": "user", "content": "Draw a small red teapot on a table."}],
+                                           tools=[{"type": "image_generation", "size": "512x512"}], temperature=0)
+        content = r.choices[0].message.content or ""
+        check("server tools: chat completions image_generation puts a markdown image in the reply",
+              "](http" in content and "/v1/images/files/" in content, content[:200])
+
+
 def sampling():
     """seed makes sampling reproducible on every engine; bad values are 400s."""
     import openai
@@ -668,7 +721,7 @@ def sampling():
         check("presence_penalty 3 -> 400", True, str(e)[:80])
 
 
-SECTIONS = {"cache": cache, "sampling": sampling, "speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools, "video-transform": video_transform}
+SECTIONS = {"server-tools": server_tools, "cache": cache, "sampling": sampling, "speech": speech, "embeddings": embeddings, "rerank": rerank, "diarize": diarize, "video-input": video_input, "videos": videos, "sound": sound, "omni": omni, "chat-audio": chat_audio, "lmstudio": lmstudio, "models": models, "voices": voices, "image-embeddings": image_embeddings, "tools": tools, "audio-edit": audio_edit, "image-tools": image_tools, "video-transform": video_transform}
 
 unknown = ONLY - SECTIONS.keys()
 if unknown:

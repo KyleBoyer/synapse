@@ -29,12 +29,15 @@ final class AnthropicAPITests: XCTestCase {
         XCTAssertEqual(parsed[3].1, [.text("<tool_response>\nsunny\n</tool_response>")])
     }
 
-    func testRejectsUnknownBlocksRolesAndServerTools() throws {
+    func testRejectsUnknownBlocksRolesAndServerToolsSynapseCannotRun() throws {
         XCTAssertThrowsError(try AnthropicParse.messages(try request(#"{"messages":[{"role":"user","content":[{"type":"document"}]}]}"#)))
         XCTAssertThrowsError(try AnthropicParse.messages(try request(#"{"messages":[{"role":"system","content":"x"}]}"#)))
-        XCTAssertThrowsError(try AnthropicParse.tools(try request(#"{"messages":[],"tools":[{"type":"web_search_20250305","name":"web_search"}]}"#)))
-        let none = try request(#"{"messages":[],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}"#)
-        XCTAssertEqual(try AnthropicParse.tools(none), [])
+        XCTAssertThrowsError(try AnthropicParse.tools(try request(#"{"messages":[],"tools":[{"type":"code_execution_20250825","name":"code_execution"}]}"#)))
+        XCTAssertTrue(try AnthropicParse.tools(try request(#"{"messages":[],"tools":[{"type":"web_search_20250305","name":"web_search"}]}"#)).0.webSearch)
+        let none = try request(#"{"messages":[],"tools":[{"name":"f","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"none"}}"#)
+        let (server, tools) = try AnthropicParse.tools(none)
+        XCTAssertEqual(tools, [])
+        XCTAssertTrue(server.isEmpty)
     }
 
     func testThinkSplitterAcrossChunkBoundaries() {

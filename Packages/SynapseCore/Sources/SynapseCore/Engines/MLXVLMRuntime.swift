@@ -130,8 +130,40 @@ public final class MLXVLMServer: @unchecked Sendable {
 enum MLXVLMChat {
     /// `llama` asks llama.cpp for `prompt_progress` objects while it reads the prompt (mlx-vlm has none), and passes the
     /// thinking switch to the GGUF's template.
+    /// An assistant turn with `<tool_call>` markup as content plus tool_calls, or a user turn of only `<tool_response>`
+    /// blocks as tool messages answering the calls before it; nil for any other turn.
+    static func toolTurns(_ m: ChatMessage, pending: inout [String]) -> [[String: Any]]? {
+        guard m.images.isEmpty, m.audios.isEmpty, m.videos.isEmpty else { return nil }
+        switch m.role {
+        case .assistant:
+            let blocks = m.text.matches(of: /<tool_call>(.*?)<\/tool_call>/.dotMatchesNewlines())
+            let calls = blocks.compactMap { ToolMarkup.recover(String($0.1)) }
+            guard !calls.isEmpty, calls.count == blocks.count else { return nil }
+            pending = calls.indices.map { "call_\($0)_" + UUID().uuidString.prefix(8) }
+            let text = m.text.replacing(/<tool_call>.*?<\/tool_call>/.dotMatchesNewlines(), with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return [["role": "assistant", "content": text, "tool_calls": zip(pending, calls).map { id, c in
+                ["id": id, "type": "function", "function": ["name": c.name, "arguments": c.argumentsJSON]] as [String: Any]
+            }]]
+        case .user:
+            let results = m.text.matches(of: /<tool_response>\n?(.*?)\n?<\/tool_response>/.dotMatchesNewlines())
+            guard !results.isEmpty,
+                  m.text.replacing(/<tool_response>.*?<\/tool_response>/.dotMatchesNewlines(), with: "").allSatisfy(\.isWhitespace)
+            else { return nil }
+            defer { pending = Array(pending.dropFirst(results.count)) }
+            return results.enumerated().map { i, r in
+                ["role": "tool", "tool_call_id": i < pending.count ? pending[i] : "call_\(i)", "content": String(r.1)]
+            }
+        case .system:
+            return nil
+        }
+    }
+
     static func body(_ messages: [ChatMessage], options: ChatOptions, model: String, llama: Bool = false) throws -> Data {
-        let wire: [[String: Any]] = try messages.map { m in
+        var pendingCalls: [String] = []
+        let wire: [[String: Any]] = try messages.flatMap { m -> [[String: Any]] in
+            // Tool turns are kept as Qwen's markup; llama.cpp gets them as tool_calls and tool messages, so a GGUF's own
+            // template renders them (Inkling copies foreign markup into its answer as text).
+            if llama, let turns = Self.toolTurns(m, pending: &pendingCalls) { return turns }
             var parts: [[String: Any]] = []
             if !m.text.isEmpty { parts.append(["type": "text", "text": m.text]) }
             for image in m.images {
@@ -142,7 +174,7 @@ enum MLXVLMChat {
                                                                        "format": audio.pathExtension.lowercased()]])
             }
             for video in m.videos { parts.append(["type": "video_url", "video_url": ["url": video.path]]) }
-            return ["role": m.role.rawValue, "content": parts]
+            return [["role": m.role.rawValue, "content": parts]]
         }
         var o: [String: Any] = ["model": model, "messages": wire, "stream": true, "stream_options": ["include_usage": true],
                                 "max_tokens": options.maxTokens ?? ChatService.defaultMaxTokens]
@@ -161,7 +193,9 @@ enum MLXVLMChat {
             // reasoning_effort (it thinks at "high" unless told "none"). Each template ignores the other's name.
             o["chat_template_kwargs"] = options.enableThinking ? ["enable_thinking": true] : ["enable_thinking": false, "reasoning_effort": "none"]
             // Inkling still thinks at effort "none" (more so with a LoRA); a zero budget makes llama.cpp end it at once.
-            if !options.enableThinking { o["thinking_budget_tokens"] = 0 }
+            // With tools Inkling plans a call in thought first, and a zero budget sends it into a loop of empty thinking
+            // blocks until max_tokens, so it gets a short one.
+            if !options.enableThinking { o["thinking_budget_tokens"] = options.tools.isEmpty ? 0 : 256 }
         }
         // mlx-vlm's name, then llama.cpp's.
         if options.enableThinking, let b = options.thinkingBudget { o["thinking_budget"] = b; o["thinking_budget_tokens"] = b }

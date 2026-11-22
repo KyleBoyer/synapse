@@ -50,6 +50,7 @@ struct ServerView: View {
                     Button("Regenerate") { state.settings.apiKey = Settings.generateKey() }
                 }
             }
+            toolsSection
             Section("Bazarr") {
                 Text("Settings → Providers → Whisper → Endpoint:").font(.caption)
                 HStack {
@@ -102,8 +103,71 @@ struct ServerView: View {
         }
     }
 
+    /// Tools Synapse runs for chat models: which search service, which image model, and which tools every request gets.
+    @ViewBuilder private var toolsSection: some View {
+        @Bindable var state = state
+        let tools = state.settings.tools
+        Section("Built-in tools") {
+            Text("Chat models can search the web, make images, and look up the time and Synapse's own models while they answer. A client turns a tool on by sending it (web_search, image_generation or synapse); the switches below turn it on for every chat, for apps that never send one.")
+                .font(.caption).foregroundStyle(.secondary)
+            LabeledContent("Web search") {
+                ChoiceMenu(title: "Search provider", selection: $state.settings.tools.searchProvider,
+                           options: ToolSettings.SearchProvider.allCases.map { ($0, $0.label) })
+            }
+            if tools.searchProvider.needsKey {
+                LabeledContent("\(tools.searchProvider.label) API key") {
+                    SecureField("Key", text: optional($state.settings.tools.searchKey)).labelsHidden().frame(maxWidth: 260)
+                }
+            }
+            if tools.searchProvider == .searxng {
+                LabeledContent("SearXNG address") {
+                    TextField("http://localhost:8080", text: optional($state.settings.tools.searxngURL)).labelsHidden().font(.mono()).frame(maxWidth: 260)
+                }
+            }
+            if tools.searchProvider != .off {
+                Text(searchNote(tools.searchProvider)).font(.caption).foregroundStyle(.secondary)
+                Stepper("Results per search: \(tools.searchResults)", value: $state.settings.tools.searchResults, in: 1...20)
+            }
+            LabeledContent("Image model") {
+                ChoiceMenu(title: "Image model", selection: $state.settings.tools.imageModel,
+                           options: [(nil, "Default")] + state.downloadedImageSpecs.map { (Optional($0.id), $0.displayName) },
+                           detail: { $0 })
+            }
+            LabeledContent("Image size") {
+                ChoiceMenu(title: "Image size", selection: $state.settings.tools.imageSize,
+                           options: [(nil, "1024 × 1024")] + ["768x768", "512x512", "1024x768", "768x1024", "1280x720", "720x1280"]
+                               .map { (Optional($0), $0.replacingOccurrences(of: "x", with: " × ")) })
+            }
+            Toggle("Web search in every chat", isOn: alwaysOn(.webSearch)).disabled(tools.searchProvider == .off)
+            Toggle("Image generation in every chat", isOn: alwaysOn(.imageGeneration))
+            Toggle("Time and Synapse info in every chat", isOn: alwaysOn(.synapse))
+            Stepper("Tool rounds per answer: \(tools.maxRounds)", value: $state.settings.tools.maxRounds, in: 2...10)
+            Text("Only models that call tools well (Qwen3.5, Inkling) use these reliably; small models may skip them.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func searchNote(_ p: ToolSettings.SearchProvider) -> String {
+        switch p {
+        case .duckDuckGo: "No account needed. The searches the model writes are sent to DuckDuckGo."
+        case .brave: "Brave Search API key from api-dashboard.search.brave.com. Searches are sent to Brave."
+        case .tavily: "Tavily API key from app.tavily.com. Searches are sent to Tavily."
+        case .searxng: "Your own SearXNG instance, with the json format turned on in its settings.yml."
+        case .off: ""
+        }
+    }
+
+    private func alwaysOn(_ tool: ToolSettings.Tool) -> Binding<Bool> {
+        Binding(get: { state.settings.tools.alwaysOn.contains(tool) },
+                set: { on in if on { state.settings.tools.alwaysOn.insert(tool) } else { state.settings.tools.alwaysOn.remove(tool) } })
+    }
+
+    private func optional(_ b: Binding<String?>) -> Binding<String> {
+        Binding(get: { b.wrappedValue ?? "" }, set: { b.wrappedValue = $0.isEmpty ? nil : $0 })
+    }
+
     static let routes: [(String, String)] = [
-        ("POST /v1/responses", "OpenAI Responses: chat, vision, image tool"),
+        ("POST /v1/responses", "OpenAI Responses: chat, vision, built-in tools"),
         ("POST /v1/messages", "Anthropic Messages"),
         ("POST /api/v1/chat", "LM Studio chat: load and prompt progress events"),
         ("POST /v1/chat/completions", "OpenAI Chat Completions"),

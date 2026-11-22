@@ -48,6 +48,8 @@ enum ResponseOutputItemWire: Encodable, Sendable {
     case image(ImageGenerationCallWire)
     case functionCall(FunctionCallWire)
     case reasoning(ReasoningItemWire)
+    case webSearch(WebSearchCallWire)
+    case synapseTool(SynapseToolCallWire)
 
     func encode(to encoder: Encoder) throws {
         switch self {
@@ -55,6 +57,8 @@ enum ResponseOutputItemWire: Encodable, Sendable {
         case .image(let i): try i.encode(to: encoder)
         case .functionCall(let f): try f.encode(to: encoder)
         case .reasoning(let r): try r.encode(to: encoder)
+        case .webSearch(let w): try w.encode(to: encoder)
+        case .synapseTool(let t): try t.encode(to: encoder)
         }
     }
 }
@@ -111,11 +115,8 @@ private func newID(_ prefix: String) -> String {
     prefix + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
 }
 
-func respondWithImageTool(_ body: ResponsesRequest, tools: [JSONValue], chat: ChatService, images: ImageService) async throws -> Response {
-    guard tools.count == 1, tools[0]["type"]?.string == "image_generation" else {
-        throw ChatParse.bad("Only a single image_generation tool is supported.")
-    }
-    let config = try ImageToolConfig(tools[0])
+/// `config`: the request's image_generation tool with the app's defaults filled in (ServerTools.split).
+func respondWithImageTool(_ body: ResponsesRequest, tools: [JSONValue], config: ImageToolConfig, chat: ChatService, images: ImageService) async throws -> Response {
     let choice = body.tool_choice ?? .string("auto")
     let forced = choice.string == "required" || choice["type"]?.string == "image_generation"
     if choice.string == "none" { throw ChatParse.bad("tool_choice 'none' with an image_generation tool is not supported; omit tools instead.") }

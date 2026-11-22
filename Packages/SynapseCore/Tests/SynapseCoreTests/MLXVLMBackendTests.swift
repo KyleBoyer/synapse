@@ -138,6 +138,23 @@ final class MLXVLMBackendTests: XCTestCase {
         XCTAssertEqual((tools?.first?["function"] as? [String: Any])?["name"] as? String, "get_weather")
     }
 
+    /// Tool history reaches llama.cpp structured, so a GGUF's template renders it in the model's own format.
+    func testLlamaGetsToolTurnsAsToolCallsAndToolMessages() throws {
+        let messages = [ChatMessage(role: .user, text: "Weather?"),
+                        ChatMessage(role: .assistant, text: "Checking.\n" + ToolMarkup.call(name: "get_weather", argumentsJSON: #"{"city":"Paris"}"#)),
+                        ChatMessage(role: .user, text: ToolMarkup.response("sunny"))]
+        let body = try MLXVLMChat.body(messages, options: ChatOptions(), model: "m", llama: true)
+        let wire = try XCTUnwrap((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["messages"] as? [[String: Any]])
+        XCTAssertEqual(wire.map { $0["role"] as? String }, ["user", "assistant", "tool"])
+        XCTAssertEqual(wire[1]["content"] as? String, "Checking.")
+        let call = try XCTUnwrap((wire[1]["tool_calls"] as? [[String: Any]])?.first)
+        XCTAssertEqual((call["function"] as? [String: Any])?["arguments"] as? String, #"{"city":"Paris"}"#)
+        XCTAssertEqual(wire[2]["tool_call_id"] as? String, call["id"] as? String)
+        XCTAssertEqual(wire[2]["content"] as? String, "sunny")
+        let mlxvlm = try MLXVLMChat.body(messages, options: ChatOptions(), model: "m")
+        XCTAssertEqual(((try JSONSerialization.jsonObject(with: mlxvlm) as? [String: Any])?["messages"] as? [[String: Any]])?.count, 3)
+    }
+
     func testLlamaRequestsAskForPromptProgress() throws {
         let body = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")], options: ChatOptions(), model: "m", llama: true)
         XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["return_progress"] as? Bool, true)
@@ -146,6 +163,10 @@ final class MLXVLMBackendTests: XCTestCase {
         let kwargs = (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["chat_template_kwargs"] as? [String: Any]
         XCTAssertEqual(kwargs?["reasoning_effort"] as? String, "none", "thinking off reaches Inkling's template")
         XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["thinking_budget_tokens"] as? Int, 0, "llama.cpp ends thinking Inkling starts anyway")
+        let withTools = try MLXVLMChat.body([ChatMessage(role: .user, text: "Hi")],
+                                            options: ChatOptions(tools: [ChatTool(name: "f", description: "", parametersJSON: "{}")]), model: "m", llama: true)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: withTools) as? [String: Any])?["thinking_budget_tokens"] as? Int, 256,
+                       "a zero budget loops Inkling when it plans a tool call")
     }
 
     /// mlx-vlm reports failures mid-stream as a data line; they must reach the client, not end as an empty answer.
