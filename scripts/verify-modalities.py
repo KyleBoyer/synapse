@@ -675,6 +675,21 @@ def server_tools():
     check("server tools: chat completions runs synapse_models", bool(used) and used[0]["name"] == "synapse_models"
           and r.choices[0].finish_reason == "stop", f"{used and used[0]['name']} {r.choices[0].message.content[:160]!r}")
 
+    def used(prompt, tools):
+        r = client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], tools=tools, temperature=0)
+        calls = (r.choices[0].message.model_extra or {}).get("synapse_tool_calls") or []
+        return [c["name"] for c in calls], calls, r.choices[0].message.content or ""
+    names, calls, text = used("Use the calculate tool: what is 48613 * 7919 - 12345?", [{"type": "synapse"}])
+    check("server tools: calculate gives the exact product", "calculate" in names and "384954002" in text.replace(",", ""), f"{names} {text[:120]!r}")
+    names, calls, text = used("What time is it in Tokyo right now? Use your tools.", [{"type": "synapse"}])
+    check("server tools: synapse_time in another zone", any(c["name"] == "synapse_time" and "Asia/Tokyo" in (c.get("output") or "") for c in calls),
+          f"{names} {text[:120]!r}")
+    names, calls, text = used("Use date_difference: how many days from 2026-11-22 to 2026-12-25?", [{"type": "synapse"}])
+    check("server tools: date_difference counts days", "date_difference" in names and "33" in text, f"{names} {text[:120]!r}")
+    names, calls, text = used("Read https://www.swift.org/ with web_fetch and tell me the page's title.", [{"type": "web_search"}])
+    check("server tools: web_fetch reads a page", "web_fetch" in names and any(c["name"] == "web_fetch" and c["status"] == "completed" for c in calls),
+          f"{names} {text[:160]!r}")
+
     a = anthropic.Anthropic(base_url=HOST, api_key=KEY)
     m = a.messages.create(model=model, max_tokens=1024, messages=[{"role": "user", "content": ask}],
                           tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}])

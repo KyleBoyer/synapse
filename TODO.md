@@ -7,7 +7,7 @@ New input/output pairings, in the order we plan to build them. Each item moves t
 Tools Synapse runs itself during a chat, as OpenAI's hosted tools and Anthropic's server tools do.
 
 - [x] One tool loop for Responses, Chat Completions and Messages: the model calls a built-in, Synapse runs it, the result goes back, until the model answers or calls a client tool (5 turns, set in the app).
-- [x] `web_search` with DuckDuckGo (no key), Brave Search, Tavily or SearXNG; `image_generation` beside other tools and on every chat API (markdown image on Chat Completions); `synapse` tools: time, installed models, loaded models and memory.
+- [x] `web_search` with DuckDuckGo (no key), Brave Search, Tavily or SearXNG, plus `web_fetch` to read a result (local and LAN addresses refused); `image_generation` beside other tools and on every chat API (markdown image on Chat Completions); `synapse` tools: time here or in any zone, date_difference, calculate, installed models, loaded models and memory.
 - [x] Server → Built-in tools: provider and key, results per search, image model and size, tools every chat gets, turns per answer.
 - [x] Verified with the OpenAI and Anthropic SDKs (`verify-modalities.py --only server-tools`): Qwen3.5 2B passes all, image included; Inkling 2 Mini passes the time, models and Messages search checks and calls web_search on Responses, where DuckDuckGo started answering 202 (its limit for an address that searches a lot).
 - [x] Fixed on the way: a tool call the strict parser refused vanished from the reply (now read leniently or passed through as text); Inkling looped on empty thinking blocks when offered tools with a zero thinking budget; llama.cpp gets tool history as tool_calls and tool messages.

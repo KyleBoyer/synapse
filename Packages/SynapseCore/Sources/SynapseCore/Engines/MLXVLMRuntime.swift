@@ -193,9 +193,10 @@ enum MLXVLMChat {
             // reasoning_effort (it thinks at "high" unless told "none"). Each template ignores the other's name.
             o["chat_template_kwargs"] = options.enableThinking ? ["enable_thinking": true] : ["enable_thinking": false, "reasoning_effort": "none"]
             // Inkling still thinks at effort "none" (more so with a LoRA); a zero budget makes llama.cpp end it at once.
-            // With tools Inkling plans a call in thought first, and a zero budget sends it into a loop of empty thinking
+            // With tools offered or tool turns in the history, a zero budget sends Inkling into a loop of empty thinking
             // blocks until max_tokens, so it gets a short one.
-            if !options.enableThinking { o["thinking_budget_tokens"] = options.tools.isEmpty ? 0 : 256 }
+            let toolTurns = wire.contains { $0["tool_calls"] != nil || ($0["role"] as? String) == "tool" }
+            if !options.enableThinking { o["thinking_budget_tokens"] = options.tools.isEmpty && !toolTurns ? 0 : 256 }
         }
         // mlx-vlm's name, then llama.cpp's.
         if options.enableThinking, let b = options.thinkingBudget { o["thinking_budget"] = b; o["thinking_budget_tokens"] = b }
@@ -233,7 +234,9 @@ enum MLXVLMChat {
                     guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                         var text = ""
                         for try await line in bytes.lines { text += line }
-                        throw EngineError.unsupported("mlx-vlm returned \((resp as? HTTPURLResponse)?.statusCode ?? 0): \(text.prefix(400))")
+                        // Both servers (mlx-vlm and llama.cpp) answer errors as {"error": {"message": …}}.
+                        let message = ((try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
+                        throw EngineError.unsupported("The model server returned \((resp as? HTTPURLResponse)?.statusCode ?? 0): \(message ?? String(text.prefix(400)))")
                     }
                     var finish = "stop", usage = ChatUsage(promptTokens: 0, completionTokens: 0)
                     var reading = true

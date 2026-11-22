@@ -12,6 +12,8 @@ import Hummingbird
 /// The built-in tools a request turned on.
 struct ServerTools: Sendable {
     var webSearch = false
+    /// Reading a page; on with web search, or alone (Anthropic's web_fetch_*).
+    var webFetch = false
     /// Anthropic's max_uses; nil is no limit beyond the loop's rounds.
     var maxSearches: Int?
     var image: ImageToolConfig?
@@ -19,10 +21,11 @@ struct ServerTools: Sendable {
     /// The app's tool settings: search provider, image model and size defaults, rounds.
     var settings = ToolSettings()
 
-    var isEmpty: Bool { !webSearch && image == nil && !synapse }
+    var isEmpty: Bool { !webSearch && !webFetch && image == nil && !synapse }
 
     static func isServerType(_ type: String) -> Bool {
-        type == "web_search" || type.hasPrefix("web_search_") || type == "image_generation" || type == "synapse"
+        type == "web_search" || type.hasPrefix("web_search_") || type == "web_fetch" || type.hasPrefix("web_fetch_")
+            || type == "image_generation" || type == "synapse"
     }
 
     /// Splits a request's tools into Synapse's own and the rest, which stay the client's function tools. The settings
@@ -34,7 +37,10 @@ struct ServerTools: Sendable {
             if type == "web_search" || type.hasPrefix("web_search_") {
                 guard settings.searchProvider != .off else { throw ChatParse.bad("Web search is turned off in Synapse's settings (Server → Built-in tools).") }
                 server.webSearch = true
+                server.webFetch = true
                 server.maxSearches = t["max_uses"]?.number.map(Int.init)
+            } else if type == "web_fetch" || type.hasPrefix("web_fetch_") {
+                server.webFetch = true
             } else if type == "image_generation" {
                 server.image = try ImageToolConfig(t)
             } else if type == "synapse" {
@@ -43,7 +49,7 @@ struct ServerTools: Sendable {
                 rest.append(t)
             }
         }
-        if settings.alwaysOn.contains(.webSearch), settings.searchProvider != .off { server.webSearch = true }
+        if settings.alwaysOn.contains(.webSearch), settings.searchProvider != .off { server.webSearch = true; server.webFetch = true }
         if settings.alwaysOn.contains(.imageGeneration), server.image == nil { server.image = try ImageToolConfig(.object([:])) }
         if settings.alwaysOn.contains(.synapse) { server.synapse = true }
         if var image = server.image {
@@ -58,8 +64,9 @@ struct ServerTools: Sendable {
     var functions: [ChatTool] {
         var out: [ChatTool] = []
         if webSearch { out.append(ServerToolKind.webSearch.function) }
+        if webFetch { out.append(ServerToolKind.webFetch.function) }
         if image != nil { out.append(ServerToolKind.image.function) }
-        if synapse { out += [ServerToolKind.time.function, ServerToolKind.models.function, ServerToolKind.status.function] }
+        if synapse { out += ServerToolKind.synapseSet.map(\.function) }
         return out
     }
 
@@ -67,16 +74,21 @@ struct ServerTools: Sendable {
         guard let kind = ServerToolKind(rawValue: name) else { return nil }
         switch kind {
         case .webSearch: return webSearch ? kind : nil
+        case .webFetch: return webFetch ? kind : nil
         case .image: return image != nil ? kind : nil
-        case .time, .models, .status: return synapse ? kind : nil
+        case .time, .dates, .calculate, .models, .status: return synapse ? kind : nil
         }
     }
 }
 
 /// A built-in tool, by the function name the model calls.
 enum ServerToolKind: String, Sendable {
-    case webSearch = "web_search", image = "generate_image"
-    case time = "synapse_time", models = "synapse_models", status = "synapse_status"
+    case webSearch = "web_search", webFetch = "web_fetch", image = "generate_image"
+    case time = "synapse_time", dates = "date_difference", calculate = "calculate", models = "synapse_models", status = "synapse_status"
+
+    /// The `synapse` tool type's functions.
+    static let synapseSet: [ServerToolKind] = [.time, .dates, .calculate, .models, .status]
+    var isSynapse: Bool { Self.synapseSet.contains(self) }
 
     var function: ChatTool {
         let none = #"{"type":"object","properties":{}}"#
@@ -87,8 +99,18 @@ enum ServerToolKind: String, Sendable {
         case .image:
             return ChatTool(name: rawValue, description: "Create or edit an image. Call this whenever the user asks for a picture, drawing, photo or image edit. The image is shown to the user.",
                             parametersJSON: #"{"type":"object","properties":{"prompt":{"type":"string","description":"Detailed description of the image to create: subject, setting, style, lighting"}},"required":["prompt"]}"#)
+        case .webFetch:
+            return ChatTool(name: rawValue, description: "Read a web page's text, e.g. a search result, to answer from the page itself.",
+                            parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"The http(s) address to read"}},"required":["url"]}"#)
         case .time:
-            return ChatTool(name: rawValue, description: "The current date, time and time zone.", parametersJSON: none)
+            return ChatTool(name: rawValue, description: "The current date, time and weekday, here or in another time zone or city.",
+                            parametersJSON: #"{"type":"object","properties":{"time_zone":{"type":"string","description":"Optional: an IANA zone (Asia/Tokyo), abbreviation (PST) or city (Tokyo). Leave out for the user's own."}}}"#)
+        case .dates:
+            return ChatTool(name: rawValue, description: "Date arithmetic: the days and weeks between two dates, or the date some days before or after one. Dates are YYYY-MM-DD; a missing date is today.",
+                            parametersJSON: #"{"type":"object","properties":{"from":{"type":"string","description":"Start date, YYYY-MM-DD (default today)"},"to":{"type":"string","description":"End date, YYYY-MM-DD"},"add_days":{"type":"integer","description":"Days to add to from (negative to go back)"}}}"#)
+        case .calculate:
+            return ChatTool(name: rawValue, description: "Evaluate arithmetic exactly instead of working it out: + - * / % ^, parentheses, sqrt, abs, round, floor, ceil, ln, log, log2, exp, sin, cos, tan, asin, acos, atan, min, max, pow, pi, e.",
+                            parametersJSON: #"{"type":"object","properties":{"expression":{"type":"string","description":"For example (17.5 * 12) / 3 + sqrt(2)"}},"required":["expression"]}"#)
         case .models:
             return ChatTool(name: rawValue, description: "The AI models installed in Synapse, the app running you: what each one does, its size, and which are loaded.", parametersJSON: none)
         case .status:
@@ -99,9 +121,9 @@ enum ServerToolKind: String, Sendable {
     /// Output item id prefix, as OpenAI's (ws_, ig_); st_ for Synapse's own.
     var idPrefix: String {
         switch self {
-        case .webSearch: "ws_"
+        case .webSearch, .webFetch: "ws_"
         case .image: "ig_"
-        case .time, .models, .status: "st_"
+        case .time, .dates, .calculate, .models, .status: "st_"
         }
     }
 }
@@ -127,6 +149,7 @@ struct ServerToolCall: Sendable {
     enum Output: Sendable {
         case search(query: String, results: [WebResult])
         case image(GeneratedImage)
+        case page(WebPage)
         case info(String)     // JSON text
     }
     var id: String
@@ -148,6 +171,7 @@ struct ServerToolCall: Sendable {
         case .search(_, let results)?:
             if results.isEmpty { return "No results." }
             return results.enumerated().map { "\($0 + 1). \($1.title)\n\($1.url)\n\($1.snippet)" }.joined(separator: "\n\n")
+        case .page(let p)?: return "\(p.title)\n\(p.url)\n\n\(p.text)"
         case .image?: return "The image was created and is shown to the user. Do not repeat it as a link."
         case .info(let json)?: return json
         case nil: return ""
@@ -239,6 +263,11 @@ struct ServerToolRunner: Sendable {
                             continuation.yield(.toolFinished(call))
                             results.append(ToolMarkup.response(call.forModel))
                         }
+                        // Otherwise a model that keeps calling (a search that keeps failing) ends on a turn without tools and
+                        // often says nothing; Synapse's own tool result tells it this is the last one.
+                        if round == maxRounds - 1 {
+                            results.append(ToolMarkup.response("No more tool calls are available for this answer. Answer now with what you have."))
+                        }
                         try Task.checkCancellation()
                         conversation.append(ChatMessage(role: .user, text: results.joined(separator: "\n")))
                     }
@@ -286,8 +315,15 @@ struct ServerToolServices: Sendable {
                 call.output = .search(query: query, results: try await WebSearch.search(query, settings: tools.settings))
             case .image:
                 call.output = .image(try await drawImage(call.argumentsObject["prompt"]?.string ?? "", conversation))
+            case .webFetch:
+                call.output = .page(try await WebFetch.fetch(call.argumentsObject["url"]?.string ?? ""))
             case .time:
-                call.output = .info(SynapseInfo.time())
+                call.output = .info(try SynapseInfo.time(in: call.argumentsObject["time_zone"]?.string))
+            case .dates:
+                let a = call.argumentsObject
+                call.output = .info(try SynapseInfo.dates(from: a["from"]?.string, to: a["to"]?.string, addDays: (a["add_days"]?.number ?? a["add_days"]?.string.flatMap(Double.init)).map(Int.init)))
+            case .calculate:
+                call.output = .info(try Calculator.answer(call.argumentsObject["expression"]?.string ?? ""))
             case .models:
                 call.output = .info(await SynapseInfo.models(store: store, chat: chat))
             case .status:
@@ -421,7 +457,49 @@ enum WebSearch {
 
 enum SynapseInfo {
     static func json(_ o: [String: Any]) -> String {
-        (try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        (try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys, .withoutEscapingSlashes])).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+    }
+
+    /// `name`: an IANA id, an abbreviation, or a city in one (Tokyo, New York); nil is this Mac's zone.
+    static func time(in name: String?) throws -> String {
+        guard let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return time() }
+        guard let zone = zone(named: name) else {
+            throw ChatParse.bad("Unknown time zone '\(name)'. Use an IANA name such as Europe/Paris, an abbreviation such as PST, or a large city.")
+        }
+        return time(zone: zone)
+    }
+
+    static func zone(named name: String) -> TimeZone? {
+        if let z = TimeZone(identifier: name) ?? TimeZone(abbreviation: name.uppercased()) { return z }
+        let city = name.replacingOccurrences(of: " ", with: "_").lowercased()
+        return TimeZone.knownTimeZoneIdentifiers.first { $0.lowercased().hasSuffix("/" + city) }.flatMap(TimeZone.init(identifier:))
+    }
+
+    /// Days between two dates, or `from` moved by `addDays`, in this Mac's calendar.
+    static func dates(from: String?, to: String?, addDays: Int?, today: Date = Date(), zone: TimeZone = .current) throws -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = zone
+        let f = DateFormatter()
+        f.calendar = cal; f.timeZone = zone; f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"
+        let weekday = DateFormatter()
+        weekday.calendar = cal; weekday.timeZone = zone; weekday.locale = Locale(identifier: "en_US_POSIX"); weekday.dateFormat = "EEEE"
+        func day(_ s: String?) throws -> Date {
+            guard let s, !s.isEmpty else { return cal.startOfDay(for: today) }
+            guard let d = f.date(from: String(s.prefix(10))) else { throw ChatParse.bad("Dates are YYYY-MM-DD; got '\(s)'.") }
+            return d
+        }
+        let start = try day(from)
+        // `to` wins when a model sends both (small models add a guessed add_days to a difference question).
+        if let addDays, to?.isEmpty != false {
+            guard let d = cal.date(byAdding: .day, value: addDays, to: start) else { throw ChatParse.bad("add_days is out of range.") }
+            return json(["from": f.string(from: start), "add_days": addDays, "date": f.string(from: d), "weekday": weekday.string(from: d)])
+        }
+        guard to?.isEmpty == false else { throw ChatParse.bad("Give `to` (a date) or `add_days`.") }
+        let end = try day(to)
+        let days = cal.dateComponents([.day], from: start, to: end).day ?? 0
+        return json(["from": f.string(from: start), "to": f.string(from: end), "days": days,
+                     "weeks_and_days": "\(days / 7) weeks \(days % 7) days", "from_weekday": weekday.string(from: start),
+                     "to_weekday": weekday.string(from: end)])
     }
 
     static func time(now: Date = Date(), zone: TimeZone = .current) -> String {
@@ -458,5 +536,215 @@ enum SynapseInfo {
         return json(["version": Synapse.version, "mac_memory_gb": Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824,
                      "loaded_models": loaded,
                      "loaded_memory_gb": (Double(residents.reduce(0) { $0 + $1.bytes }) / 1e9 * 10).rounded() / 10])
+    }
+}
+
+// MARK: Calculator
+
+/// Arithmetic for the `calculate` tool: a small recursive-descent parser over Double. It evaluates nothing but the
+/// operators, functions and constants below, so a model's input can't run code.
+struct Calculator {
+    struct Failure: LocalizedError { let errorDescription: String? }
+
+    private let chars: [Character]
+    private var i = 0
+
+    static func answer(_ expression: String) throws -> String {
+        let value = try evaluate(expression)
+        let text = value.rounded() == value && abs(value) < 1e15 ? String(Int64(value)) : String(format: "%.12g", value)
+        return SynapseInfo.json(["expression": expression, "result": text])
+    }
+
+    static func evaluate(_ expression: String) throws -> Double {
+        let normalized = expression.replacingOccurrences(of: "**", with: "^").replacingOccurrences(of: "×", with: "*")
+            .replacingOccurrences(of: "÷", with: "/").replacingOccurrences(of: "−", with: "-")
+        var p = Calculator(chars: Array(normalized.filter { !$0.isWhitespace }))
+        guard !p.chars.isEmpty else { throw Failure(errorDescription: "The expression is empty.") }
+        let v = try p.sum()
+        guard p.i == p.chars.count else { throw Failure(errorDescription: "Unexpected '\(p.chars[p.i])' in the expression.") }
+        guard v.isFinite else { throw Failure(errorDescription: "The result is not a finite number (division by zero?).") }
+        return v
+    }
+
+    private init(chars: [Character]) { self.chars = chars }
+
+    private var peek: Character? { i < chars.count ? chars[i] : nil }
+    private mutating func eat(_ c: Character) -> Bool { if peek == c { i += 1; return true }; return false }
+
+    private mutating func sum() throws -> Double {
+        var v = try product()
+        while true {
+            if eat("+") { v += try product() } else if eat("-") { v -= try product() } else { return v }
+        }
+    }
+
+    private mutating func product() throws -> Double {
+        var v = try unary()
+        while true {
+            if eat("*") { v *= try unary() } else if eat("/") { v /= try unary() }
+            else if eat("%") { v = v.truncatingRemainder(dividingBy: try unary()) } else { return v }
+        }
+    }
+
+    private mutating func unary() throws -> Double {
+        if eat("-") { return -(try unary()) }
+        if eat("+") { return try unary() }
+        return try power()
+    }
+
+    private mutating func power() throws -> Double {
+        let base = try primary()
+        return eat("^") ? pow(base, try unary()) : base
+    }
+
+    private mutating func primary() throws -> Double {
+        if eat("(") {
+            let v = try sum()
+            guard eat(")") else { throw Failure(errorDescription: "A parenthesis is not closed.") }
+            return v
+        }
+        guard let c = peek else { throw Failure(errorDescription: "The expression ends early.") }
+        if c.isNumber || c == "." {
+            let start = i
+            while let d = peek, d.isNumber || d == "." { i += 1 }
+            if let e = peek, e == "e" || e == "E", i + 1 < chars.count, chars[i + 1].isNumber || "+-".contains(chars[i + 1]) {
+                i += 2
+                while let d = peek, d.isNumber { i += 1 }
+            }
+            guard let v = Double(String(chars[start..<i])) else { throw Failure(errorDescription: "'\(String(chars[start..<i]))' is not a number.") }
+            return v
+        }
+        guard c.isLetter else { throw Failure(errorDescription: "Unexpected '\(c)' in the expression.") }
+        let start = i
+        while let d = peek, d.isLetter || d.isNumber { i += 1 }
+        let name = String(chars[start..<i]).lowercased()
+        switch name {
+        case "pi": return .pi
+        case "e": return M_E
+        default: break
+        }
+        guard eat("(") else { throw Failure(errorDescription: "Unknown name '\(name)'.") }
+        var args = [try sum()]
+        while eat(",") { args.append(try sum()) }
+        guard eat(")") else { throw Failure(errorDescription: "A parenthesis is not closed.") }
+        let one: [String: (Double) -> Double] = [
+            "sqrt": { $0.squareRoot() }, "abs": { Swift.abs($0) }, "round": { $0.rounded() }, "floor": { $0.rounded(.down) },
+            "ceil": { $0.rounded(.up) }, "ln": { Foundation.log($0) }, "log": { log10($0) }, "log2": { Foundation.log2($0) },
+            "exp": { Foundation.exp($0) }, "sin": { Foundation.sin($0) }, "cos": { Foundation.cos($0) }, "tan": { Foundation.tan($0) },
+            "asin": { Foundation.asin($0) }, "acos": { Foundation.acos($0) }, "atan": { Foundation.atan($0) },
+        ]
+        if let f = one[name], args.count == 1 { return f(args[0]) }
+        switch (name, args.count) {
+        case ("min", 1...): return args.min()!
+        case ("max", 1...): return args.max()!
+        case ("pow", 2): return Foundation.pow(args[0], args[1])
+        default: throw Failure(errorDescription: "Unknown function '\(name)' with \(args.count) argument(s).")
+        }
+    }
+}
+
+// MARK: Web fetch
+
+struct WebPage: Sendable, Equatable {
+    var url: String
+    var title: String
+    var text: String
+}
+
+/// Reads a page for the `web_fetch` tool. Addresses on this Mac or the local network are refused, redirects included,
+/// so a model can't reach a router or Synapse's own API through it.
+enum WebFetch {
+    static let maxBytes = 3 * 1024 * 1024
+    /// About 1,500 tokens: GGUF models on 16 GB Macs get a 4,096-token context (llama.cpp's --fit), and a page plus search results must fit.
+    static let maxCharacters = 6_000
+
+    static func fetch(_ address: String) async throws -> WebPage {
+        guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host() != nil else {
+            throw WebSearch.SearchError("web_fetch needs an http(s) address.")
+        }
+        guard isPublic(url) else { throw WebSearch.SearchError("Addresses on this Mac or the local network can't be read.") }
+        var req = URLRequest(url: url, timeoutInterval: 20)
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+                     forHTTPHeaderField: "User-Agent")
+        req.setValue("text/html,text/plain;q=0.9,application/json;q=0.8,*/*;q=0.1", forHTTPHeaderField: "Accept")
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req, delegate: PublicRedirects())
+        let http = resp as? HTTPURLResponse
+        guard http?.statusCode == 200 else { throw WebSearch.SearchError("The page answered HTTP \(http?.statusCode ?? 0).") }
+        let type = http?.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? "text/html"
+        guard type.hasPrefix("text/") || type.contains("json") || type.contains("xml") else {
+            throw WebSearch.SearchError("The page is \(type), not text.")
+        }
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+            if data.count >= maxBytes { break }
+        }
+        let raw = String(decoding: data, as: UTF8.self)
+        let page = type.contains("html") ? readable(raw) : (title: "", text: raw)
+        var text = page.text
+        if text.count > maxCharacters { text = String(text.prefix(maxCharacters)) + "\n[… cut at \(maxCharacters) characters]" }
+        return WebPage(url: resp.url?.absoluteString ?? url.absoluteString, title: page.title, text: text)
+    }
+
+    /// The page's title and its visible text, one block per line.
+    static func readable(_ html: String) -> (title: String, text: String) {
+        let title = html.firstMatch(of: /(?i)<title[^>]*>(.*?)<\/title>/.dotMatchesNewlines()).map { WebSearch.text(String($0.1)) } ?? ""
+        var s = html.replacing(/(?i)<(script|style|noscript|svg|head|nav|footer)[^>]*>.*?<\/\1>/.dotMatchesNewlines(), with: " ")
+        s = s.replacing(/<!--.*?-->/.dotMatchesNewlines(), with: " ")
+        s = s.replacing(/(?i)<\/?(p|div|br|li|h[1-6]|tr|section|article|header|ul|ol|table|blockquote|pre)\b[^>]*>/, with: "\n")
+        let lines = WebSearch.text(s).components(separatedBy: "\n")
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }.filter { !$0.isEmpty }
+        return (title, lines.joined(separator: "\n"))
+    }
+
+    /// False for loopback, private, link-local and carrier-grade NAT addresses, `.local` names, and names that don't resolve.
+    // shortcut: the name is resolved here and again by URLSession, so a DNS answer that changes in between (rebinding) slips through; pin the address if this tool is ever exposed beyond this Mac.
+    static func isPublic(_ url: URL) -> Bool {
+        guard let host = url.host()?.lowercased(), !host.hasSuffix(".local"), host != "localhost" else { return false }
+        var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: 0, ai_addrlen: 0,
+                             ai_canonname: nil, ai_addr: nil, ai_next: nil)
+        var list: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")), nil, &hints, &list) == 0, let first = list else { return false }
+        defer { freeaddrinfo(list) }
+        var node: UnsafeMutablePointer<addrinfo>? = first
+        while let n = node {
+            guard let addr = n.pointee.ai_addr, isPublic(addr) else { return false }
+            node = n.pointee.ai_next
+        }
+        return true
+    }
+
+    private static func isPublic(_ addr: UnsafeMutablePointer<sockaddr>) -> Bool {
+        switch Int32(addr.pointee.sa_family) {
+        case AF_INET:
+            let b = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin_addr) { Array($0) } }
+            switch (b[0], b[1]) {
+            case (0, _), (10, _), (127, _), (169, 254), (192, 168): return false
+            case (172, 16...31), (100, 64...127): return false
+            default: return b[0] < 224
+            }
+        case AF_INET6:
+            let b = addr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) } }
+            if b.allSatisfy({ $0 == 0 }) || b == Array(repeating: 0, count: 15) + [1] { return false }   // :: and ::1
+            if b[0] & 0xFE == 0xFC || (b[0] == 0xFE && b[1] & 0xC0 == 0x80) || b[0] == 0xFF { return false }   // ULA, link-local, multicast
+            if b[0..<10].allSatisfy({ $0 == 0 }) && b[10] == 0xFF && b[11] == 0xFF {   // IPv4-mapped
+                var v4 = sockaddr_in(); v4.sin_family = sa_family_t(AF_INET)
+                withUnsafeMutableBytes(of: &v4.sin_addr) { $0.copyBytes(from: b[12..<16]) }
+                return withUnsafeMutablePointer(to: &v4) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { isPublic($0) } }
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Follows a redirect only to a public address.
+    private final class PublicRedirects: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            guard let url = request.url, ["http", "https"].contains(url.scheme?.lowercased() ?? ""), WebFetch.isPublic(url) else { return nil }
+            return request
+        }
     }
 }

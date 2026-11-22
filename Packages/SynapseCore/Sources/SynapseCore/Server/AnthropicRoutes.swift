@@ -63,6 +63,10 @@ enum AnthropicParse {
             case "web_search_tool_result":
                 let results = (b["content"]?.array ?? []).map { "\($0["title"]?.string ?? "")\n\($0["url"]?.string ?? "")" }
                 return [.text(ToolMarkup.response(results.joined(separator: "\n\n")))]
+            case "web_fetch_tool_result":
+                let c = b["content"]
+                let text = c?["content"]?["source"]?["data"]?.string ?? ""
+                return [.text(ToolMarkup.response("\(c?["url"]?.string ?? "")\n\n\(text)"))]
             case "synapse_tool_result":
                 let text = (b["content"]?.array ?? []).compactMap { $0["text"]?.string }.joined(separator: "\n")
                 return [.text(ToolMarkup.response(text))]
@@ -214,6 +218,15 @@ struct MessageAssembler {
             } else {
                 content = .object(["type": .string("web_search_tool_result_error"), "error_code": .string("unavailable")])
             }
+        case .webFetch:
+            type = "web_fetch_tool_result"
+            if case .page(let p)? = call.output {
+                content = .object(["type": .string("web_fetch_result"), "url": .string(p.url), "retrieved_at": .string(ISO8601DateFormatter().string(from: Date())),
+                                   "content": .object(["type": .string("document"), "title": .string(p.title), "source": .object([
+                                       "type": .string("text"), "media_type": .string("text/plain"), "data": .string(p.text)])])])
+            } else {
+                content = .object(["type": .string("web_fetch_tool_error"), "error_code": .string("unavailable")])
+            }
         case .image:
             type = "image_generation_tool_result"
             if case .image(let g)? = call.output {
@@ -223,7 +236,7 @@ struct MessageAssembler {
             } else {
                 content = .array([.object(["type": .string("text"), "text": .string(call.forModel)])])
             }
-        case .time, .models, .status:
+        case .time, .dates, .calculate, .models, .status:
             type = "synapse_tool_result"
             content = .array([.object(["type": .string("text"), "text": .string(call.forModel)])])
         }

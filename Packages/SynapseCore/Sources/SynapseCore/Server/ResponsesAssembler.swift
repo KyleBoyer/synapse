@@ -6,7 +6,8 @@ import Foundation
 
 struct WebSearchCallWire: Encodable, Sendable {
     struct Source: Encodable, Sendable { var type = "url"; var url: String }
-    struct Action: Encodable, Sendable { var type = "search"; var query: String; var sources: [Source]? }
+    /// OpenAI's `search` (query, sources) or `open_page` (url) action.
+    struct Action: Encodable, Sendable { var type = "search"; var query: String?; var url: String?; var sources: [Source]? }
     var type = "web_search_call"
     var id: String
     var status: String
@@ -31,13 +32,17 @@ extension ServerToolCall {
             var sources: [WebSearchCallWire.Source]?
             if case .search(_, let results)? = output { sources = results.map { .init(url: $0.url) } }
             return .webSearch(.init(id: id, status: status, action: .init(query: query, sources: sources)))
+        case .webFetch:
+            var url = argumentsObject["url"]?.string
+            if case .page(let p)? = output { url = p.url }
+            return .webSearch(.init(id: id, status: status, action: .init(type: "open_page", query: nil, url: url)))
         case .image:
             var image: GeneratedImage?
             if case .image(let g)? = output { image = g }
             return .image(ImageGenerationCallWire(id: id, status: status, result: image?.data.base64EncodedString(),
                                                   revised_prompt: image?.prompt ?? argumentsObject["prompt"]?.string, action: image?.action,
                                                   output_format: image?.format ?? "png", size: image?.size ?? "auto", quality: image?.quality ?? "auto"))
-        case .time, .models, .status:
+        case .time, .dates, .calculate, .models, .status:
             return .synapseTool(.init(id: id, status: status, name: kind.rawValue, arguments: arguments,
                                       output: running ? nil : error.map { "Error: \($0)" } ?? forModel))
         }
@@ -46,9 +51,9 @@ extension ServerToolCall {
     /// The `response.<item type>` prefix of this call's own events.
     var responsesEventPrefix: String {
         switch kind {
-        case .webSearch: "response.web_search_call"
+        case .webSearch, .webFetch: "response.web_search_call"
         case .image: "response.image_generation_call"
-        case .time, .models, .status: "response.synapse_tool_call"
+        case .time, .dates, .calculate, .models, .status: "response.synapse_tool_call"
         }
     }
 }
@@ -94,9 +99,9 @@ struct ResponsesAssembler {
         event("response.output_item.added", ["output_index": i, "item": items[i]])
         event(call.responsesEventPrefix + ".in_progress", ["item_id": call.id, "output_index": i])
         switch call.kind {
-        case .webSearch: event("response.web_search_call.searching", ["item_id": call.id, "output_index": i])
+        case .webSearch, .webFetch: event("response.web_search_call.searching", ["item_id": call.id, "output_index": i])
         case .image: event("response.image_generation_call.generating", ["item_id": call.id, "output_index": i])
-        case .time, .models, .status: break
+        case .time, .dates, .calculate, .models, .status: break
         }
     }
 

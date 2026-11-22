@@ -108,7 +108,7 @@ struct ServerView: View {
         @Bindable var state = state
         let tools = state.settings.tools
         Section("Built-in tools") {
-            Text("Chat models can search the web, make images, and look up the time and Synapse's own models while they answer. A client turns a tool on by sending it (web_search, image_generation or synapse); the switches below turn it on for every chat, for apps that never send one.")
+            Text("Chat models can search and read the web, make images, do exact math and date arithmetic, and look up the time anywhere and Synapse's own models while they answer. A client turns a tool on by sending it (web_search, web_fetch, image_generation or synapse); the switches below turn it on for every chat, for apps that never send one.")
                 .font(.caption).foregroundStyle(.secondary)
             LabeledContent("Web search") {
                 ChoiceMenu(title: "Search provider", selection: $state.settings.tools.searchProvider,
@@ -138,9 +138,9 @@ struct ServerView: View {
                            options: [(nil, "1024 × 1024")] + ["768x768", "512x512", "1024x768", "768x1024", "1280x720", "720x1280"]
                                .map { (Optional($0), $0.replacingOccurrences(of: "x", with: " × ")) })
             }
-            Toggle("Web search in every chat", isOn: alwaysOn(.webSearch)).disabled(tools.searchProvider == .off)
+            Toggle("Web search and page reading in every chat", isOn: alwaysOn(.webSearch)).disabled(tools.searchProvider == .off)
             Toggle("Image generation in every chat", isOn: alwaysOn(.imageGeneration))
-            Toggle("Time and Synapse info in every chat", isOn: alwaysOn(.synapse))
+            Toggle("Time, dates, calculator and Synapse info in every chat", isOn: alwaysOn(.synapse))
             Stepper("Tool rounds per answer: \(tools.maxRounds)", value: $state.settings.tools.maxRounds, in: 2...10)
             Text("Only models that call tools well (Qwen3.5, Inkling) use these reliably; small models may skip them.")
                 .font(.caption).foregroundStyle(.secondary)

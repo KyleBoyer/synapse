@@ -151,6 +151,8 @@ final class MLXVLMBackendTests: XCTestCase {
         XCTAssertEqual((call["function"] as? [String: Any])?["arguments"] as? String, #"{"city":"Paris"}"#)
         XCTAssertEqual(wire[2]["tool_call_id"] as? String, call["id"] as? String)
         XCTAssertEqual(wire[2]["content"] as? String, "sunny")
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["thinking_budget_tokens"] as? Int, 256,
+                       "tool turns in the history loop Inkling on a zero budget too")
         let mlxvlm = try MLXVLMChat.body(messages, options: ChatOptions(), model: "m")
         XCTAssertEqual(((try JSONSerialization.jsonObject(with: mlxvlm) as? [String: Any])?["messages"] as? [[String: Any]])?.count, 3)
     }

@@ -24,7 +24,10 @@ final class ServerToolsTests: XCTestCase {
         XCTAssertNotNil(server.image)
         XCTAssertTrue(server.synapse)
         XCTAssertEqual(rest, [tools[3]])
-        XCTAssertEqual(server.functions.map(\.name), ["web_search", "generate_image", "synapse_time", "synapse_models", "synapse_status"])
+        XCTAssertEqual(server.functions.map(\.name), ["web_search", "web_fetch", "generate_image", "synapse_time", "date_difference",
+                                                    "calculate", "synapse_models", "synapse_status"])
+        let fetchOnly = try ServerTools.split([.object(["type": .string("web_fetch_20250910")])]).0
+        XCTAssertEqual(fetchOnly.functions.map(\.name), ["web_fetch"])
         XCTAssertNil(ServerTools().kind(of: "web_search"), "a tool the request did not turn on is the client's")
     }
 
@@ -103,7 +106,7 @@ final class ServerToolsTests: XCTestCase {
                 return Self.turn([.toolCall(name: "synapse_time", arguments: "{}"), .done(finishReason: "stop", usage: ChatUsage(promptTokens: 1, completionTokens: 1))])
             },
             execute: { call, _ in var c = call; c.output = .info("{}"); return c }))
-        XCTAssertEqual(tools.withLock { $0 }, [["synapse_time", "synapse_models", "synapse_status"], []])
+        XCTAssertEqual(tools.withLock { $0 }, [ServerToolKind.synapseSet.map(\.rawValue), []])
         XCTAssertEqual(events.filter { if case .toolFinished = $0 { true } else { false } }.count, 1)
 
         let client = try await collect(ServerToolRunner(tools: ServerTools(synapse: true)).stream(
@@ -175,6 +178,49 @@ final class ServerToolsTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: Data(two.argumentsJSON.utf8)),
                        .object(["n": .number(3), "s": .string("hi there")]))
         XCTAssertNil(ToolMarkup.recover("no call here"))
+    }
+
+    func testCalculatorIsExactAndRefusesAnythingElse() throws {
+        for (expression, value) in [("(17.5 * 12) / 3 + 1", 71.0), ("2^10 - 2**3", 1016), ("-3^2", -9), ("10 % 4", 2),
+                                    ("sqrt(16) + abs(-2) + max(1, 7, 3)", 13), ("round(pi * 100) / 100", 3.14), ("1.5e3 × 2 ÷ 4", 750),
+                                    ("log(1000) + ln(e)", 4), ("pow(2, 0.5) ^ 2", 2.0000000000000004)] {
+            XCTAssertEqual(try Calculator.evaluate(expression), value, accuracy: 1e-9, expression)
+        }
+        XCTAssertTrue(try Calculator.answer("6 * 7").contains(#""result":"42""#))
+        for bad in ["", "1 +", "(1 + 2", "1 / 0", "system(1)", "2 $ 3", "import os"] {
+            XCTAssertThrowsError(try Calculator.evaluate(bad), bad)
+        }
+    }
+
+    func testDateDifferenceCountsAndShifts() throws {
+        let zone = TimeZone(identifier: "America/Chicago")!
+        let gap = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try SynapseInfo.dates(from: "2026-11-22", to: "2026-12-25", addDays: nil, zone: zone).utf8)) as? [String: Any])
+        XCTAssertEqual(gap["days"] as? Int, 33)
+        XCTAssertEqual(gap["to_weekday"] as? String, "Friday")
+        let shifted = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try SynapseInfo.dates(from: "2026-02-20", to: nil, addDays: 10, zone: zone).utf8)) as? [String: Any])
+        XCTAssertEqual(shifted["date"] as? String, "2026-03-02")
+        XCTAssertThrowsError(try SynapseInfo.dates(from: "next tuesday", to: "2026-01-01", addDays: nil))
+        XCTAssertTrue(try SynapseInfo.dates(from: "2026-11-22", to: "2026-12-25", addDays: 14, zone: zone).contains(#""days":33"#),
+                      "a difference question with a stray add_days still counts days")
+    }
+
+    func testTimeZonesByNameAbbreviationAndCity() throws {
+        XCTAssertEqual(SynapseInfo.zone(named: "Tokyo")?.identifier, "Asia/Tokyo")
+        XCTAssertEqual(SynapseInfo.zone(named: "new york")?.identifier, "America/New_York")
+        XCTAssertEqual(SynapseInfo.zone(named: "Europe/Paris")?.identifier, "Europe/Paris")
+        XCTAssertNotNil(SynapseInfo.zone(named: "pst"))
+        XCTAssertThrowsError(try SynapseInfo.time(in: "Atlantis"))
+    }
+
+    func testWebFetchRefusesLocalAddressesAndReadsPages() {
+        for local in ["http://127.0.0.1:9000/v1/models", "http://localhost/", "http://192.168.1.1/", "http://10.0.0.2/", "http://[::1]/",
+                      "http://169.254.169.254/latest", "http://printer.local/", "http://0.0.0.0/"] {
+            XCTAssertFalse(WebFetch.isPublic(URL(string: local)!), local)
+        }
+        XCTAssertTrue(WebFetch.isPublic(URL(string: "http://93.184.215.14/")!))
+        let page = WebFetch.readable("<html><head><title>Swift &amp; You</title><style>p{}</style></head><body><nav>Menu</nav><h1>Swift 6</h1><p>Released <b>today</b>.</p><script>x()</script></body></html>")
+        XCTAssertEqual(page.title, "Swift & You")
+        XCTAssertEqual(page.text, "Swift 6\nReleased today.")
     }
 
     func testTimeToolReadsTheZone() throws {
