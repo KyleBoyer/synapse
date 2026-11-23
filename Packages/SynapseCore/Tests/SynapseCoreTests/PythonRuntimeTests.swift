@@ -19,6 +19,17 @@ final class PythonRuntimeTests: XCTestCase {
         XCTAssertEqual(lines.value, ["a", "b", "c"])
     }
 
+    func testRunStreamingKillsToolWhenMacIsOutOfMemory() async throws {
+        let started = ContinuousClock.now
+        do {
+            try await PythonRuntime.runStreaming(URL(fileURLWithPath: "/bin/sleep"), ["60"], env: [:], availablePercent: { 0 }) { _ in }
+            XCTFail("expected the tool to be stopped")
+        } catch {
+            XCTAssertTrue("\(error)".contains("ran out of memory"), "\(error)")
+        }
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
+    }
+
     func testInstallIsIdempotent() async throws {
         guard ProcessInfo.processInfo.environment["SYNAPSE_E2E"] == "1" else { throw XCTSkip("set SYNAPSE_E2E=1") }
         let root = try TestSupport.tempDir()

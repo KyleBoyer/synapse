@@ -16,6 +16,18 @@ public enum ProcessMemory {
         return rc == 0 ? Int(info.ri_phys_footprint) : nil
     }
 
+    /// The share of memory (0-100) macOS counts as available, the figure its own memory killer goes by.
+    public static func systemAvailablePercent() -> Int? {
+        var level: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("kern.memorystatus_level", &level, &size, nil, 0) == 0 ? Int(level) : nil
+    }
+
+    static func kill(tree root: pid_t) {
+        for child in children(of: root) { kill(tree: child) }
+        Darwin.kill(root, SIGKILL)
+    }
+
     static func children(of pid: pid_t) -> [pid_t] {
         var pids = [pid_t](repeating: 0, count: 64)
         let n = proc_listchildpids(pid, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
