@@ -12,6 +12,7 @@ Tools Synapse runs itself during a chat, as OpenAI's hosted tools and Anthropic'
 - [x] Verified with the OpenAI and Anthropic SDKs (`verify-modalities.py --only server-tools`): Qwen3.5 2B passes all, image included; Inkling 2 Mini passes the time, models and Messages search checks and calls web_search on Responses, where DuckDuckGo started answering 202 (its limit for an address that searches a lot).
 - [x] Fixed on the way: a tool call the strict parser refused vanished from the reply (now read leniently or passed through as text); Inkling looped on empty thinking blocks when offered tools with a zero thinking budget; llama.cpp gets tool history as tool_calls and tool messages.
 - [x] Synapse's own tools on for every chat by default (chat apps never send them); time in any place through macOS's geocoder. Verified in the app with no tools in the request: Inkling answers "what time is it?" and "in Minneapolis" through synapse_time; Qwen3.5 2B ignores the offered tools and guesses.
+- [x] Image generation on for every chat by default when an image model is downloaded (Conduit's "call generate_image" found no tool); fastest model first. Fixed: llama-server hung in Metal teardown after SIGTERM and stayed alive as an orphan holding Inkling, so the image model loaded beside it and swapped for 20+ minutes; the watchdog now kills it after 5 s.
 - [ ] Partial images when image_generation runs beside other tools (only the image-only Responses path streams them).
 - [ ] Built-in calls a model makes in the same turn as a client call are dropped.
 

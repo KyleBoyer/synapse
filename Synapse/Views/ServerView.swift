@@ -130,7 +130,7 @@ struct ServerView: View {
             }
             LabeledContent("Image model") {
                 ChoiceMenu(title: "Image model", selection: $state.settings.tools.imageModel,
-                           options: [(nil, "Default")] + state.downloadedImageSpecs.map { (Optional($0.id), $0.displayName) },
+                           options: [(nil, "Fastest downloaded")] + state.downloadedImageSpecs.map { (Optional($0.id), $0.displayName) },
                            detail: { $0 })
             }
             LabeledContent("Image size") {

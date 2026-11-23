@@ -15,6 +15,8 @@ struct ServerTools: Sendable {
     var webSearch = false
     /// Reading a page; on with web search, or alone (Anthropic's web_fetch_*).
     var webFetch = false
+    /// image_generation came from the settings, not the request: dropped when no image model is downloaded.
+    var imageFromSettings = false
     /// Anthropic's max_uses; nil is no limit beyond the loop's rounds.
     var maxSearches: Int?
     var image: ImageToolConfig?
@@ -51,7 +53,10 @@ struct ServerTools: Sendable {
             }
         }
         if settings.alwaysOn.contains(.webSearch), settings.searchProvider != .off { server.webSearch = true; server.webFetch = true }
-        if settings.alwaysOn.contains(.imageGeneration), server.image == nil { server.image = try ImageToolConfig(.object([:])) }
+        if settings.alwaysOn.contains(.imageGeneration), server.image == nil {
+            server.image = try ImageToolConfig(.object([:]))
+            server.imageFromSettings = true
+        }
         if settings.alwaysOn.contains(.synapse) { server.synapse = true }
         if var image = server.image {
             image.model = image.model ?? settings.imageModel
@@ -286,6 +291,8 @@ func chatWithServerTools(_ tools: ServerTools, services: ServerToolServices, spe
                          options: ChatOptions,
                          wrap: @escaping @Sendable (AsyncThrowingStream<ChatEvent, Error>) -> AsyncThrowingStream<ChatEvent, Error> = { $0 })
     async throws -> AsyncThrowingStream<ToolLoopEvent, Error> {
+    var tools = tools
+    if tools.imageFromSettings, (try? await services.images.resolve(tools.image?.model, edit: false)) == nil { tools.image = nil }
     let runner = ServerToolRunner(tools: tools, maxRounds: min(max(tools.settings.maxRounds, 2), 10))
     let chat = services.chat
     let first = wrap(try await chat.stream(model: spec, messages: messages, options: runner.options(options, round: 1)))
@@ -336,12 +343,20 @@ struct ServerToolServices: Sendable {
         return call
     }
 
+    /// With no model named in the request or settings: the fast models first (FLUX.2 klein 4B draws 1024 × 1024 in about
+    /// 80 s on 16 GB), not the smallest download, which is Qwen-Image 4-bit and takes many minutes there. nil leaves it
+    /// to ImageService (the smallest downloaded).
+    static func preferredImageModel(_ downloaded: Set<String>, edit: Bool) -> String? {
+        (edit ? ["flux2-klein-4b", "flux2-klein-9b"] : ["flux2-klein-4b", "z-image-turbo", "flux2-klein-9b"]).first(where: downloaded.contains)
+    }
+
     private func drawImage(_ prompt: String, _ conversation: [ChatMessage]) async throws -> GeneratedImage {
         guard let config = tools.image else { throw ChatParse.bad("image_generation is not on.") }
         let prompt = prompt.isEmpty ? conversation.last(where: { $0.role == .user })?.text ?? "" : prompt
         let sources = conversation.last(where: { $0.role == .user && !$0.images.isEmpty })?.images ?? []
         let edit = config.action == "edit" || (config.action == "auto" && !sources.isEmpty)
-        let spec = try await images.resolve(config.model, edit: edit)
+        let downloaded = await store.downloaded
+        let spec = try await images.resolve(config.model ?? Self.preferredImageModel(downloaded, edit: edit), edit: edit)
         let (width, height) = try ImageService.parseSize(config.size)
         let request = ImageRequest(prompt: prompt, width: width, height: height, inputImages: edit ? sources : [])
         let png = try await images.generate(model: spec, request: request, count: 1) { _, _ in }[0]

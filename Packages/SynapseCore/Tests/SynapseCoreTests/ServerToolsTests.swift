@@ -43,7 +43,7 @@ final class ServerToolsTests: XCTestCase {
         XCTAssertEqual(server.image?.model, "flux2-klein-4b")
         XCTAssertEqual(server.image?.size, "768x768", "the request's own size wins")
         XCTAssertTrue(server.webSearch && server.synapse)
-        XCTAssertNil(try ServerTools.split(nil).0.image)
+        XCTAssertNil(try ServerTools.split(nil, settings: settings).0.image, "image generation only when the settings or the request ask")
 
         settings.searchProvider = .off
         XCTAssertFalse(try ServerTools.split(nil, settings: settings).0.webSearch, "always-on search stays off with no provider")
@@ -223,11 +223,19 @@ final class ServerToolsTests: XCTestCase {
         }
     }
 
-    func testSynapseToolsAreOnByDefaultAndSearchIsNot() throws {
+    func testImageToolPrefersTheFastModels() {
+        XCTAssertEqual(ServerToolServices.preferredImageModel(["qwen-image-2.1-q4", "flux2-klein-4b", "z-image-turbo"], edit: false), "flux2-klein-4b")
+        XCTAssertEqual(ServerToolServices.preferredImageModel(["qwen-image-2.1-q4", "z-image-turbo"], edit: false), "z-image-turbo")
+        XCTAssertNil(ServerToolServices.preferredImageModel(["qwen-image-2.1-q4"], edit: false), "then ImageService's own choice")
+        XCTAssertNil(ServerToolServices.preferredImageModel(["z-image-turbo"], edit: true), "Z-Image can't edit")
+    }
+
+    func testLocalToolsAreOnByDefaultAndSearchIsNot() throws {
         let (server, _) = try ServerTools.split(nil, settings: ToolSettings())
-        XCTAssertTrue(server.synapse)
-        XCTAssertFalse(server.webSearch || server.webFetch || server.image != nil)
-        XCTAssertEqual(try JSONDecoder().decode(ToolSettings.self, from: Data("{}".utf8)).alwaysOn, [.synapse])
+        XCTAssertTrue(server.synapse && server.image != nil && server.imageFromSettings)
+        XCTAssertFalse(server.webSearch || server.webFetch)
+        XCTAssertEqual(try JSONDecoder().decode(ToolSettings.self, from: Data("{}".utf8)).alwaysOn, [.synapse, .imageGeneration])
+        XCTAssertFalse(try ServerTools.split([.object(["type": .string("image_generation")])]).0.imageFromSettings, "asked for, so it stays")
     }
 
     func testWebFetchRefusesLocalAddressesAndReadsPages() {

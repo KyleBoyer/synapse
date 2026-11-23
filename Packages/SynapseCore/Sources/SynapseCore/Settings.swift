@@ -182,8 +182,9 @@ public struct ToolSettings: Codable, Sendable, Equatable {
     /// WIDTHxHEIGHT when the request gives no size; nil = 1024x1024.
     public var imageSize: String?
     /// Tools offered to every chat request, also when the client sends none (chat apps that never ask for them).
-    /// Synapse's own (time, dates, calculator, model info) run on this Mac and send nothing out, so they start on.
-    public var alwaysOn: Set<Tool> = [.synapse]
+    /// Synapse's own (time, dates, calculator, model info) and image generation run on this Mac and send nothing out,
+    /// so they start on; image generation only joins a chat when an image model is downloaded.
+    public var alwaysOn: Set<Tool> = [.synapse, .imageGeneration]
     /// Model turns per request before the tools are taken away and the model must answer.
     public var maxRounds: Int = 5
 

@@ -227,3 +227,31 @@ final class HFTokenTests: XCTestCase {
         XCTAssertEqual(HFDownloader.cliToken(environment: ["HF_TOKEN": "hf_env"], home: home), "hf_env")
     }
 }
+
+final class LlamaWatchdogTests: XCTestCase {
+    /// llama-server can hang in Metal teardown after SIGTERM; stopping the watchdog must still end it, or the next
+    /// model loads beside an orphan holding the old one's memory.
+    func testStoppingTheWatchdogKillsAServerThatIgnoresSIGTERM() throws {
+        let marker = "synapse-watchdog-test-\(UUID().uuidString.prefix(8))"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", LlamaServer.watchdog, "sh", String(ProcessInfo.processInfo.processIdentifier),
+                       "/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done # \(marker)"]
+        try p.run()
+        func childAlive() -> Bool {
+            let pg = Process()
+            pg.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            pg.arguments = ["-f", marker]
+            pg.standardOutput = FileHandle.nullDevice
+            try? pg.run(); pg.waitUntilExit()
+            return pg.terminationStatus == 0
+        }
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(childAlive())
+        p.terminate()
+        let deadline = Date().addingTimeInterval(9)
+        while childAlive() && Date() < deadline { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertFalse(childAlive(), "the server outlived its watchdog")
+        p.waitUntilExit()
+    }
+}

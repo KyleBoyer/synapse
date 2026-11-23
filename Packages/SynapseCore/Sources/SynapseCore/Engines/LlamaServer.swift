@@ -24,12 +24,19 @@ public final class LlamaServer: @unchecked Sendable {
 
     /// Exits with the parent (a child outlives a parent that quits or crashes, and this one holds a whole model):
     /// a shell starts the server, then polls the parent and stops the server when it is gone or when asked to.
+    /// llama-server can hang in Metal teardown after SIGTERM, keeping the model's memory, so after 5 s it is killed;
+    /// otherwise `terminate()` kills only this shell and the next model loads beside an orphaned one.
     static let watchdog = #"""
         parent=$1; shift
         "$@" & child=$!
-        trap 'kill $child 2>/dev/null; wait $child; exit 0' TERM INT
+        stop() {
+            kill $child 2>/dev/null
+            for i in 1 2 3 4 5; do kill -0 $child 2>/dev/null || exit 0; sleep 1; done
+            kill -9 $child 2>/dev/null; exit 0
+        }
+        trap stop TERM INT
         while kill -0 "$parent" 2>/dev/null && kill -0 "$child" 2>/dev/null; do sleep 1; done
-        kill $child 2>/dev/null; wait $child
+        stop
         """#
 
     /// `cacheMiB` caps llama.cpp's host-memory prompt cache (its own default is 8 GiB), matching Synapse's setting.
