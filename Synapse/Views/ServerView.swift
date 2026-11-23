@@ -130,9 +130,12 @@ struct ServerView: View {
             }
             LabeledContent("Image model") {
                 ChoiceMenu(title: "Image model", selection: $state.settings.tools.imageModel,
-                           options: [(nil, "Fastest downloaded")] + state.downloadedImageSpecs.map { (Optional($0.id), $0.displayName) },
+                           options: [(nil, "Smallest downloaded")] + state.downloadedImageSpecs.map { (Optional($0.id), $0.displayName) },
                            detail: { $0 })
             }
+            toolModel("Speech model", $state.settings.tools.speechModel, state.downloadedTTSSpecs)
+            toolModel("Sound model", $state.settings.tools.soundModel, state.downloadedSoundSpecs)
+            toolModel("Video model", $state.settings.tools.videoModel, state.downloadedVideoSpecs)
             LabeledContent("Image size") {
                 ChoiceMenu(title: "Image size", selection: $state.settings.tools.imageSize,
                            options: [(nil, "1024 × 1024")] + ["768x768", "512x512", "1024x768", "768x1024", "1280x720", "720x1280"]
@@ -158,6 +161,13 @@ struct ServerView: View {
         case .tavily: "Tavily API key from app.tavily.com. Searches are sent to Tavily."
         case .searxng: "Your own SearXNG instance, with the json format turned on in its settings.yml."
         case .off: ""
+        }
+    }
+
+    private func toolModel(_ title: String, _ selection: Binding<String?>, _ specs: [ModelSpec]) -> some View {
+        LabeledContent(title) {
+            ChoiceMenu(title: title, selection: selection,
+                       options: [(nil, "Smallest downloaded")] + specs.map { (Optional($0.id), $0.displayName) }, detail: { $0 })
         }
     }
 

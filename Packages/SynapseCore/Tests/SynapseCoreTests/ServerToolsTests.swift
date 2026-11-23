@@ -249,6 +249,17 @@ final class ServerToolsTests: XCTestCase {
                        "a 0.1.9 tool turned off stays off")
     }
 
+    func testLightestModelOfEachKind() {
+        let specs = { (ids: [String]) in ids.compactMap(Catalog.spec) }
+        XCTAssertEqual(ModelSpec.lightest(specs(["minimax-h3", "wan2.2-ti2v-5b", "ltx-2.3-distilled"]))?.id, "wan2.2-ti2v-5b")
+        XCTAssertEqual(ModelSpec.lightest(specs(["minimax-music3-4bit", "ace-step-1.5-4bit", "stable-audio-3-small-sfx"]))?.id,
+                       "stable-audio-3-small-sfx")
+        XCTAssertNil(ModelSpec.lightest([]))
+        let saved = try? JSONDecoder().decode(ToolSettings.self, from: Data(#"{"videoModel":"minimax-h3"}"#.utf8))
+        XCTAssertEqual(saved?.videoModel, "minimax-h3")
+        XCTAssertNil(saved?.soundModel)
+    }
+
     func testImageToolPrefersTheFastModels() {
         XCTAssertEqual(ServerToolServices.preferredImageModel(["qwen-image-2.1-q4", "flux2-klein-4b", "z-image-turbo"], edit: false), "flux2-klein-4b")
         XCTAssertEqual(ServerToolServices.preferredImageModel(["qwen-image-2.1-q4", "z-image-turbo"], edit: false), "z-image-turbo")

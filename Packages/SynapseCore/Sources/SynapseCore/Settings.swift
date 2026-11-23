@@ -179,6 +179,10 @@ public struct ToolSettings: Codable, Sendable, Equatable {
     public var searchResults: Int = 6
     /// The image model generate_image uses when the request names none; nil = the default image model.
     public var imageModel: String?
+    /// The models generate_speech, generate_sound and generate_video use; nil = the lightest downloaded.
+    public var speechModel: String?
+    public var soundModel: String?
+    public var videoModel: String?
     /// WIDTHxHEIGHT when the request gives no size; nil = 1024x1024.
     public var imageSize: String?
     /// Tools offered to every chat request, also when the client sends none (chat apps that never ask for them).
@@ -203,6 +207,9 @@ public struct ToolSettings: Codable, Sendable, Equatable {
         searchResults = try c.decodeIfPresent(Int.self, forKey: .searchResults) ?? d.searchResults
         imageModel = try c.decodeIfPresent(String.self, forKey: .imageModel)
         imageSize = try c.decodeIfPresent(String.self, forKey: .imageSize)
+        speechModel = try c.decodeIfPresent(String.self, forKey: .speechModel)
+        soundModel = try c.decodeIfPresent(String.self, forKey: .soundModel)
+        videoModel = try c.decodeIfPresent(String.self, forKey: .videoModel)
         alwaysOn = (try? c.decodeIfPresent(Set<Tool>.self, forKey: .alwaysOn)) ?? d.alwaysOn
         // Saved before `known` existed: the tools of that version (0.1.9).
         let saved = (try? c.decodeIfPresent(Set<Tool>.self, forKey: .known)) ?? [.webSearch, .imageGeneration, .synapse]

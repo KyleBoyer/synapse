@@ -416,6 +416,12 @@ struct ServerToolServices: Sendable {
         return call
     }
 
+    /// The model picked in settings while it is still downloaded; nil (the lightest) once it has been deleted.
+    private func chosen(_ id: String?) async -> String? {
+        guard let id, !id.isEmpty else { return nil }
+        return await store.downloaded.contains(id) ? id : nil
+    }
+
     /// With no model named in the request or settings: the fast models first (FLUX.2 klein 4B draws 1024 × 1024 in about
     /// 80 s on 16 GB), not the smallest download, which is Qwen-Image 4-bit and takes many minutes there. nil leaves it
     /// to ImageService (the smallest downloaded).
@@ -425,7 +431,7 @@ struct ServerToolServices: Sendable {
 
     private func speak(_ a: [String: JSONValue]) async throws -> GeneratedMedia {
         guard let text = a["text"]?.string, !text.isEmpty else { throw ChatParse.bad("generate_speech needs text.") }
-        let model = try await speech.resolve(model: nil)
+        let model = try await speech.resolve(model: await chosen(tools.settings.speechModel))
         let (rate, pcm) = try await speech.synthesize(model: model, text: String(text.prefix(SpeechService.maxInputCharacters)),
                                                       voice: a["voice"]?.string, speed: 1)
         var data = Data()
@@ -436,7 +442,7 @@ struct ServerToolServices: Sendable {
     private func makeSound(_ a: [String: JSONValue]) async throws -> GeneratedMedia {
         guard let prompt = a["prompt"]?.string, !prompt.isEmpty else { throw ChatParse.bad("generate_sound needs a prompt.") }
         let seconds = min(max(a["seconds"]?.number ?? a["seconds"]?.string.flatMap(Double.init) ?? 8, 1), SoundService.maxSeconds)
-        let model = try await sound.resolve(nil)
+        let model = try await sound.resolve(await chosen(tools.settings.soundModel))
         let clip = try await sound.generate(model: model, prompt: prompt, lyrics: a["lyrics"]?.string, seconds: seconds, seed: nil)
         let data = try await sound.encoded(clip, as: .mp3)
         return GeneratedMedia(kind: .audio, prompt: prompt, url: fileBase + (await files.put(data, ext: "mp3", mime: "audio/mpeg")))
@@ -447,7 +453,7 @@ struct ServerToolServices: Sendable {
         guard let prompt = a["prompt"]?.string, !prompt.isEmpty else { throw ChatParse.bad("generate_video needs a prompt.") }
         let requested = Int(a["seconds"]?.number ?? a["seconds"]?.string.flatMap(Double.init) ?? 4)
         let seconds = [4, 8, 12].min { abs($0 - requested) < abs($1 - requested) }!
-        let model = try await videos.resolve(nil)
+        let model = try await videos.resolve(await chosen(tools.settings.videoModel))
         let job = await videos.create(model: model, request: VideoRequest(prompt: prompt, width: 768, height: 512,
                                                                           frames: VideoService.frames(seconds: seconds), seed: nil,
                                                                           inputImage: nil, loras: []), size: "768x512")
@@ -461,7 +467,7 @@ struct ServerToolServices: Sendable {
         let sources = conversation.last(where: { $0.role == .user && !$0.images.isEmpty })?.images ?? []
         let edit = config.action == "edit" || (config.action == "auto" && !sources.isEmpty)
         let downloaded = await store.downloaded
-        let spec = try await images.resolve(config.model ?? Self.preferredImageModel(downloaded, edit: edit), edit: edit)
+        let spec = try await images.resolve(await chosen(config.model) ?? Self.preferredImageModel(downloaded, edit: edit), edit: edit)
         let (width, height) = try ImageService.parseSize(config.size)
         let request = ImageRequest(prompt: prompt, width: width, height: height, inputImages: edit ? sources : [])
         let png = try await images.generate(model: spec, request: request, count: 1) { _, _ in }[0]

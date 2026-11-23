@@ -55,7 +55,7 @@ public actor VideoService {
         }
     }
 
-    /// nil and OpenAI's names (sora-2, sora-2-pro) mean the first downloaded video model.
+    /// nil and OpenAI's names (sora-2, sora-2-pro) mean the lightest downloaded video model.
     public func resolve(_ requested: String?) async throws -> ModelSpec {
         let videoSpecs = Catalog.all.filter(\.isVideoGen)
         let available: (ModelSpec) async -> Bool = { VideoEngines.mock ? true : await self.store.folder(for: $0.id) != nil }
@@ -65,8 +65,10 @@ public actor VideoService {
             guard await available(spec) else { throw VideoError.notDownloaded(id) }
             return spec
         }
-        for spec in videoSpecs where await available(spec) { return spec }
-        throw VideoError.noModel
+        var ready: [ModelSpec] = []
+        for spec in videoSpecs where await available(spec) { ready.append(spec) }
+        guard let spec = ModelSpec.lightest(ready) else { throw VideoError.noModel }
+        return spec
     }
 
     /// The weights file of LoRA add-on `id`, which must patch `base` and be downloaded.

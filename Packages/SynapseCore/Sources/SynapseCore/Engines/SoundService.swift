@@ -209,15 +209,17 @@ public actor SoundService {
 
     private func available(_ spec: ModelSpec) async -> Bool { SoundEngines.mock ? true : await store.folder(for: spec.id) != nil }
 
-    /// nil picks the first downloaded sound model.
+    /// nil picks the lightest downloaded sound model.
     public func resolve(_ requested: String?) async throws -> ModelSpec {
         if let id = requested, !id.isEmpty {
             guard let spec = Catalog.spec(id), spec.isAudioGen else { throw SoundError.unknownModel(id) }
             guard await available(spec) else { throw SoundError.notDownloaded(id) }
             return spec
         }
-        for spec in Catalog.all where spec.isAudioGen { if await available(spec) { return spec } }
-        throw SoundError.noModel
+        var ready: [ModelSpec] = []
+        for spec in Catalog.all where spec.isAudioGen { if await available(spec) { ready.append(spec) } }
+        guard let spec = ModelSpec.lightest(ready) else { throw SoundError.noModel }
+        return spec
     }
 
     /// Models that sing lyrics.

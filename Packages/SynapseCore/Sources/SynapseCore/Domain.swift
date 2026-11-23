@@ -77,6 +77,11 @@ public struct ModelSpec: Identifiable, Codable, Sendable, Hashable {
     /// full-precision parts the engine never loads), otherwise the download size. Measurement replaces it after load.
     public var estimatedResidentBytes: Int { min(estimatedBytes, recommendedRAMGB.map { $0 << 30 } ?? .max) }
 
+    /// The lightest of `specs` to run: the least RAM recommended, then the smallest download.
+    public static func lightest(_ specs: [ModelSpec]) -> ModelSpec? {
+        specs.min { ($0.recommendedRAMGB ?? 0, $0.approxMB) < ($1.recommendedRAMGB ?? 0, $1.approxMB) }
+    }
+
     public func supports(language: String?) -> Bool {
         guard let language, let languages else { return true }
         return languages.contains(language)
