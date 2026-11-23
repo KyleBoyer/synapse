@@ -157,6 +157,16 @@ final class RoutesTests: XCTestCase {
             try await c.execute(uri: "/v1/models", method: .get, headers: [.authorization: "Bearer wrong"]) { XCTAssertEqual($0.status, .unauthorized) }
             try await c.execute(uri: "/v1/models", method: .get, headers: [HTTPField.Name("x-api-key")!: key]) { XCTAssertEqual($0.status, .ok) }
             try await c.execute(uri: "/v1/models", method: .get, headers: [HTTPField.Name("x-api-key")!: "wrong"]) { XCTAssertEqual($0.status, .unauthorized) }
+            // A generated image's link needs no key (chat apps load markdown images without it); only that exact shape.
+            let file = "/v1/images/files/80a278c7-febb-4813-a969-fbdf154dbd65.png"
+            try await c.execute(uri: file, method: .get) { XCTAssertEqual($0.status, .notFound, "past auth; no such image") }
+            try await c.execute(uri: "/images/files/80a278c7-febb-4813-a969-fbdf154dbd65.png", method: .get) { XCTAssertEqual($0.status, .notFound) }
+            try await c.execute(uri: "/v1/images/files/x.png", method: .get) { XCTAssertEqual($0.status, .unauthorized) }
+            for other in ["/v1/images/files/../models", "/v1/models", "/v1/images/files/80a278c7-febb-4813-a969-fbdf154dbd65.png/x",
+                          "/v1/images/files/80a278c7-febb-4813-a969-fbdf154dbd65.svg"] {
+                XCTAssertFalse(APIKeyMiddleware.isImageFileLink(other), other)
+            }
+            XCTAssertTrue(APIKeyMiddleware.isImageFileLink("/k/abc/v1/images/files/80a278c7-febb-4813-a969-fbdf154dbd65.webp"))
             // Bare-host paths (no /v1) take the same keys.
             try await c.execute(uri: "/models", method: .get) { XCTAssertEqual($0.status, .unauthorized) }
             try await c.execute(uri: "/models", method: .get, headers: [HTTPField.Name("x-api-key")!: key]) { XCTAssertEqual($0.status, .ok) }

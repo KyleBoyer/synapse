@@ -10,6 +10,9 @@ struct APIKeyMiddleware: RouterMiddleware {
     func handle(_ request: Request, context: SynapseContext, next: (Request, SynapseContext) async throws -> Response) async throws -> Response {
         let s = settings.current
         guard s.allowLAN else { return try await next(request, context) }
+        // A generated image's link (a random UUID name, gone after an hour) is its own credential, as OpenAI's signed
+        // image URLs are: chat apps load markdown images without the key.
+        if request.method == .get, Self.isImageFileLink(request.uri.path) { return try await next(request, context) }
         var supplied = context.parameters.get("key")
         if supplied == nil, let h = request.headers[.authorization], h.hasPrefix("Bearer ") {
             supplied = String(h.dropFirst(7))
@@ -19,6 +22,10 @@ struct APIKeyMiddleware: RouterMiddleware {
             return apiError(.unauthorized, "Invalid or missing API key.")
         }
         return try await next(request, context)
+    }
+
+    static func isImageFileLink(_ path: String) -> Bool {
+        path.wholeMatch(of: /(?:\/k\/[^\/]+)?(?:\/v1)*\/images\/files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:png|jpeg|webp)/) != nil
     }
 
     static func constantTimeEqual(_ a: String, _ b: String) -> Bool {
