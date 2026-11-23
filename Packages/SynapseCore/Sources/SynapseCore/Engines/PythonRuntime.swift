@@ -98,13 +98,13 @@ actor PythonRuntime {
     /// Like `run`, but calls `onLine` for each stdout/stderr line while the tool runs (split on `\n` and `\r`, since tqdm uses `\r`).
     /// Task cancellation terminates the process.
     ///
-    /// The tool is killed once macOS has had at most `starvedPercent` of memory available for `starvedFor`. GPU
-    /// memory can't be swapped out, so past that point a 16 GB Mac stalls until its watchdog restarts it (a Wan
-    /// video at 21.6 GB did, with ~15 MB free for two minutes); macOS never kills the helper itself.
-    static let starvedPercent = 1, starvedFor = Duration.seconds(5)
+    /// The tool is killed once its memory (GPU memory included) has stayed above `memoryLimit` for `overFor`.
+    /// macOS never kills it, and its own "available memory" figure doesn't count GPU memory: Wan's text encoder
+    /// at 22 GB froze a 16 GB Mac twice while that figure stayed above 20%.
+    static let overFor = Duration.seconds(2)
 
     static func runStreaming(_ exe: URL, _ args: [String], env: [String: String],
-                             availablePercent: @escaping @Sendable () -> Int? = ProcessMemory.systemAvailablePercent,
+                             memoryLimit: Int = ProcessMemory.gpuWorkingSet,
                              onLine: @escaping @Sendable (String) -> Void) async throws {
         let p = Process()
         p.executableURL = exe; p.arguments = args
@@ -132,14 +132,14 @@ actor PythonRuntime {
                 do { try p.run() } catch { reader.readabilityHandler = nil; cont.resume(throwing: error); return }
                 let pid = p.processIdentifier
                 watch.withLock { $0 = Task.detached(priority: .high) {
-                    var lowSince: ContinuousClock.Instant?
+                    var overSince: ContinuousClock.Instant?
                     while !Task.isCancelled {
-                        try? await Task.sleep(for: .seconds(1))
-                        guard let pct = availablePercent(), pct <= starvedPercent else { lowSince = nil; continue }
-                        let since = lowSince ?? .now
-                        lowSince = since
-                        guard ContinuousClock.now - since >= starvedFor else { continue }
-                        starved.withLock { $0 = ProcessMemory.footprint(tree: pid) ?? 0 }
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard let used = ProcessMemory.footprint(tree: pid), used > memoryLimit else { overSince = nil; continue }
+                        let since = overSince ?? .now
+                        overSince = since
+                        guard ContinuousClock.now - since >= overFor else { continue }
+                        starved.withLock { $0 = used }
                         ProcessMemory.kill(tree: pid)
                         return
                     }
@@ -150,8 +150,8 @@ actor PythonRuntime {
         let text = String(decoding: tail.data, as: UTF8.self)
         log.info("\(exe.lastPathComponent, privacy: .public) \(args.joined(separator: " "), privacy: .public): exit \(status)\n\(text, privacy: .public)")
         if let bytes = starved.withLock({ $0 }) {
-            throw MFluxError.runtime(String(format: "Stopped: this Mac ran out of memory (the generator was using %.1f GB) and would have frozen. "
-                                            + "Try a shorter or smaller output, or quit other apps.", Double(bytes) / 1e9))
+            throw MFluxError.runtime(String(format: "Stopped: the generator needed %.1f GB, more than this Mac's GPU can hold (%.1f GB), "
+                                            + "and would have frozen it. Try a smaller model.", Double(bytes) / 1e9, Double(memoryLimit) / 1e9))
         }
         guard status == 0 else {
             throw MFluxError.runtime("\(exe.lastPathComponent) \(args.first ?? "") failed (\(status)): \(String(text.suffix(600)))")

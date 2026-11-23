@@ -1,4 +1,6 @@
 import Darwin
+import Foundation
+import Metal
 
 /// Physical memory of helper processes (llama.cpp, mlx-vlm, Python sidecars), as Activity Monitor's Memory column
 /// counts it. Helpers run behind a watchdog parent, so the whole process tree is summed.
@@ -16,12 +18,10 @@ public enum ProcessMemory {
         return rc == 0 ? Int(info.ri_phys_footprint) : nil
     }
 
-    /// The share of memory (0-100) macOS counts as available, the figure its own memory killer goes by.
-    public static func systemAvailablePercent() -> Int? {
-        var level: Int32 = 0
-        var size = MemoryLayout<Int32>.size
-        return sysctlbyname("kern.memorystatus_level", &level, &size, nil, 0) == 0 ? Int(level) : nil
-    }
+    /// How much memory the GPU can use before macOS can't keep the screen running (Metal's recommended working set,
+    /// about 11-12 GB on a 16 GB Mac). Past it, GPU memory is paged and WindowServer stalls until the Mac restarts.
+    public static let gpuWorkingSet: Int = MTLCreateSystemDefaultDevice().map { Int($0.recommendedMaxWorkingSetSize) }
+        ?? Int(ProcessInfo.processInfo.physicalMemory / 4 * 3)
 
     static func kill(tree root: pid_t) {
         for child in children(of: root) { kill(tree: child) }

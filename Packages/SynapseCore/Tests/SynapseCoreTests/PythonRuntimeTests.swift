@@ -19,15 +19,16 @@ final class PythonRuntimeTests: XCTestCase {
         XCTAssertEqual(lines.value, ["a", "b", "c"])
     }
 
-    func testRunStreamingKillsToolWhenMacIsOutOfMemory() async throws {
+    func testRunStreamingKillsToolOverTheMemoryLimit() async throws {
         let started = ContinuousClock.now
         do {
-            try await PythonRuntime.runStreaming(URL(fileURLWithPath: "/bin/sleep"), ["60"], env: [:], availablePercent: { 0 }) { _ in }
+            try await PythonRuntime.runStreaming(URL(fileURLWithPath: "/bin/sleep"), ["60"], env: [:], memoryLimit: 1) { _ in }
             XCTFail("expected the tool to be stopped")
         } catch {
-            XCTAssertTrue("\(error)".contains("ran out of memory"), "\(error)")
+            XCTAssertTrue("\(error)".contains("GPU can hold"), "\(error)")
         }
-        XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(10))
+        XCTAssertGreaterThan(ProcessMemory.gpuWorkingSet, 1 << 30)
     }
 
     func testInstallIsIdempotent() async throws {
