@@ -14,6 +14,7 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
     let videos = videos ?? VideoService(store: store, models: ModelManager())
     let sound = sound ?? SoundService(store: store, models: ModelManager())
     let imageFiles = ImageFileCache()
+    let toolBackends = ToolBackends(chat: chat, images: images, speech: speech, sound: sound, videos: videos, store: store, files: imageFiles)
     let router = Router(context: SynapseContext.self)
     router.add(middleware: ErrorBodyMiddleware())
     router.get("health") { _, _ in
@@ -31,8 +32,8 @@ public func buildRouter(queue: JobQueue, store: ModelStore, settings: SettingsBo
         addCompletionsRoutes(to: group, chat: chat)
         addASRRoutes(to: group, queue: queue, store: store, settings: settings)
         addJobRoutes(to: group, queue: queue, settings: settings)
-        addChatRoutes(to: group, chat: chat, images: images, speech: speech, store: store, files: imageFiles, settings: settings)
-        addAnthropicRoutes(to: group, chat: chat, images: images, store: store, files: imageFiles, settings: settings)
+        addChatRoutes(to: group, chat: chat, images: images, speech: speech, tools: toolBackends, settings: settings)
+        addAnthropicRoutes(to: group, chat: chat, tools: toolBackends, settings: settings)
         addLMStudioRoutes(to: group, chat: chat, conversations: conversations)
         addModelRoutes(to: group, store: store, chat: chat, settings: settings)
         addImageRoutes(to: group, images: images, files: imageFiles, chat: chat, settings: settings)

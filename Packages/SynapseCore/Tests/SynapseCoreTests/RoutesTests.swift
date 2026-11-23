@@ -167,6 +167,10 @@ final class RoutesTests: XCTestCase {
                 XCTAssertFalse(APIKeyMiddleware.isImageFileLink(other), other)
             }
             XCTAssertTrue(APIKeyMiddleware.isImageFileLink("/k/abc/v1/images/files/80a278c7-febb-4813-a969-fbdf154dbd65.webp"))
+            XCTAssertTrue(APIKeyMiddleware.isImageFileLink("/v1/videos/video_0123456789abcdef01234567/content"))
+            for other in ["/v1/videos/video_0123456789abcdef01234567", "/v1/videos", "/v1/videos/video_short/content"] {
+                XCTAssertFalse(APIKeyMiddleware.isImageFileLink(other), other)
+            }
             // Bare-host paths (no /v1) take the same keys.
             try await c.execute(uri: "/models", method: .get) { XCTAssertEqual($0.status, .unauthorized) }
             try await c.execute(uri: "/models", method: .get, headers: [HTTPField.Name("x-api-key")!: key]) { XCTAssertEqual($0.status, .ok) }

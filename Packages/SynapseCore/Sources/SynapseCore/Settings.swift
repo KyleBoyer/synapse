@@ -168,7 +168,7 @@ public struct ToolSettings: Codable, Sendable, Equatable {
     }
 
     public enum Tool: String, Codable, Sendable, CaseIterable {
-        case webSearch, imageGeneration, synapse
+        case webSearch, imageGeneration, synapse, audioGeneration, videoGeneration
     }
 
     public var searchProvider: SearchProvider = .duckDuckGo
@@ -182,9 +182,13 @@ public struct ToolSettings: Codable, Sendable, Equatable {
     /// WIDTHxHEIGHT when the request gives no size; nil = 1024x1024.
     public var imageSize: String?
     /// Tools offered to every chat request, also when the client sends none (chat apps that never ask for them).
-    /// Synapse's own (time, dates, calculator, model info) and image generation run on this Mac and send nothing out,
-    /// so they start on; image generation only joins a chat when an image model is downloaded.
-    public var alwaysOn: Set<Tool> = [.synapse, .imageGeneration]
+    /// Synapse's own (time, dates, calculator, model info) and image, audio and video generation run on this Mac and
+    /// send nothing out, so they start on; each generator only joins a chat when a model for it is downloaded.
+    public var alwaysOn: Set<Tool> = ToolSettings.defaultOn
+    public static let defaultOn: Set<Tool> = [.synapse, .imageGeneration, .audioGeneration, .videoGeneration]
+    /// The tools these settings were saved with; a tool added in a later version starts as `defaultOn` says,
+    /// while one already known keeps the user's choice.
+    public var known: Set<Tool> = Set(Tool.allCases)
     /// Model turns per request before the tools are taken away and the model must answer.
     public var maxRounds: Int = 5
 
@@ -200,6 +204,10 @@ public struct ToolSettings: Codable, Sendable, Equatable {
         imageModel = try c.decodeIfPresent(String.self, forKey: .imageModel)
         imageSize = try c.decodeIfPresent(String.self, forKey: .imageSize)
         alwaysOn = (try? c.decodeIfPresent(Set<Tool>.self, forKey: .alwaysOn)) ?? d.alwaysOn
+        // Saved before `known` existed: the tools of that version (0.1.9).
+        let saved = (try? c.decodeIfPresent(Set<Tool>.self, forKey: .known)) ?? [.webSearch, .imageGeneration, .synapse]
+        alwaysOn.formUnion(Self.defaultOn.subtracting(saved))
+        known = Set(Tool.allCases)
         maxRounds = try c.decodeIfPresent(Int.self, forKey: .maxRounds) ?? d.maxRounds
     }
 }

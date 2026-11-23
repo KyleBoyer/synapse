@@ -22,6 +22,8 @@ struct SynapseToolCallWire: Encodable, Sendable {
     var name: String
     var arguments: String
     var output: String?
+    /// The audio file, or where the video will be once rendered (generate_speech, generate_sound, generate_video).
+    var url: String? = nil
 }
 
 extension ServerToolCall {
@@ -42,9 +44,11 @@ extension ServerToolCall {
             return .image(ImageGenerationCallWire(id: id, status: status, result: image?.data.base64EncodedString(),
                                                   revised_prompt: image?.prompt ?? argumentsObject["prompt"]?.string, action: image?.action,
                                                   output_format: image?.format ?? "png", size: image?.size ?? "auto", quality: image?.quality ?? "auto"))
-        case .time, .dates, .calculate, .models, .status:
+        case .time, .dates, .calculate, .models, .status, .speech, .sound, .video:
+            var url: String?
+            if case .media(let m)? = output { url = m.url }
             return .synapseTool(.init(id: id, status: status, name: kind.rawValue, arguments: arguments,
-                                      output: running ? nil : error.map { "Error: \($0)" } ?? forModel))
+                                      output: running ? nil : error.map { "Error: \($0)" } ?? forModel, url: url))
         }
     }
 
@@ -53,7 +57,7 @@ extension ServerToolCall {
         switch kind {
         case .webSearch, .webFetch: "response.web_search_call"
         case .image: "response.image_generation_call"
-        case .time, .dates, .calculate, .models, .status: "response.synapse_tool_call"
+        case .time, .dates, .calculate, .models, .status, .speech, .sound, .video: "response.synapse_tool_call"
         }
     }
 }
@@ -101,7 +105,7 @@ struct ResponsesAssembler {
         switch call.kind {
         case .webSearch, .webFetch: event("response.web_search_call.searching", ["item_id": call.id, "output_index": i])
         case .image: event("response.image_generation_call.generating", ["item_id": call.id, "output_index": i])
-        case .time, .dates, .calculate, .models, .status: break
+        case .time, .dates, .calculate, .models, .status, .speech, .sound, .video: break
         }
     }
 

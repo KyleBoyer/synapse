@@ -349,7 +349,11 @@ struct SynapseToolWire: Encodable, Sendable {
         id = call.id; name = call.kind.rawValue; arguments = call.arguments
         status = running ? "in_progress" : call.error == nil ? "completed" : "failed"
         if !running {
-            if case .image(let g)? = call.output { output = g.url } else { output = call.forModel }
+            switch call.output {
+            case .image(let g)?: output = g.url
+            case .media(let m)?: output = m.url
+            default: output = call.forModel
+            }
         }
     }
 }
@@ -357,7 +361,13 @@ struct SynapseToolWire: Encodable, Sendable {
 extension ServerToolCall {
     /// Text added to a Chat Completions answer so chat apps show the result: a generated image as a markdown image.
     var markdown: String {
-        if case .image(let g)? = output, let url = g.url { return "\n\n![\(g.prompt.prefix(80).replacingOccurrences(of: "]", with: ""))](\(url))\n\n" }
+        func label(_ s: String) -> String { String(s.prefix(80)).replacingOccurrences(of: "]", with: "").replacingOccurrences(of: "\n", with: " ") }
+        switch output {
+        case .image(let g)?: if let url = g.url { return "\n\n![\(label(g.prompt))](\(url))\n\n" }
+        case .media(let m)? where m.kind == .video: return "\n\n[Video (rendering, ready in a few minutes): \(label(m.prompt))](\(m.url))\n\n"
+        case .media(let m)?: return "\n\n[Listen: \(label(m.prompt))](\(m.url))\n\n"
+        default: break
+        }
         return ""
     }
 }
@@ -467,7 +477,7 @@ func requireMediaSupport(_ chat: ChatService, _ spec: ModelSpec, _ messages: [Ch
 }
 
 func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, speech: SpeechService,
-                   store: ModelStore, files: ImageFileCache, settings: SettingsBox) {
+                   tools backends: ToolBackends, settings: SettingsBox) {
     g.post("chat/completions") { req, ctx in
         let raw = try await rawBody(req, ctx)
         if let proxied = try await proxyToVOOM(raw, path: "v1/chat/completions", chat: chat, settings: settings) { return proxied }
@@ -498,7 +508,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         }
 
         let stops = stopSequences(body.stop)
-        let services = ServerToolServices(chat: chat, images: images, store: store, files: files, fileBase: imageFileBase(req, ctx), tools: server)
+        let services = backends.services(req, ctx, server)
         let events = try await chatWithServerTools(server, services: services, spec: spec, messages: messages, options: options,
                                                    wrap: { applyStops($0, stops) })
         guard body.stream == true else {
@@ -586,7 +596,7 @@ func addChatRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images:
         let hasTools = !options.tools.isEmpty || !server.isEmpty
         let respID = "resp_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let created = Int(Date().timeIntervalSince1970)
-        let services = ServerToolServices(chat: chat, images: images, store: store, files: files, fileBase: imageFileBase(req, ctx), tools: server)
+        let services = backends.services(req, ctx, server)
         let events = try await chatWithServerTools(server, services: services, spec: spec, messages: messages, options: options)
 
         @Sendable func response(status: String, output: [ResponseOutputItemWire] = [], text: String = "", usage: ChatUsage? = nil,

@@ -236,9 +236,11 @@ struct MessageAssembler {
             } else {
                 content = .array([.object(["type": .string("text"), "text": .string(call.forModel)])])
             }
-        case .time, .dates, .calculate, .models, .status:
+        case .time, .dates, .calculate, .models, .status, .speech, .sound, .video:
             type = "synapse_tool_result"
-            content = .array([.object(["type": .string("text"), "text": .string(call.forModel)])])
+            var text = call.forModel
+            if case .media(let m)? = call.output { text = m.url + "\n" + text }
+            content = .array([.object(["type": .string("text"), "text": .string(text)])])
         }
         blocks.append(AnthropicBlock(type: type, tool_use_id: call.anthropicID, content: content))
         let i = blocks.count - 1
@@ -292,8 +294,7 @@ extension ServerToolCall {
     var anthropicID: String { "srvtoolu_" + id }
 }
 
-func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, images: ImageService, store: ModelStore, files: ImageFileCache,
-                        settings: SettingsBox) {
+func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, tools backends: ToolBackends, settings: SettingsBox) {
     @Sendable func prepare(_ body: MessagesRequest) async throws -> (ModelSpec, [ChatMessage], ChatOptions, ServerTools) {
         let requested = body.model.flatMap { $0.hasPrefix("claude") ? nil : $0 }
         let spec = try await resolveChat(chat, requested)
@@ -320,7 +321,7 @@ func addAnthropicRoutes(to g: RouterGroup<SynapseContext>, chat: ChatService, im
         let body = try await decodeJSON(MessagesRequest.self, req, ctx)
         let (spec, messages, options, server) = try await prepare(body)
         let id = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let services = ServerToolServices(chat: chat, images: images, store: store, files: files, fileBase: imageFileBase(req, ctx), tools: server)
+        let services = backends.services(req, ctx, server)
         let events = try await chatWithServerTools(server, services: services, spec: spec, messages: messages, options: options)
         let stops = body.stop_sequences ?? []
 

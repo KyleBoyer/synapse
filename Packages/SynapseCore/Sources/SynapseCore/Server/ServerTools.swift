@@ -21,14 +21,18 @@ struct ServerTools: Sendable {
     var maxSearches: Int?
     var image: ImageToolConfig?
     var synapse = false
+    /// generate_speech, generate_sound (audio_generation) and generate_video (video_generation): Synapse's own.
+    var speech = false, sound = false, video = false
+    /// Which of those came from the settings rather than the request: dropped when no model for them is downloaded.
+    var mediaFromSettings = false
     /// The app's tool settings: search provider, image model and size defaults, rounds.
     var settings = ToolSettings()
 
-    var isEmpty: Bool { !webSearch && !webFetch && image == nil && !synapse }
+    var isEmpty: Bool { !webSearch && !webFetch && image == nil && !synapse && !speech && !sound && !video }
 
     static func isServerType(_ type: String) -> Bool {
         type == "web_search" || type.hasPrefix("web_search_") || type == "web_fetch" || type.hasPrefix("web_fetch_")
-            || type == "image_generation" || type == "synapse"
+            || type == "image_generation" || type == "synapse" || type == "audio_generation" || type == "video_generation"
     }
 
     /// Splits a request's tools into Synapse's own and the rest, which stay the client's function tools. The settings
@@ -48,6 +52,10 @@ struct ServerTools: Sendable {
                 server.image = try ImageToolConfig(t)
             } else if type == "synapse" {
                 server.synapse = true
+            } else if type == "audio_generation" {
+                server.speech = true; server.sound = true
+            } else if type == "video_generation" {
+                server.video = true
             } else {
                 rest.append(t)
             }
@@ -58,6 +66,10 @@ struct ServerTools: Sendable {
             server.imageFromSettings = true
         }
         if settings.alwaysOn.contains(.synapse) { server.synapse = true }
+        if settings.alwaysOn.contains(.audioGeneration), !server.speech {
+            server.speech = true; server.sound = true; server.mediaFromSettings = true
+        }
+        if settings.alwaysOn.contains(.videoGeneration), !server.video { server.video = true; server.mediaFromSettings = true }
         if var image = server.image {
             image.model = image.model ?? settings.imageModel
             image.size = image.size ?? settings.imageSize
@@ -72,6 +84,9 @@ struct ServerTools: Sendable {
         if webSearch { out.append(ServerToolKind.webSearch.function) }
         if webFetch { out.append(ServerToolKind.webFetch.function) }
         if image != nil { out.append(ServerToolKind.image.function) }
+        if speech { out.append(ServerToolKind.speech.function) }
+        if sound { out.append(ServerToolKind.sound.function) }
+        if video { out.append(ServerToolKind.video.function) }
         if synapse { out += ServerToolKind.synapseSet.map(\.function) }
         return out
     }
@@ -82,6 +97,9 @@ struct ServerTools: Sendable {
         case .webSearch: return webSearch ? kind : nil
         case .webFetch: return webFetch ? kind : nil
         case .image: return image != nil ? kind : nil
+        case .speech: return speech ? kind : nil
+        case .sound: return sound ? kind : nil
+        case .video: return video ? kind : nil
         case .time, .dates, .calculate, .models, .status: return synapse ? kind : nil
         }
     }
@@ -90,6 +108,7 @@ struct ServerTools: Sendable {
 /// A built-in tool, by the function name the model calls.
 enum ServerToolKind: String, Sendable {
     case webSearch = "web_search", webFetch = "web_fetch", image = "generate_image"
+    case speech = "generate_speech", sound = "generate_sound", video = "generate_video"
     case time = "synapse_time", dates = "date_difference", calculate = "calculate", models = "synapse_models", status = "synapse_status"
 
     /// The `synapse` tool type's functions.
@@ -105,6 +124,15 @@ enum ServerToolKind: String, Sendable {
         case .image:
             return ChatTool(name: rawValue, description: "Create or edit an image. Call this whenever the user asks for a picture, drawing, photo or image edit. The image is shown to the user.",
                             parametersJSON: #"{"type":"object","properties":{"prompt":{"type":"string","description":"Detailed description of the image to create: subject, setting, style, lighting"}},"required":["prompt"]}"#)
+        case .speech:
+            return ChatTool(name: rawValue, description: "Read text aloud as speech: narration, a voice message, a pronunciation. The audio is linked for the user.",
+                            parametersJSON: #"{"type":"object","properties":{"text":{"type":"string","description":"The exact words to speak"},"voice":{"type":"string","description":"Optional voice name"}},"required":["text"]}"#)
+        case .sound:
+            return ChatTool(name: rawValue, description: "Make music or a sound effect from a description. The audio is linked for the user.",
+                            parametersJSON: #"{"type":"object","properties":{"prompt":{"type":"string","description":"The sound or music: style, instruments, mood, tempo"},"seconds":{"type":"number","description":"Length in seconds (default 8)"},"lyrics":{"type":"string","description":"Optional lyrics to sing, for music models that sing"}},"required":["prompt"]}"#)
+        case .video:
+            return ChatTool(name: rawValue, description: "Start making a short video clip from a description. It renders in the background for several minutes; the user gets a link that works once it is done.",
+                            parametersJSON: #"{"type":"object","properties":{"prompt":{"type":"string","description":"Detailed description of the clip: subject, motion, camera, setting, style"},"seconds":{"type":"integer","description":"4, 8 or 12 (default 4)"}},"required":["prompt"]}"#)
         case .webFetch:
             return ChatTool(name: rawValue, description: "Read a web page's text, e.g. a search result, to answer from the page itself.",
                             parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"The http(s) address to read"}},"required":["url"]}"#)
@@ -129,6 +157,8 @@ enum ServerToolKind: String, Sendable {
         switch self {
         case .webSearch, .webFetch: "ws_"
         case .image: "ig_"
+        case .speech, .sound: "au_"
+        case .video: "vg_"
         case .time, .dates, .calculate, .models, .status: "st_"
         }
     }
@@ -138,6 +168,15 @@ struct WebResult: Sendable, Equatable, Encodable {
     var title: String
     var url: String
     var snippet: String
+}
+
+/// Audio made, or a video started, by a built-in tool; served from Synapse's own links.
+struct GeneratedMedia: Sendable {
+    enum Kind: String, Sendable { case audio, video }
+    var kind: Kind
+    var prompt: String
+    var url: String
+    var jobID: String? = nil
 }
 
 struct GeneratedImage: Sendable {
@@ -156,6 +195,7 @@ struct ServerToolCall: Sendable {
         case search(query: String, results: [WebResult])
         case image(GeneratedImage)
         case page(WebPage)
+        case media(GeneratedMedia)
         case info(String)     // JSON text
     }
     var id: String
@@ -179,6 +219,9 @@ struct ServerToolCall: Sendable {
             return results.enumerated().map { "\($0 + 1). \($1.title)\n\($1.url)\n\($1.snippet)" }.joined(separator: "\n\n")
         case .page(let p)?: return "\(p.title)\n\(p.url)\n\n\(p.text)"
         case .image?: return "The image was created and is shown to the user. Do not repeat it as a link."
+        case .media(let m)? where m.kind == .video:
+            return "The video is rendering now (job \(m.jobID ?? "")); it takes several minutes. The user has a link that works once it is done. Tell them it is on its way; do not wait for it or repeat the link."
+        case .media?: return "The audio was created and is linked for the user. Do not repeat the link."
         case .info(let json)?: return json
         case nil: return ""
         }
@@ -293,6 +336,11 @@ func chatWithServerTools(_ tools: ServerTools, services: ServerToolServices, spe
     async throws -> AsyncThrowingStream<ToolLoopEvent, Error> {
     var tools = tools
     if tools.imageFromSettings, (try? await services.images.resolve(tools.image?.model, edit: false)) == nil { tools.image = nil }
+    if tools.mediaFromSettings {
+        if tools.speech, (try? await services.speech.resolve(model: nil)) == nil { tools.speech = false }
+        if tools.sound, (try? await services.sound.resolve(nil)) == nil { tools.sound = false }
+        if tools.video, (try? await services.videos.resolve(nil)) == nil { tools.video = false }
+    }
     let runner = ServerToolRunner(tools: tools, maxRounds: min(max(tools.settings.maxRounds, 2), 10))
     let chat = services.chat
     let first = wrap(try await chat.stream(model: spec, messages: messages, options: runner.options(options, round: 1)))
@@ -303,10 +351,29 @@ func chatWithServerTools(_ tools: ServerTools, services: ServerToolServices, spe
 
 func newServerToolID() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() }
 
+/// What built-in tools run on, made once with the router; `services` binds them to one request.
+struct ToolBackends: Sendable {
+    var chat: ChatService
+    var images: ImageService
+    var speech: SpeechService
+    var sound: SoundService
+    var videos: VideoService
+    var store: ModelStore
+    var files: ImageFileCache
+
+    func services(_ req: Request, _ ctx: SynapseContext, _ tools: ServerTools) -> ServerToolServices {
+        ServerToolServices(chat: chat, images: images, speech: speech, sound: sound, videos: videos, store: store, files: files,
+                           fileBase: imageFileBase(req, ctx), tools: tools)
+    }
+}
+
 /// The services built-in tools use.
 struct ServerToolServices: Sendable {
     var chat: ChatService
     var images: ImageService
+    var speech: SpeechService
+    var sound: SoundService
+    var videos: VideoService
     var store: ModelStore
     var files: ImageFileCache
     /// Base for image URLs: http://host/[k/key/]v1/images/files/
@@ -323,6 +390,12 @@ struct ServerToolServices: Sendable {
                 call.output = .search(query: query, results: try await WebSearch.search(query, settings: tools.settings))
             case .image:
                 call.output = .image(try await drawImage(call.argumentsObject["prompt"]?.string ?? "", conversation))
+            case .speech:
+                call.output = .media(try await speak(call.argumentsObject))
+            case .sound:
+                call.output = .media(try await makeSound(call.argumentsObject))
+            case .video:
+                call.output = .media(try await startVideo(call.argumentsObject))
             case .webFetch:
                 call.output = .page(try await WebFetch.fetch(call.argumentsObject["url"]?.string ?? ""))
             case .time:
@@ -348,6 +421,38 @@ struct ServerToolServices: Sendable {
     /// to ImageService (the smallest downloaded).
     static func preferredImageModel(_ downloaded: Set<String>, edit: Bool) -> String? {
         (edit ? ["flux2-klein-4b", "flux2-klein-9b"] : ["flux2-klein-4b", "z-image-turbo", "flux2-klein-9b"]).first(where: downloaded.contains)
+    }
+
+    private func speak(_ a: [String: JSONValue]) async throws -> GeneratedMedia {
+        guard let text = a["text"]?.string, !text.isEmpty else { throw ChatParse.bad("generate_speech needs text.") }
+        let model = try await speech.resolve(model: nil)
+        let (rate, pcm) = try await speech.synthesize(model: model, text: String(text.prefix(SpeechService.maxInputCharacters)),
+                                                      voice: a["voice"]?.string, speed: 1)
+        var data = Data()
+        for try await chunk in speech.encoder.encode(pcm, sampleRate: rate, as: .mp3) { data.append(chunk) }
+        return GeneratedMedia(kind: .audio, prompt: text, url: fileBase + (await files.put(data, ext: "mp3", mime: "audio/mpeg")))
+    }
+
+    private func makeSound(_ a: [String: JSONValue]) async throws -> GeneratedMedia {
+        guard let prompt = a["prompt"]?.string, !prompt.isEmpty else { throw ChatParse.bad("generate_sound needs a prompt.") }
+        let seconds = min(max(a["seconds"]?.number ?? a["seconds"]?.string.flatMap(Double.init) ?? 8, 1), SoundService.maxSeconds)
+        let model = try await sound.resolve(nil)
+        let clip = try await sound.generate(model: model, prompt: prompt, lyrics: a["lyrics"]?.string, seconds: seconds, seed: nil)
+        let data = try await sound.encoded(clip, as: .mp3)
+        return GeneratedMedia(kind: .audio, prompt: prompt, url: fileBase + (await files.put(data, ext: "mp3", mime: "audio/mpeg")))
+    }
+
+    /// Queues the clip and returns at once: a render takes minutes, longer than chat apps wait for a reply.
+    private func startVideo(_ a: [String: JSONValue]) async throws -> GeneratedMedia {
+        guard let prompt = a["prompt"]?.string, !prompt.isEmpty else { throw ChatParse.bad("generate_video needs a prompt.") }
+        let requested = Int(a["seconds"]?.number ?? a["seconds"]?.string.flatMap(Double.init) ?? 4)
+        let seconds = [4, 8, 12].min { abs($0 - requested) < abs($1 - requested) }!
+        let model = try await videos.resolve(nil)
+        let job = await videos.create(model: model, request: VideoRequest(prompt: prompt, width: 768, height: 512,
+                                                                          frames: VideoService.frames(seconds: seconds), seed: nil,
+                                                                          inputImage: nil, loras: []), size: "768x512")
+        let videosBase = fileBase.replacingOccurrences(of: "images/files/", with: "videos/")
+        return GeneratedMedia(kind: .video, prompt: prompt, url: videosBase + job.id + "/content", jobID: job.id)
     }
 
     private func drawImage(_ prompt: String, _ conversation: [ChatMessage]) async throws -> GeneratedImage {

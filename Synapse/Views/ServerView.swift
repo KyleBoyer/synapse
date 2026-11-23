@@ -108,7 +108,7 @@ struct ServerView: View {
         @Bindable var state = state
         let tools = state.settings.tools
         Section("Built-in tools") {
-            Text("Chat models can search and read the web, make images, do exact math and date arithmetic, and look up the time anywhere and Synapse's own models while they answer. A client turns a tool on by sending it (web_search, web_fetch, image_generation or synapse); the switches below turn it on for every chat, for apps that never send one.")
+            Text("Chat models can search and read the web, make images, do exact math and date arithmetic, and look up the time anywhere and Synapse's own models while they answer. A client turns a tool on by sending it (web_search, web_fetch, image_generation, audio_generation, video_generation or synapse); the switches below turn it on for every chat, for apps that never send one.")
                 .font(.caption).foregroundStyle(.secondary)
             LabeledContent("Web search") {
                 ChoiceMenu(title: "Search provider", selection: $state.settings.tools.searchProvider,
@@ -140,6 +140,10 @@ struct ServerView: View {
             }
             Toggle("Web search and page reading in every chat", isOn: alwaysOn(.webSearch)).disabled(tools.searchProvider == .off)
             Toggle("Image generation in every chat", isOn: alwaysOn(.imageGeneration))
+            Toggle("Speech, music and sound effects in every chat", isOn: alwaysOn(.audioGeneration))
+            Toggle("Video generation in every chat", isOn: alwaysOn(.videoGeneration))
+            Text("Each generator joins a chat only when a model for it is downloaded. A video renders in the background for several minutes; the reply links to it at once, and the clip also appears in Video.")
+                .font(.caption).foregroundStyle(.secondary)
             Toggle("Time, dates, calculator and Synapse info in every chat", isOn: alwaysOn(.synapse))
             Stepper("Tool rounds per answer: \(tools.maxRounds)", value: $state.settings.tools.maxRounds, in: 2...10)
             Text("Only models that call tools well (Qwen3.5, Inkling) use these reliably; small models may skip them.")

@@ -19,7 +19,9 @@ final class ServerToolsTests: XCTestCase {
         let tools: [JSONValue] = [.object(["type": .string("web_search_20250305"), "max_uses": .number(2)]),
                                   .object(["type": .string("image_generation")]), .object(["type": .string("synapse")]),
                                   .object(["type": .string("function"), "name": .string("lookup")])]
-        let (server, rest) = try ServerTools.split(tools)
+        var manual = ToolSettings()
+        manual.alwaysOn = []
+        let (server, rest) = try ServerTools.split(tools, settings: manual)
         XCTAssertTrue(server.webSearch)
         XCTAssertEqual(server.maxSearches, 2)
         XCTAssertNotNil(server.image)
@@ -223,6 +225,30 @@ final class ServerToolsTests: XCTestCase {
         }
     }
 
+    /// Chat apps show links, not tool items: audio and the video-to-be arrive as markdown links in the answer.
+    func testMediaReachesChatAppsAsLinks() {
+        var audio = ServerToolCall(id: "au_1", kind: .sound, arguments: "{}")
+        audio.output = .media(GeneratedMedia(kind: .audio, prompt: "rain on a tin roof", url: "http://h/v1/images/files/a.mp3"))
+        XCTAssertEqual(audio.markdown, "\n\n[Listen: rain on a tin roof](http://h/v1/images/files/a.mp3)\n\n")
+        var video = ServerToolCall(id: "vg_1", kind: .video, arguments: "{}")
+        video.output = .media(GeneratedMedia(kind: .video, prompt: "a fox [running]", url: "http://h/v1/videos/video_1/content", jobID: "video_1"))
+        XCTAssertTrue(video.markdown.contains("[Video (rendering, ready in a few minutes): a fox [running](http://h/v1/videos/video_1/content)"))
+        XCTAssertTrue(video.forModel.contains("rendering") && !video.forModel.contains("http"), "the model is told not to wait or repeat the link")
+    }
+
+    /// Settings saved by 0.1.9 (web search on, before audio and video existed) get the new tools; a choice made
+    /// after that sticks.
+    func testToolsAddedLaterStartOnButChoicesStick() throws {
+        let old = try JSONDecoder().decode(ToolSettings.self, from: Data(#"{"alwaysOn":["webSearch","imageGeneration","synapse"]}"#.utf8))
+        XCTAssertEqual(old.alwaysOn, [.webSearch, .imageGeneration, .synapse, .audioGeneration, .videoGeneration])
+        var off = old
+        off.alwaysOn.remove(.videoGeneration)
+        let again = try JSONDecoder().decode(ToolSettings.self, from: try JSONEncoder().encode(off))
+        XCTAssertFalse(again.alwaysOn.contains(.videoGeneration), "turned off stays off")
+        XCTAssertFalse(try JSONDecoder().decode(ToolSettings.self, from: Data(#"{"alwaysOn":[]}"#.utf8)).alwaysOn.contains(.synapse),
+                       "a 0.1.9 tool turned off stays off")
+    }
+
     func testImageToolPrefersTheFastModels() {
         XCTAssertEqual(ServerToolServices.preferredImageModel(["qwen-image-2.1-q4", "flux2-klein-4b", "z-image-turbo"], edit: false), "flux2-klein-4b")
         XCTAssertEqual(ServerToolServices.preferredImageModel(["qwen-image-2.1-q4", "z-image-turbo"], edit: false), "z-image-turbo")
@@ -234,7 +260,14 @@ final class ServerToolsTests: XCTestCase {
         let (server, _) = try ServerTools.split(nil, settings: ToolSettings())
         XCTAssertTrue(server.synapse && server.image != nil && server.imageFromSettings)
         XCTAssertFalse(server.webSearch || server.webFetch)
-        XCTAssertEqual(try JSONDecoder().decode(ToolSettings.self, from: Data("{}".utf8)).alwaysOn, [.synapse, .imageGeneration])
+        XCTAssertEqual(try JSONDecoder().decode(ToolSettings.self, from: Data("{}".utf8)).alwaysOn,
+                       [.synapse, .imageGeneration, .audioGeneration, .videoGeneration])
+        XCTAssertTrue(server.speech && server.sound && server.video && server.mediaFromSettings)
+        var none = ToolSettings()
+        none.alwaysOn = []
+        let asked = try ServerTools.split([.object(["type": .string("audio_generation")]), .object(["type": .string("video_generation")])], settings: none).0
+        XCTAssertEqual(asked.functions.map(\.name), ["generate_speech", "generate_sound", "generate_video"])
+        XCTAssertFalse(asked.mediaFromSettings)
         XCTAssertFalse(try ServerTools.split([.object(["type": .string("image_generation")])]).0.imageFromSettings, "asked for, so it stays")
     }
 
