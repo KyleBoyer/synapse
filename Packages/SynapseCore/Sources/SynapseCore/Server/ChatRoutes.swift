@@ -364,7 +364,7 @@ extension ServerToolCall {
         func label(_ s: String) -> String { String(s.prefix(80)).replacingOccurrences(of: "]", with: "").replacingOccurrences(of: "\n", with: " ") }
         switch output {
         case .image(let g)?: if let url = g.url { return "\n\n![\(label(g.prompt))](\(url))\n\n" }
-        case .media(let m)? where m.kind == .video: return "\n\n[Video (rendering, ready in a few minutes): \(label(m.prompt))](\(m.url))\n\n"
+        case .media(let m)? where m.kind == .video: return "\n\n[Video (rendering; it can take up to an hour): \(label(m.prompt))](\(m.url))\n\n"
         case .media(let m)?: return "\n\n[Listen: \(label(m.prompt))](\(m.url))\n\n"
         default: break
         }

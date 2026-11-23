@@ -87,7 +87,8 @@ public enum Catalog {
         // download); verified on a 16 GB M4. LTX-2 Community License. The name stays short so the toolbar's menu fits.
         hf("ltx-2.3-distilled", "LTX-2.3 Distilled", .videogen, "prince-canuma/LTX-2.3-distilled", 96000, ramGB: 16),
         // Text or a start image to video at 24 fps (Apache-2.0); 8-bit transformer, bf16 UMT5 text encoder (freed before
-        // denoising). On a 16 GB M4 an 832x480, 2 s clip takes about 36 s per step, 40 steps.
+        // denoising, paged a block at a time; Wan.script). On a 16 GB M4 a 768x512, 4 s clip peaks at 9.8 GB and takes
+        // ~78 s per step (40 steps) plus ~9 min of VAE decode.
         hf("wan2.2-ti2v-5b", "Wan 2.2 TI2V 5B", .videogen, "Anes1032/Wan2.2-TI2V-5B-mlx-q8", 19600, ramGB: 16),
         // Video with stereo sound through stable-diffusion.cpp (MiniMax H3 Community License). The files depend on the Mac
         // (MiniMaxH3.files): under 64 GB a pruned 2-bit transformer and the 4B text encoder (14.4 GB, pages on 16 GB:

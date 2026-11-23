@@ -190,10 +190,66 @@ enum Wan {
         return folder
     }
 
+    /// mlx-video loads the UMT5 text encoder whole and upcast to fp32: 22 GB of GPU memory, which froze a 16 GB Mac.
+    /// The wrapper pages it instead: each of its 24 blocks is read from disk, upcast to fp32 (as upstream does, so the
+    /// result is the same), run and freed, so it holds about 1 GB. It runs once per prompt, so the extra reads are cheap.
     static let script = """
     import os, sys, runpy, transformers
+    import mlx.core as mx
+    from mlx_video.models.wan_2 import utils as U
+    from mlx_video.models.wan_2.text_encoder import T5LayerNorm, T5SelfAttentionBlock
     _load = transformers.AutoTokenizer.from_pretrained
     transformers.AutoTokenizer.from_pretrained = lambda name, *a, **k: _load(os.environ["SYNAPSE_WAN_TOKENIZER"] if name == "\(tokenizerRepo)" else name, *a, **k)
+
+    class PagedT5:
+        def __init__(self, path, config):
+            self.path, self.c = str(path), config
+
+        def __call__(self, ids, mask=None):
+            c = self.c
+            w = mx.load(self.path)  # lazy: a tensor is read when first evaluated
+            x = w.pop("token_embedding.weight")[ids].astype(mx.float32)
+            mx.eval(x)
+            for i in range(c.t5_num_layers):
+                block = T5SelfAttentionBlock(c.t5_dim, c.t5_dim_attn, c.t5_dim_ffn, c.t5_num_heads, c.t5_num_buckets, shared_pos=False)
+                prefix = f"blocks.{i}."
+                block.load_weights([(k[len(prefix):], w.pop(k).astype(mx.float32)) for k in [k for k in w if k.startswith(prefix)]])
+                x = block(x, mask=mask)
+                mx.eval(x)
+                del block
+                mx.clear_cache()
+            norm = T5LayerNorm(c.t5_dim)
+            norm.load_weights([("weight", w.pop("norm.weight").astype(mx.float32))])
+            return norm(x)
+
+    U.load_t5_encoder = PagedT5
+
+    # The denoiser's compiled forward (model._compiled = mx.compile(model)) is held by the model and by a local in
+    # mlx-video's loop, so its 7 GB stayed resident through the VAE decode. It is wrapped here so the decode can
+    # drop it, and the models are emptied, before the VAE loads.
+    from mlx_video.models.wan_2.wan_2 import WanModel
+    _compile, _denoisers = mx.compile, []
+    class Releasable:
+        def __init__(self, f): self.f = f
+        def __call__(self, *a, **k): return self.f(*a, **k)
+    def compile(f, *a, **k):
+        if not isinstance(f, WanModel): return _compile(f, *a, **k)
+        r = Releasable(_compile(f, *a, **k))
+        _denoisers.append(r)
+        return r
+    mx.compile = compile
+
+    _load_vae = U.load_vae_decoder
+    def load_vae_decoder(*a, **k):
+        import gc
+        for r in _denoisers: r.f = None
+        for o in gc.get_objects():
+            if isinstance(o, WanModel): o.clear()
+        gc.collect()
+        mx.clear_cache()
+        return _load_vae(*a, **k)
+    U.load_vae_decoder = load_vae_decoder
+    mx.set_cache_limit(1 << 30)  # freed buffers MLX keeps for reuse count against this Mac's memory too
     sys.argv = ["wan"] + sys.argv[1:]
     runpy.run_module("mlx_video.models.wan_2.generate", run_name="__main__")
     """

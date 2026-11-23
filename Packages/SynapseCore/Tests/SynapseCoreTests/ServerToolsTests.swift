@@ -232,7 +232,7 @@ final class ServerToolsTests: XCTestCase {
         XCTAssertEqual(audio.markdown, "\n\n[Listen: rain on a tin roof](http://h/v1/images/files/a.mp3)\n\n")
         var video = ServerToolCall(id: "vg_1", kind: .video, arguments: "{}")
         video.output = .media(GeneratedMedia(kind: .video, prompt: "a fox [running]", url: "http://h/v1/videos/video_1/content", jobID: "video_1"))
-        XCTAssertTrue(video.markdown.contains("[Video (rendering, ready in a few minutes): a fox [running](http://h/v1/videos/video_1/content)"))
+        XCTAssertTrue(video.markdown.contains("[Video (rendering; it can take up to an hour): a fox [running](http://h/v1/videos/video_1/content)"))
         XCTAssertTrue(video.forModel.contains("rendering") && !video.forModel.contains("http"), "the model is told not to wait or repeat the link")
     }
 
