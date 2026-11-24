@@ -108,7 +108,8 @@ actor PythonRuntime {
                              onLine: @escaping @Sendable (String) -> Void) async throws {
         let p = Process()
         p.executableURL = exe; p.arguments = args
-        if !env.isEmpty { p.environment = env }
+        // Unbuffered, so a Python error comes after the output before it and lands in the tail the error shows.
+        if !env.isEmpty { p.environment = env.merging(["PYTHONUNBUFFERED": "1"]) { old, _ in old } }
         p.standardInput = FileHandle.nullDevice
         let pipe = Pipe()
         p.standardOutput = pipe; p.standardError = pipe

@@ -51,8 +51,16 @@ func addVideoRoutes(to g: RouterGroup<SynapseContext>, videos: VideoService) {
         videoResponse(videoJSON(try await job(ctx, videos)))
     }
     g.get("videos/:id/content") { req, ctx in
-        let j = try await job(ctx, videos)
-        guard j.status == .completed, let file = j.file else { throw HTTPError(.notFound, message: "Video is not ready.") }
+        let browser = req.headers[.accept]?.contains("text/html") == true
+        let id = ctx.parameters.get("id") ?? ""
+        let found = await videos.job(id)
+        // Chat apps open this link in a browser while the video renders: a page that follows the job beats an error.
+        if browser, found?.status != .completed { return videoStatusPage(found, id: id) }
+        guard let j = found else { throw HTTPError(.notFound, message: "No video with id '\(id)'.") }
+        guard j.status == .completed, let file = j.file else {
+            throw HTTPError(.notFound, message: j.status == .failed ? "Video failed: \(j.error ?? "unknown error")"
+                            : "Video is not ready: \(j.status.rawValue), \(j.progress)% done.")
+        }
         switch req.uri.queryParameters.get("variant") ?? "video" {
         case "video":
             let data = try Data(contentsOf: file)
@@ -129,4 +137,34 @@ func videoJSON(_ j: VideoJob) -> [String: Any] {
 private func videoResponse(_ o: [String: Any]) -> Response {
     let data = (try? JSONSerialization.data(withJSONObject: o)) ?? Data("{}".utf8)
     return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: data)))
+}
+
+/// What a browser sees at a video's link before it is ready: the job's state, refreshed every 10 seconds.
+func videoStatusPage(_ j: VideoJob?, id: String) -> Response {
+    func esc(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+    }
+    let title: String, detail: String, refresh: Bool
+    switch j?.status {
+    case nil:
+        (title, detail, refresh) = ("Unknown video", "Synapse has no video with id \(esc(id)). Jobs are kept until Synapse restarts.", false)
+    case .queued?:
+        (title, detail, refresh) = ("Waiting to start", "Another video is rendering first.", true)
+    case .in_progress?:
+        let minutes = j?.startedAt.map { Int(Date().timeIntervalSince($0) / 60) } ?? 0
+        (title, detail, refresh) = ("Rendering: \(j?.progress ?? 0)%", "Started \(minutes) min ago. This can take up to an hour; the video plays here when it's done.", true)
+    case .failed?:
+        (title, detail, refresh) = ("Video failed", "<pre>\(esc(String((j?.error ?? "").suffix(1500))))</pre>", false)
+    case .completed?:
+        (title, detail, refresh) = ("Ready", "", true)
+    }
+    let html = """
+    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    \(refresh ? #"<meta http-equiv="refresh" content="10">"# : "")<title>\(title)</title>
+    <style>body{font:16px -apple-system,sans-serif;margin:0;padding:24px 16px;max-width:640px;color:#1d1a26;background:#f7f6fb}
+    @media (prefers-color-scheme:dark){body{color:#ece9f5;background:#15131c}}h1{font-size:22px}p,pre{opacity:.75}pre{white-space:pre-wrap;font-size:12px}</style>
+    </head><body><h1>\(title)</h1><p>\(esc(j?.prompt ?? ""))</p><p>\(detail)</p></body></html>
+    """
+    return Response(status: j == nil ? .notFound : .ok, headers: [.contentType: "text/html; charset=utf-8"],
+                    body: .init(byteBuffer: ByteBuffer(string: html)))
 }

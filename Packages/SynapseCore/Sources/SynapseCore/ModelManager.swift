@@ -128,6 +128,12 @@ public actor ModelManager {
     public func reserve<R: Sendable>(_ id: String, estimatedBytes: Int,
                                      during body: @Sendable () async throws -> R) async throws -> R {
         await makeRoom(for: estimatedBytes, excluding: id)
+        // A model still in use (the chat that started a video tool) can't be unloaded yet; wait for it rather than
+        // starting a separate process next to it, which runs the GPU out of memory.
+        while overcommitted, entries.contains(where: { $0.key != id && $0.value.leases > 0 }) {
+            try await Task.sleep(for: .seconds(1))
+            await makeRoom(for: estimatedBytes, excluding: id)
+        }
         let entry = Entry(value: true, bytes: estimatedBytes, unload: {})
         entry.leases = 1
         entries[id] = entry

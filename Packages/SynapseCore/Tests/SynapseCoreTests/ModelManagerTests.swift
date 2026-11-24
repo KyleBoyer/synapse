@@ -57,6 +57,23 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertTrue(ok)
     }
 
+    func testReserveWaitsForAModelInUseThenUnloadsIt() async throws {
+        let log = Log()
+        let m = ModelManager(config: .init(budgetBytes: 100, idleUnloadAfter: nil))
+        let chat = try await m.lease("chat", as: String.self, estimatedBytes: 80, load: loader("chat", log))
+        let started = Flag()
+        let video = Task { try await m.reserve("video", estimatedBytes: 80) { await started.set() } }
+        try await Task.sleep(for: .milliseconds(300))
+        let early = await started.value
+        XCTAssertFalse(early, "a separate generator must not start next to a model still in use")
+        chat.release()
+        try await video.value
+        let unloads = await log.unloads
+        XCTAssertEqual(unloads, ["chat"])
+    }
+
+    actor Flag { var value = false; func set() { value = true } }
+
     func testMeasuredSizeReplacesEstimateAndDrivesEviction() async throws {
         let log = Log()
         let m = ModelManager(config: .init(budgetBytes: 100, idleUnloadAfter: nil))

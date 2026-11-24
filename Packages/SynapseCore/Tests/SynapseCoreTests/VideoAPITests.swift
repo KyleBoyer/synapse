@@ -37,7 +37,18 @@ final class VideoAPITests: XCTestCase {
                 XCTAssertEqual(o["size"] as? String, "256x256")
                 XCTAssertTrue(["queued", "in_progress"].contains(o["status"] as? String ?? ""))
             }
-            try await c.execute(uri: "/v1/videos/\(id)/content", method: .get) { r in XCTAssertEqual(r.status, .notFound) }
+            try await c.execute(uri: "/v1/videos/\(id)/content", method: .get) { r in
+                XCTAssertEqual(r.status, .notFound)
+                XCTAssertTrue(String(buffer: r.body).contains("% done"), String(buffer: r.body))
+            }
+            try await c.execute(uri: "/v1/videos/\(id)/content", method: .get, headers: [.accept: "text/html"]) { r in
+                XCTAssertEqual(r.status, .ok)
+                XCTAssertTrue(String(buffer: r.body).contains("http-equiv=\"refresh\""))
+            }
+            try await c.execute(uri: "/v1/videos/video_nope/content", method: .get, headers: [.accept: "text/html"]) { r in
+                XCTAssertEqual(r.status, .notFound)
+                XCTAssertTrue(String(buffer: r.body).contains("Unknown video"))
+            }
             var status = "", failure: Any?
             for _ in 0..<200 where status != "completed" && status != "failed" {
                 try await Task.sleep(for: .milliseconds(50))
